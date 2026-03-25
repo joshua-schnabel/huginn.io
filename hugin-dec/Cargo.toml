@@ -21,3 +21,10 @@ colored = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+hugin-core = { path = "../crates/hugin-core" }
+

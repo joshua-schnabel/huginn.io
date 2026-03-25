@@ -1,0 +1,64 @@
+influx:
+  url: "http://localhost:8086"
+  org: "myorg"
+  bucket: "monitoring"
+  # Path to a file containing the InfluxDB token.
+  # For Docker: mount the token as a secret at this path.
+  # Example: docker secret create influx_token ./token.txt
+  # NEVER put the token value directly in this file or in an ENV variable.
+  token_file: "/run/secrets/influx_token"
+
+# Optional debug web UI (axum, no external JS/CSS)
+ui:
+  enabled: false
+  port: 9116  # http://localhost:9116
+
+# Logging
+log:
+  format: pretty  # "pretty" (coloured) or "json"
+  level: info     # trace, debug, info, warn, error  (also via RUST_LOG)
+
+probes:
+  # ── HTTP ──────────────────────────────────────────────────────────────────
+  - name: "web-homepage"
+    type: http
+    target: "https://example.com"
+    interval_secs: 30
+    timeout_secs: 5
+    expected_status: 200
+
+  # ── HTTPS (same as http, target uses https://) ───────────────────────────
+  - name: "api-health"
+    type: https
+    target: "https://api.example.com/health"
+    interval_secs: 15
+    timeout_secs: 5
+    expected_status: 200
+
+  # ── TCP ───────────────────────────────────────────────────────────────────
+  - name: "postgres"
+    type: tcp
+    target: "db.example.com:5432"
+    interval_secs: 15
+    timeout_secs: 3
+
+  # ── SMTP ──────────────────────────────────────────────────────────────────
+  - name: "smtp-mail"
+    type: smtp
+    target: "mail.example.com:25"
+    interval_secs: 60
+    timeout_secs: 10
+
+  # ── IMAP ──────────────────────────────────────────────────────────────────
+  - name: "imap-mail"
+    type: imap
+    target: "mail.example.com:143"
+    interval_secs: 60
+    timeout_secs: 10
+
+  # ── UDP (DNS example) ─────────────────────────────────────────────────────
+  - name: "dns-google"
+    type: udp
+    target: "8.8.8.8:53"
+    interval_secs: 30
+    timeout_secs: 2

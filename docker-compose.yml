@@ -1,0 +1,52 @@
+services:
+  hugin-dec:
+    build: .
+    restart: unless-stopped
+    environment:
+      HUGIN_CONFIG: /etc/hugin/config.yaml
+      HUGIN_UI_ENABLED: "true"
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_ORG: myorg
+      INFLUX_BUCKET: monitoring
+      INFLUX_TOKEN_FILE: /run/secrets/influx_token
+    volumes:
+      - ./config/config.yaml:/etc/hugin/config.yaml:ro
+    ports:
+      - "9116:9116"
+    secrets:
+      - influx_token
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  influxdb:
+    image: influxdb:2.7-alpine
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_ORG: myorg
+      DOCKER_INFLUXDB_INIT_BUCKET: monitoring
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD_FILE: /run/secrets/influx_admin_password
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN_FILE: /run/secrets/influx_token
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    secrets:
+      - influx_token
+      - influx_admin_password
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  influxdb-data:
+
+secrets:
+  influx_token:
+    file: ./secrets/influx_token.txt
+  influx_admin_password:
+    file: ./secrets/influx_admin_password.txt

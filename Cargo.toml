@@ -55,6 +55,6 @@ async-native-tls = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
 tokio-cron-scheduler = "0.11"
 
-# Dev / test only
-[workspace.metadata]
-# Use `cargo add --dev` for test-only deps per crate
+# Test helpers (available workspace-wide)
+tempfile = "3"
+wiremock = "0.6"
