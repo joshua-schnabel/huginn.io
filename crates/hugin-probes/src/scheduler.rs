@@ -12,31 +12,22 @@ pub type ResultSender = broadcast::Sender<ProbeResult>;
 
 /// Run all probes from the config, each on its own tokio interval.
 /// Results are broadcast via the returned sender.
-/// Shutdown when `shutdown_rx` receives a message.
+/// Each probe loop listens on its own shutdown receiver and exits cleanly.
 pub async fn run(
     cfg: Arc<AppConfig>,
-    mut shutdown_rx: broadcast::Receiver<()>,
+    shutdown_tx: broadcast::Sender<()>,
 ) -> ResultSender {
     let (tx, _) = broadcast::channel::<ProbeResult>(256);
     let http_client = Arc::new(http::build_client());
 
     for probe_cfg in &cfg.probes {
         let probe_cfg = probe_cfg.clone();
-        let tx = tx.clone();
+        let result_tx = tx.clone();
         let http_client = Arc::clone(&http_client);
-        let shutdown = tx.subscribe();
-        // We use a separate shutdown receiver per task
-        let _ = shutdown; // suppress unused warning — real shutdown is below
+        let shutdown_rx = shutdown_tx.subscribe();
 
-        tokio::spawn(run_probe_loop(probe_cfg, tx, Arc::clone(&http_client)));
+        tokio::spawn(run_probe_loop(probe_cfg, result_tx, http_client, shutdown_rx));
     }
-
-    // Spawn a task that listens for shutdown and cancels all children via
-    // a separate mechanism if needed (currently probes run until process exit).
-    tokio::spawn(async move {
-        let _ = shutdown_rx.recv().await;
-        info!("Scheduler received shutdown signal");
-    });
 
     tx
 }
@@ -45,17 +36,24 @@ async fn run_probe_loop(
     cfg: ProbeConfig,
     tx: ResultSender,
     http_client: Arc<reqwest::Client>,
+    mut shutdown_rx: broadcast::Receiver<()>,
 ) {
     let mut ticker = interval(cfg.interval());
-    // First tick fires immediately
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        ticker.tick().await;
-        let result = execute_probe(&cfg, &http_client).await;
-        if tx.send(result).is_err() {
-            // No receivers left — process is shutting down
-            break;
+        tokio::select! {
+            _ = ticker.tick() => {
+                let result = execute_probe(&cfg, &http_client).await;
+                if tx.send(result).is_err() {
+                    // No receivers — process shutting down
+                    break;
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                info!(probe = %cfg.name, "probe loop shutting down");
+                break;
+            }
         }
     }
 }
@@ -109,39 +107,73 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn scheduler_emits_tcp_probe_result() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            loop {
-                let _ = listener.accept().await;
-            }
-        });
-
-        let probe = ProbeConfig {
+    fn tcp_probe(addr: &str, interval_secs: u64) -> ProbeConfig {
+        ProbeConfig {
             name: "sched-tcp".into(),
             probe_type: ProbeType::Tcp,
             target: addr.to_string(),
-            interval_secs: 1,
+            interval_secs,
             timeout_secs: 2,
             expected_status: None,
-        };
+        }
+    }
 
-        let cfg = make_config(vec![probe]);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-        let result_tx = run(cfg, shutdown_rx).await;
+    #[tokio::test]
+    async fn scheduler_emits_probe_result() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { loop { let _ = listener.accept().await; } });
+
+        let cfg = make_config(vec![tcp_probe(&addr.to_string(), 1)]);
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let result_tx = run(cfg, shutdown_tx.clone()).await;
         let mut result_rx = result_tx.subscribe();
 
-        // Wait for at least one result
         let result = tokio::time::timeout(Duration::from_secs(3), result_rx.recv())
             .await
             .expect("timed out waiting for probe result")
-            .expect("broadcast channel closed");
+            .expect("channel closed");
 
         assert_eq!(result.probe_name, "sched-tcp");
         assert!(result.up);
+    }
 
-        let _ = shutdown_tx.send(());
+    /// TDD: Shutdown signal must cause probe loops to exit cleanly.
+    /// Write this test FIRST — it should FAIL until run_probe_loop uses tokio::select!
+    #[tokio::test]
+    async fn scheduler_stops_on_shutdown() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { loop { let _ = listener.accept().await; } });
+
+        let cfg = make_config(vec![tcp_probe(&addr.to_string(), 60)]); // long interval
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let result_tx = run(cfg, shutdown_tx.clone()).await;
+        let mut result_rx = result_tx.subscribe();
+
+        // Get the first result (fires immediately on start)
+        let _ = tokio::time::timeout(Duration::from_secs(3), result_rx.recv())
+            .await
+            .expect("no initial result");
+
+        // Send shutdown — probe loops must exit, channel must close
+        shutdown_tx.send(()).unwrap();
+
+        // Drop all senders so the channel closes
+        drop(result_tx);
+
+        // After shutdown, receiving should eventually return Closed
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            async { loop {
+                match result_rx.recv().await {
+                    Err(broadcast::error::RecvError::Closed) => return true,
+                    _ => {}
+                }
+            }}
+        ).await;
+
+        assert!(outcome.is_ok(), "probe loops did not exit after shutdown signal");
     }
 }
+

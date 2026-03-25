@@ -43,17 +43,18 @@ thiserror = "1"
 # Colored output
 colored = "2"
 
-# InfluxDB client
-influxdb2 = "0.5"
-influxdb2-structmap = "0.2"
+# InfluxDB client — unused workspace dep removed; writer uses raw reqwest line protocol
+# influxdb2 = "0.5"          # removed: not used
+# influxdb2-structmap = "0.2" # removed: not used
 
-# Async IMAP
-async-imap = "0.10"
-async-native-tls = "0.5"
+# Async IMAP — removed: IMAP probe uses raw tokio TcpStream, no imap crate needed
+# async-imap = "0.10"        # removed: not used
+# async-native-tls = "0.5"   # removed: not used
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
-tokio-cron-scheduler = "0.11"
+# tokio-cron-scheduler removed: scheduler uses simple tokio::time::interval()
+# tokio-cron-scheduler = "0.11"
 
 # Test helpers (available workspace-wide)
 tempfile = "3"

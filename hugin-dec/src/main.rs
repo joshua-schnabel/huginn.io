@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Shutdown channel
-    let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
     tokio::spawn({
         let shutdown_tx = shutdown_tx.clone();
         async move {
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Start scheduler — returns a broadcast sender of ProbeResults
-    let result_tx = scheduler::run(Arc::clone(&cfg), shutdown_rx).await;
+    let result_tx = scheduler::run(Arc::clone(&cfg), shutdown_tx.clone()).await;
     let mut result_rx = result_tx.subscribe();
 
     // Process results: print to stdout + write to InfluxDB
