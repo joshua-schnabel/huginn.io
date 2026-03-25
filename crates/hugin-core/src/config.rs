@@ -427,4 +427,61 @@ probes:
         std::env::remove_var("HUGIN_UI_ENABLED");
         std::env::remove_var("HUGIN_UI_PORT");
     }
+
+    // --- read_token -----------------------------------------------------------
+
+    #[test]
+    fn read_token_fails_for_nonexistent_file() {
+        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        cfg.influx.token_file = "/nonexistent/path/to/hugin-token-xyz.txt".into();
+        let result = cfg.influx.read_token();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("hugin-token-xyz") || msg.contains("token"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn read_token_trims_whitespace() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "hugin-token-test-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            write!(f, "  mytoken  \n").unwrap();
+        }
+        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        cfg.influx.token_file = path.to_string_lossy().into_owned();
+        let token = cfg.influx.read_token().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(token, "mytoken");
+    }
+
+    #[test]
+    fn env_token_file_override_applies() {
+        let path = std::env::temp_dir().join(format!(
+            "hugin-env-token-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        let _ = std::fs::write(&path, "envtoken");
+        let path_str = path.to_string_lossy().into_owned();
+
+        std::env::set_var("INFLUX_TOKEN_FILE", &path_str);
+        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        cfg.apply_env_overrides();
+        assert_eq!(cfg.influx.token_file, path_str);
+        let token = cfg.influx.read_token().unwrap();
+        std::env::remove_var("INFLUX_TOKEN_FILE");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(token, "envtoken");
+    }
 }

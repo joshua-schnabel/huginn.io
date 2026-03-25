@@ -2,6 +2,9 @@
 
 **Uptime & response-time monitoring** — YAML-configurable, InfluxDB backend, similar to the Prometheus Blackbox Exporter.
 
+[![CI](https://github.com/OWNER/hugin-dec/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/hugin-dec/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/OWNER/hugin-dec/branch/main/graph/badge.svg)](https://codecov.io/gh/OWNER/hugin-dec)
+
 ## Features
 
 | Feature | Details |
@@ -52,6 +55,37 @@ Options:
 [2024-01-15 10:32:01]  ✅  postgres                 TCP     3.2ms
 [2024-01-15 10:32:02]  ❌  smtp-mail                SMTP    5000.0ms  timeout after 5s
 ```
+
+## Development
+
+### Run Tests
+
+```bash
+cargo test --all
+```
+
+### Code Coverage (local, offline)
+
+```bash
+# Install once
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked
+
+# Open interactive HTML report in browser (no internet needed)
+cargo llvm-cov --all --html --open
+
+# Terminal summary + enforce 80% threshold (exit 1 if below)
+cargo llvm-cov --all --fail-under-lines 80
+
+# Generate lcov.info for VS Code Coverage Gutters extension
+cargo llvm-cov --all --lcov --output-path lcov.info
+```
+
+> **VS Code:** Install the [Coverage Gutters](https://marketplace.visualstudio.com/items?itemName=ryanluker.vscode-coverage-gutters) extension.
+> After running the `lcov.info` command, it shows green/red line markers directly in the editor — fully offline.
+
+Coverage is also measured in CI and enforced at **≥ 80%** (see [`ci.yml`](.github/workflows/ci.yml)).
+
 
 ## Documentation
 

@@ -239,3 +239,101 @@ async fn ui_index(State(s): State<AppState>) -> Html<String> {
 </table></body></html>"#
     ))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hugin_core::types::ProbeResult;
+
+    fn success_result() -> ProbeResult {
+        ProbeResult::success("web", "http", "https://example.com", 42.5, Some(200))
+    }
+
+    fn failure_result() -> ProbeResult {
+        ProbeResult::failure("db", "tcp", "host:5432", 5000.0, "connection refused")
+    }
+
+    fn no_status_result() -> ProbeResult {
+        ProbeResult::success("dns", "udp", "8.8.8.8:53", 1.5, None)
+    }
+
+    // --- print_result ----------------------------------------------------------
+
+    #[test]
+    fn print_result_json_does_not_panic_on_success() {
+        print_result(&success_result(), true);
+    }
+
+    #[test]
+    fn print_result_json_does_not_panic_on_failure() {
+        print_result(&failure_result(), true);
+    }
+
+    #[test]
+    fn print_result_pretty_does_not_panic_on_success() {
+        print_result(&success_result(), false);
+    }
+
+    #[test]
+    fn print_result_pretty_does_not_panic_on_failure() {
+        print_result(&failure_result(), false);
+    }
+
+    #[test]
+    fn print_result_pretty_no_status_code() {
+        // Exercises the (None, None) branch in the extra match
+        print_result(&no_status_result(), false);
+    }
+
+    // --- UI handler functions --------------------------------------------------
+
+    #[tokio::test]
+    async fn ui_health_returns_ok_str() {
+        assert_eq!(ui_health().await, "OK");
+    }
+
+    #[tokio::test]
+    async fn ui_metrics_returns_empty_vec() {
+        let state = AppState { results: Arc::new(RwLock::new(vec![])) };
+        let Json(results) = ui_metrics(State(state)).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ui_metrics_returns_stored_results() {
+        let r = success_result();
+        let state = AppState { results: Arc::new(RwLock::new(vec![r.clone()])) };
+        let Json(results) = ui_metrics(State(state)).await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].probe_name, "web");
+    }
+
+    #[tokio::test]
+    async fn ui_index_html_contains_probe_name() {
+        let r = success_result();
+        let state = AppState { results: Arc::new(RwLock::new(vec![r])) };
+        let Html(html) = ui_index(State(state)).await;
+        assert!(html.contains("web"), "probe name missing from HTML");
+        assert!(html.contains("hugin.dec"), "title missing");
+    }
+
+    #[tokio::test]
+    async fn ui_index_html_contains_down_indicator_for_failure() {
+        let r = failure_result();
+        let state = AppState { results: Arc::new(RwLock::new(vec![r])) };
+        let Html(html) = ui_index(State(state)).await;
+        assert!(html.contains("DOWN") || html.contains("❌"), "down indicator missing");
+        assert!(html.contains("connection refused"), "error text missing");
+    }
+
+    #[tokio::test]
+    async fn ui_index_empty_table_renders_without_panic() {
+        let state = AppState { results: Arc::new(RwLock::new(vec![])) };
+        let Html(html) = ui_index(State(state)).await;
+        assert!(html.contains("hugin.dec"));
+    }
+}
