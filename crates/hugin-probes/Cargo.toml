@@ -1,0 +1,21 @@
+[package]
+name = "hugin-probes"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hugin-core = { path = "../hugin-core" }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+tokio-cron-scheduler = { workspace = true }
+async-imap = { workspace = true }
+async-native-tls = { workspace = true }
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { workspace = true }
+

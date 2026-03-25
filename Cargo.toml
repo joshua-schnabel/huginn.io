@@ -1,0 +1,60 @@
+[workspace]
+members = [
+    "hugin-dec",
+    "crates/hugin-core",
+    "crates/hugin-probes",
+    "crates/hugin-influx",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["hugin.dec contributors"]
+license = "MIT"
+repository = "https://github.com/placeholder/hugin-dec"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Web framework (debug UI)
+axum = "0.7"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Colored output
+colored = "2"
+
+# InfluxDB client
+influxdb2 = "0.5"
+influxdb2-structmap = "0.2"
+
+# Async IMAP
+async-imap = "0.10"
+async-native-tls = "0.5"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+tokio-cron-scheduler = "0.11"
+
+# Dev / test only
+[workspace.metadata]
+# Use `cargo add --dev` for test-only deps per crate

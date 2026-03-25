@@ -1,0 +1,6 @@
+/target/
+# Cargo.lock is committed for reproducible builds (binary crate)
+# secrets — never commit tokens
+secrets/
+*.token
+.env
