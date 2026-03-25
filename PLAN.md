@@ -141,8 +141,44 @@ probes:
 - Repository auf **GitHub** (öffentlich oder privat)
 - **GitHub Actions** als CI/CD-Pipeline
 - **GitHub Packages** (GHCR) als Container-Registry
-- Workflow-Trigger: `push` + `pull_request` auf `main`
-- Release-Workflow: Tag `v*.*.*` → Build → Push `ghcr.io/<owner>/hugin-dec:latest` + `:v1.2.3`
+
+### Branching-Strategie
+
+```
+feature/xyz ──┐
+feature/abc ──┤  PR → dev  ──────────── PR → main
+              └► dev (integration)          │
+                  │ push → GHCR :dev        │ push → GHCR :latest + :vX.Y.Z
+                  │                         │        (Version aus CHANGELOG.md)
+                  └─────────────────────────┘
+```
+
+| Branch | Zweck | Geschützt | Merge von |
+|---|---|---|---|
+| `main` | Stabile Releases | ✅ ja | `dev` via PR |
+| `dev` | Integration / dev-Build | ✅ ja | `feature/*` via PR |
+| `feature/<name>` | Features / Bugfixes | ❌ nein | brancht von `dev` |
+
+- Direkte Pushes auf `main` und `dev` sind verboten
+- Squash-Merge Feature-Branches → `dev`, Merge-Commit `dev` → `main`
+- Commit-Messages: Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`)
+
+### CI/CD Workflows
+
+| Datei | Trigger | Jobs |
+|---|---|---|
+| `ci.yml` | push/PR → `dev`, `main` | fmt, clippy, test (stable+beta), cargo-audit |
+| `docker.yml` | push → `dev` | build + Trivy-Scan + push `:dev` zu GHCR |
+| `docker.yml` | push → `main` | build + Trivy-Scan + Version aus CHANGELOG lesen + Git-Tag anlegen + push `:vX.Y.Z` + `:latest` |
+
+### Release-Prozess
+
+1. Entwickler ändert `CHANGELOG.md`: `[Unreleased]` → `[X.Y.Z] - YYYY-MM-DD`
+2. PR `dev` → `main` öffnen
+3. Nach Merge liest CI die Version automatisch aus `CHANGELOG.md`
+4. CI erstellt Git-Tag `vX.Y.Z` und pusht Docker-Image
+
+> **CHANGELOG.md ist die einzige Source of Truth für die Version** — kein manuelles Tagging.
 
 ---
 
