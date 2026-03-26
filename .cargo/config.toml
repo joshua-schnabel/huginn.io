@@ -1,0 +1,76 @@
+[alias]
+# ── Build ────────────────────────────────────────────────────────────────────
+# cargo b                   schneller Debug-Build
+# cargo br                  Release-Build (optimiert, --locked für CI)
+# cargo b-verbose           Build mit vollständiger Compiler-Ausgabe
+# cargo b-timings           Build mit Zeitprofiling (öffnet HTML-Bericht)
+b            = "build"
+br           = "build --release --locked"
+b-verbose    = "build --workspace --message-format=human -v"
+b-timings    = "build --workspace --timings"
+
+# ── Run ──────────────────────────────────────────────────────────────────────
+# cargo dev                 Starten mit Beispiel-Config (Pretty-Output)
+# cargo dev-ui              + eingebettete Debug-Web-UI auf Port 9116
+# cargo dev-json            + JSON-Log-Ausgabe
+dev          = "run -- --config config/config.example.yaml"
+dev-ui       = "run -- --config config/config.example.yaml --ui"
+dev-json     = "run -- --config config/config.example.yaml --output json"
+
+# ── Test ─────────────────────────────────────────────────────────────────────
+# cargo t                   alle Tests (aktuelles Crate)
+# cargo t-all               alle Tests im gesamten Workspace
+# cargo t-unit              nur Unit-Tests (kein #[test] in integration/)
+# cargo t-int               nur Integrationstests (tests/*.rs)
+# cargo t-verbose           Tests mit stdout/stderr-Ausgabe pro Test
+# cargo t-fail-fast         stoppt beim ersten fehlschlagenden Test
+# cargo t-doc               Doctests aller Crates
+t            = "test"
+t-all        = "test --workspace"
+t-unit       = "test --lib --workspace"
+t-int        = "test --test '*' --workspace"
+t-verbose    = "test --workspace -- --nocapture"
+t-fail-fast  = "test --workspace -- --fail-fast"
+t-doc        = "test --doc --workspace"
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
+# Benötigt:  cargo install cargo-llvm-cov
+#
+# cargo cov                 Zusammenfassung im Terminal (lcov-Stil)
+# cargo cov-html            Ausführlicher HTML-Bericht  → target/llvm-cov/html/
+# cargo cov-open            HTML-Bericht direkt im Browser öffnen
+# cargo cov-lcov            LCOV-Datei für externe Tools (SonarQube, Codecov …)
+# cargo cov-ci              Nur Prozentzahl ausgeben – für CI-Gate geeignet
+cov          = "llvm-cov --workspace --all-features"
+cov-html     = "llvm-cov --workspace --all-features --html --open --output-dir target/llvm-cov/html"
+cov-open     = "llvm-cov --workspace --all-features --open"
+cov-lcov     = "llvm-cov --workspace --all-features --lcov --output-path target/llvm-cov/lcov.info"
+cov-ci       = "llvm-cov --workspace --all-features --summary-only"
+
+# ── Code Quality ─────────────────────────────────────────────────────────────
+# cargo lint                Clippy: alle Targets, alle Features, Warnungen = Fehler
+# cargo lint-fix            Clippy: automatisch behebbare Probleme anwenden
+# cargo fmt                 Formatierung anwenden
+# cargo fmt-check           Formatierung nur prüfen (kein Schreiben, gut für CI)
+lint         = "clippy --workspace --all-targets --all-features -- -D warnings"
+lint-fix     = "clippy --workspace --all-targets --all-features --fix --allow-dirty"
+fmt          = "fmt --all"
+fmt-check    = "fmt --all -- --check"
+
+# ── Security & Audit ─────────────────────────────────────────────────────────
+# Benötigt:  cargo install cargo-audit
+#
+# cargo audit               Prüft Cargo.lock gegen RustSec Advisory DB
+# cargo audit-fix           Versucht verwundbare Dependencies automatisch zu updaten
+audit        = "audit"
+audit-fix    = "audit fix"
+
+# ── Dependency-Verwaltung ─────────────────────────────────────────────────────
+# Benötigt:  cargo install cargo-outdated  /  cargo-upgrades
+#
+# cargo outdated            Zeigt veraltete Dependencies
+outdated     = "outdated --workspace"
+
+# ── Docs ─────────────────────────────────────────────────────────────────────
+# cargo doc                 Rust-Docs bauen und im Browser öffnen
+doc          = "doc --workspace --no-deps --open"

@@ -76,6 +76,8 @@ mod tests {
             interval_secs: 10,
             timeout_secs: 2,
             expected_status: None,
+            dns_query: None,
+            dns_expected_ip: None,
         }
     }
 
@@ -109,5 +111,21 @@ mod tests {
     async fn fails_when_port_closed() {
         let result = probe(&smtp_cfg("127.0.0.1:1")).await;
         assert!(!result.up);
+    }
+
+    #[tokio::test]
+    async fn fails_on_empty_banner() {
+        // Server accepts connection then immediately closes without sending anything.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((socket, _)) = listener.accept().await {
+                drop(socket); // EOF immediately
+            }
+        });
+
+        let result = probe(&smtp_cfg(&addr.to_string())).await;
+        assert!(!result.up);
+        assert!(result.error.as_deref().unwrap_or("").contains("empty banner"));
     }
 }

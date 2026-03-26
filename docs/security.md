@@ -2,7 +2,7 @@
 
 ## Secrets Management
 
-hugin.dec follows a strict **no-secrets-in-ENV** policy.
+hugin.dev follows a strict **no-secrets-in-ENV** policy.
 
 ### ✅ Correct: Token in a file
 ```yaml
@@ -17,14 +17,14 @@ The token is read from the file at startup. The file should be:
 ### ❌ Wrong: Token in ENV
 ```bash
 # DO NOT do this
-INFLUX_TOKEN=mytoken hugin-dec   # token visible in ps, /proc/environ, logs
+INFLUX_TOKEN=mytoken hugin-dev   # token visible in ps, /proc/environ, logs
 ```
 
 ## Docker Secrets
 ```yaml
 # docker-compose.yml
 services:
-  hugin-dec:
+  hugin-dev:
     secrets:
       - influx_token
     environment:
@@ -68,8 +68,8 @@ Run automatically in CI (`audit` job in `.github/workflows/ci.yml`).
 
 ```bash
 # Scan locally with Trivy
-docker build -t hugin-dec .
-trivy image --severity HIGH,CRITICAL hugin-dec
+docker build -t hugin-dev .
+trivy image --severity HIGH,CRITICAL hugin-dev
 ```
 
 Also runs automatically in CI before any image push.

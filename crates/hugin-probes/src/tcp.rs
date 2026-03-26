@@ -38,6 +38,8 @@ mod tests {
             interval_secs: 10,
             timeout_secs: 2,
             expected_status: None,
+            dns_query: None,
+            dns_expected_ip: None,
         }
     }
 

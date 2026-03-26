@@ -17,6 +17,13 @@ pub struct AppConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub log: LogConfig,
+    /// Capacity of the central EventHub broadcast channel (default 256).
+    #[serde(default = "default_hub_capacity")]
+    pub event_hub_capacity: usize,
+}
+
+fn default_hub_capacity() -> usize {
+    256
 }
 
 // ---------------------------------------------------------------------------
@@ -32,10 +39,24 @@ pub struct InfluxConfig {
     /// The token is read from the file at runtime — never stored in env directly.
     #[serde(default = "default_token_file")]
     pub token_file: String,
+    /// Number of probe results to buffer before flushing to InfluxDB (default 10).
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    /// Maximum time in milliseconds to wait before flushing a non-full batch (default 1000).
+    #[serde(default = "default_batch_timeout_ms")]
+    pub batch_timeout_ms: u64,
 }
 
 fn default_token_file() -> String {
     "/run/secrets/influx_token".to_string()
+}
+
+fn default_batch_size() -> usize {
+    10
+}
+
+fn default_batch_timeout_ms() -> u64 {
+    1000
 }
 
 impl InfluxConfig {
@@ -126,6 +147,7 @@ pub enum ProbeType {
     Smtp,
     Imap,
     Udp,
+    Dns,
 }
 
 impl std::fmt::Display for ProbeType {
@@ -137,6 +159,7 @@ impl std::fmt::Display for ProbeType {
             ProbeType::Smtp => "smtp",
             ProbeType::Imap => "imap",
             ProbeType::Udp => "udp",
+            ProbeType::Dns => "dns",
         };
         write!(f, "{s}")
     }
@@ -154,6 +177,12 @@ pub struct ProbeConfig {
     pub timeout_secs: u64,
     /// HTTP/HTTPS only: expected HTTP status code.
     pub expected_status: Option<u16>,
+    /// DNS only: hostname to resolve (default: "example.com")
+    #[serde(default)]
+    pub dns_query: Option<String>,
+    /// DNS only: expected IP address in the response (optional validation)
+    #[serde(default)]
+    pub dns_expected_ip: Option<String>,
 }
 
 impl ProbeConfig {
@@ -306,6 +335,11 @@ probes:
   - name: "mail-imap"
     type: imap
     target: "mail.example.com:143"
+  - name: "dns-probe"
+    type: dns
+    target: "1.1.1.1:53"
+    dns_query: "example.com"
+    dns_expected_ip: "93.184.216.34"
 "#;
 
     fn parse(yaml: &str) -> AppConfig {
@@ -325,13 +359,16 @@ probes:
     #[test]
     fn parses_full_config_all_probe_types() {
         let cfg = parse(FULL_YAML);
-        assert_eq!(cfg.probes.len(), 5);
+        assert_eq!(cfg.probes.len(), 6);
         assert_eq!(cfg.probes[0].probe_type, ProbeType::Http);
         assert_eq!(cfg.probes[0].expected_status, Some(200));
         assert_eq!(cfg.probes[1].probe_type, ProbeType::Tcp);
         assert_eq!(cfg.probes[2].probe_type, ProbeType::Udp);
         assert_eq!(cfg.probes[3].probe_type, ProbeType::Smtp);
         assert_eq!(cfg.probes[4].probe_type, ProbeType::Imap);
+        assert_eq!(cfg.probes[5].probe_type, ProbeType::Dns);
+        assert_eq!(cfg.probes[5].dns_query, Some("example.com".into()));
+        assert_eq!(cfg.probes[5].dns_expected_ip, Some("93.184.216.34".into()));
     }
 
     #[test]
@@ -365,6 +402,7 @@ probes:
         assert_eq!(ProbeType::Udp.to_string(), "udp");
         assert_eq!(ProbeType::Smtp.to_string(), "smtp");
         assert_eq!(ProbeType::Imap.to_string(), "imap");
+        assert_eq!(ProbeType::Dns.to_string(), "dns");
     }
 
     #[test]
@@ -426,6 +464,19 @@ probes:
         assert_eq!(cfg.ui.port, 8080);
         std::env::remove_var("HUGIN_UI_ENABLED");
         std::env::remove_var("HUGIN_UI_PORT");
+    }
+
+    #[test]
+    fn default_hub_capacity_is_256() {
+        let cfg = parse(MINIMAL_YAML);
+        assert_eq!(cfg.event_hub_capacity, 256);
+    }
+
+    #[test]
+    fn default_batch_settings() {
+        let cfg = parse(MINIMAL_YAML);
+        assert_eq!(cfg.influx.batch_size, 10);
+        assert_eq!(cfg.influx.batch_timeout_ms, 1000);
     }
 
     // --- read_token -----------------------------------------------------------

@@ -1,4 +1,4 @@
-# Contributing to hugin.dec
+# Contributing to hugin.dev
 
 Thank you for your interest in contributing! This document explains the development workflow, branching strategy, and release process.
 
@@ -93,18 +93,23 @@ test(influx): add line protocol escaping edge cases
 
 ### Run tests
 
+See **[docs/testing.md](docs/testing.md)** for the full testing guide (test pyramid, TDD workflow, coverage requirements, naming conventions).
+
 ```bash
 # All tests (unit + integration)
-cargo test --all
+cargo test --workspace
 
 # Single crate
 cargo test -p hugin-probes
 
 # Specific test
-cargo test -p hugin-core config::tests::test_validate_empty_probes
+cargo test -p hugin-probes fails_on_empty_banner
 
 # Watch mode (requires cargo-watch)
-cargo watch -x "test --all"
+cargo watch -x "test --workspace"
+
+# Coverage report (requires cargo-llvm-cov)
+cargo llvm-cov --workspace --open
 ```
 
 ### Linting & Formatting
@@ -177,7 +182,7 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
    - Reads version `0.2.0` from `CHANGELOG.md`
    - Creates git tag `v0.2.0`
    - Builds Docker image
-   - Pushes `ghcr.io/OWNER/hugin-dec:0.2.0` and `ghcr.io/OWNER/hugin-dec:latest`
+   - Pushes `ghcr.io/OWNER/hugin-dev:0.2.0` and `ghcr.io/OWNER/hugin-dev:latest`
 
 ---
 
@@ -197,7 +202,7 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
 - `cargo clippy -- -D warnings` — all clippy warnings are errors in CI
 - Comments only where the code is not self-explanatory
 - Tests alongside implementation (`#[cfg(test)]`) for unit tests
-- Integration tests in `hugin-dec/tests/` following TDD: write test first, then implementation
+- Integration tests in `hugin-dev/tests/` following TDD: write test first, then implementation
 
 ---
 

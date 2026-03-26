@@ -8,8 +8,8 @@
 ## Docker Quickstart
 
 ```bash
-git clone https://github.com/your-org/hugin-dec.git
-cd hugin-dec
+git clone https://github.com/your-org/hugin-dev.git
+cd hugin-dev
 
 # Create secrets (never commit these files)
 mkdir -p secrets
@@ -25,7 +25,7 @@ $EDITOR config/config.yaml
 docker compose up -d
 
 # Tail logs
-docker compose logs -f hugin-dec
+docker compose logs -f hugin-dev
 ```
 
 Open **http://localhost:9116** for the debug UI.
@@ -39,13 +39,13 @@ cargo build --release --locked
 echo "mytoken" > /etc/hugin/influx_token
 chmod 600 /etc/hugin/influx_token
 
-./target/release/hugin-dec --config config/config.yaml
+./target/release/hugin-dev --config config/config.yaml
 ```
 
 ## JSON Output
 
 ```bash
-./target/release/hugin-dec --output json | jq .
+./target/release/hugin-dev --output json | jq .
 # or via ENV:
-HUGIN_LOG_FORMAT=json hugin-dec
+HUGIN_LOG_FORMAT=json hugin-dev
 ```

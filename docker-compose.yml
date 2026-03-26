@@ -1,5 +1,5 @@
 services:
-  hugin-dec:
+  hugin-dev:
     build: .
     restart: unless-stopped
     environment:

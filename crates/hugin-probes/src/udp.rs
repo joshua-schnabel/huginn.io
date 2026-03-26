@@ -70,6 +70,8 @@ mod tests {
             interval_secs: 10,
             timeout_secs: 2,
             expected_status: None,
+            dns_query: None,
+            dns_expected_ip: None,
         }
     }
 
@@ -105,5 +107,22 @@ mod tests {
         let result = probe(&cfg).await;
         assert!(!result.up);
         assert!(result.error.as_deref().unwrap_or("").contains("timeout"));
+    }
+
+    #[tokio::test]
+    async fn fails_on_empty_response() {
+        // UDP server that responds with a zero-byte datagram.
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            if let Ok((_, peer)) = server.recv_from(&mut buf).await {
+                let _ = server.send_to(&[], peer).await; // 0 bytes
+            }
+        });
+
+        let result = probe(&udp_cfg(&addr.to_string())).await;
+        assert!(!result.up);
+        assert_eq!(result.error.as_deref().unwrap_or(""), "empty response");
     }
 }

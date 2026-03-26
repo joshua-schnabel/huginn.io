@@ -66,6 +66,8 @@ mod tests {
             interval_secs: 10,
             timeout_secs: 5,
             expected_status,
+            dns_query: None,
+            dns_expected_ip: None,
         }
     }
 
@@ -126,5 +128,53 @@ mod tests {
         };
         let result = probe(&cfg, &client).await;
         assert!(!result.up);
+    }
+
+    #[tokio::test]
+    async fn fails_on_404_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let cfg = http_cfg(&server.uri(), Some(200));
+        let result = probe(&cfg, &client).await;
+        assert!(!result.up);
+        assert!(result.error.as_deref().unwrap_or("").contains("404"));
+    }
+
+    #[tokio::test]
+    async fn fails_on_500_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let cfg = http_cfg(&server.uri(), Some(200));
+        let result = probe(&cfg, &client).await;
+        assert!(!result.up);
+        assert!(result.error.as_deref().unwrap_or("").contains("500"));
+    }
+
+    #[tokio::test]
+    async fn https_probe_type_is_reflected_in_result() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let cfg = ProbeConfig {
+            probe_type: ProbeType::Https,
+            ..http_cfg(&server.uri(), Some(200))
+        };
+        let result = probe(&cfg, &client).await;
+        assert!(result.up);
+        assert_eq!(result.probe_type, "https");
     }
 }

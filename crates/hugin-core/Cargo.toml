@@ -12,6 +12,10 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 
+[dependencies.tokio]
+workspace = true
+features = ["sync"]
+
 [dev-dependencies]
 tokio = { workspace = true }
 

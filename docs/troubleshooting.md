@@ -17,7 +17,7 @@
 - Wrong `org` or `bucket` name in config/ENV
 
 ## Probes always DOWN
-- Check network connectivity from the container: `docker compose exec hugin-dec /bin/sh` (not available with distroless — use `docker run --rm --network ... alpine ping <host>`)
+- Check network connectivity from the container: `docker compose exec hugin-dev /bin/sh` (not available with distroless — use `docker run --rm --network ... alpine ping <host>`)
 - Check firewall rules on the target host
 - Increase `timeout_secs` for slow targets
 
@@ -27,7 +27,7 @@
 
 ## Enable verbose logging
 ```bash
-RUST_LOG=debug hugin-dec --config config.yaml
+RUST_LOG=debug hugin-dev --config config.yaml
 # or in compose:
 environment:
   HUGIN_LOG_LEVEL: debug

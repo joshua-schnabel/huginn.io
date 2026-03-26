@@ -1,40 +1,37 @@
 use std::sync::Arc;
 
 use hugin_core::config::{AppConfig, ProbeConfig, ProbeType};
+use hugin_core::event::{EventHub, ProbeEvent};
 use hugin_core::types::ProbeResult;
 use tokio::sync::broadcast;
 use tokio::time::interval;
 use tracing::{error, info};
 
-use crate::{http, imap, smtp, tcp, udp};
-
-pub type ResultSender = broadcast::Sender<ProbeResult>;
+use crate::{dns, http, imap, smtp, tcp, udp};
 
 /// Run all probes from the config, each on its own tokio interval.
-/// Results are broadcast via the returned sender.
+/// Results are published to the given `EventHub` as `ProbeEvent::ProbeCompleted`.
 /// Each probe loop listens on its own shutdown receiver and exits cleanly.
 pub async fn run(
     cfg: Arc<AppConfig>,
+    hub: Arc<EventHub>,
     shutdown_tx: broadcast::Sender<()>,
-) -> ResultSender {
-    let (tx, _) = broadcast::channel::<ProbeResult>(256);
+) {
     let http_client = Arc::new(http::build_client());
 
     for probe_cfg in &cfg.probes {
         let probe_cfg = probe_cfg.clone();
-        let result_tx = tx.clone();
+        let hub = Arc::clone(&hub);
         let http_client = Arc::clone(&http_client);
         let shutdown_rx = shutdown_tx.subscribe();
 
-        tokio::spawn(run_probe_loop(probe_cfg, result_tx, http_client, shutdown_rx));
+        tokio::spawn(run_probe_loop(probe_cfg, hub, http_client, shutdown_rx));
     }
-
-    tx
 }
 
 async fn run_probe_loop(
     cfg: ProbeConfig,
-    tx: ResultSender,
+    hub: Arc<EventHub>,
     http_client: Arc<reqwest::Client>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
@@ -45,10 +42,7 @@ async fn run_probe_loop(
         tokio::select! {
             _ = ticker.tick() => {
                 let result = execute_probe(&cfg, &http_client).await;
-                if tx.send(result).is_err() {
-                    // No receivers — process shutting down
-                    break;
-                }
+                hub.publish(ProbeEvent::ProbeCompleted(result));
             }
             _ = shutdown_rx.recv() => {
                 info!(probe = %cfg.name, "probe loop shutting down");
@@ -65,6 +59,7 @@ async fn execute_probe(cfg: &ProbeConfig, http_client: &reqwest::Client) -> Prob
         ProbeType::Smtp => smtp::probe(cfg).await,
         ProbeType::Imap => imap::probe(cfg).await,
         ProbeType::Udp => udp::probe(cfg).await,
+        ProbeType::Dns => dns::probe(cfg).await,
     };
 
     if result.up {
@@ -90,6 +85,7 @@ async fn execute_probe(cfg: &ProbeConfig, http_client: &reqwest::Client) -> Prob
 mod tests {
     use super::*;
     use hugin_core::config::{InfluxConfig, LogConfig, ProbeConfig, ProbeType, UiConfig};
+    use hugin_core::event::{EventHub, ProbeEvent};
     use std::time::Duration;
     use tokio::net::TcpListener;
 
@@ -100,10 +96,13 @@ mod tests {
                 org: "test".into(),
                 bucket: "test".into(),
                 token_file: "/dev/null".into(),
+                batch_size: 10,
+                batch_timeout_ms: 1000,
             },
             probes,
             ui: UiConfig::default(),
             log: LogConfig::default(),
+            event_hub_capacity: 256,
         })
     }
 
@@ -115,6 +114,8 @@ mod tests {
             interval_secs,
             timeout_secs: 2,
             expected_status: None,
+            dns_query: None,
+            dns_expected_ip: None,
         }
     }
 
@@ -125,21 +126,25 @@ mod tests {
         tokio::spawn(async move { loop { let _ = listener.accept().await; } });
 
         let cfg = make_config(vec![tcp_probe(&addr.to_string(), 1)]);
+        let hub = Arc::new(EventHub::new(256));
+        let mut rx = hub.subscribe();
+        // Keep shutdown_tx alive so the probe loop doesn't exit immediately
+        // when run() drops its copy (broadcast channel closes when all senders drop).
         let (shutdown_tx, _) = broadcast::channel(1);
-        let result_tx = run(cfg, shutdown_tx.clone()).await;
-        let mut result_rx = result_tx.subscribe();
+        run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
-        let result = tokio::time::timeout(Duration::from_secs(3), result_rx.recv())
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
-            .expect("timed out waiting for probe result")
+            .expect("timed out waiting for probe event")
             .expect("channel closed");
 
+        let ProbeEvent::ProbeCompleted(result) = event;
         assert_eq!(result.probe_name, "sched-tcp");
         assert!(result.up);
+
+        drop(shutdown_tx);
     }
 
-    /// TDD: Shutdown signal must cause probe loops to exit cleanly.
-    /// Write this test FIRST — it should FAIL until run_probe_loop uses tokio::select!
     #[tokio::test]
     async fn scheduler_stops_on_shutdown() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -147,33 +152,175 @@ mod tests {
         tokio::spawn(async move { loop { let _ = listener.accept().await; } });
 
         let cfg = make_config(vec![tcp_probe(&addr.to_string(), 60)]); // long interval
+        let hub = Arc::new(EventHub::new(256));
+        let mut rx = hub.subscribe();
         let (shutdown_tx, _) = broadcast::channel(1);
-        let result_tx = run(cfg, shutdown_tx.clone()).await;
-        let mut result_rx = result_tx.subscribe();
+        run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
         // Get the first result (fires immediately on start)
-        let _ = tokio::time::timeout(Duration::from_secs(3), result_rx.recv())
+        let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("no initial result");
 
-        // Send shutdown — probe loops must exit, channel must close
+        // Send shutdown — probe loops must exit
         shutdown_tx.send(()).unwrap();
+        // Drop hub so the channel closes after all probe loops exit
+        drop(hub);
 
-        // Drop all senders so the channel closes
-        drop(result_tx);
-
-        // After shutdown, receiving should eventually return Closed
         let outcome = tokio::time::timeout(
             Duration::from_secs(2),
-            async { loop {
-                match result_rx.recv().await {
-                    Err(broadcast::error::RecvError::Closed) => return true,
-                    _ => {}
+            async {
+                loop {
+                    match rx.recv().await {
+                        Err(broadcast::error::RecvError::Closed) => return true,
+                        _ => {}
+                    }
                 }
-            }}
-        ).await;
+            },
+        )
+        .await;
 
         assert!(outcome.is_ok(), "probe loops did not exit after shutdown signal");
+    }
+
+    #[tokio::test]
+    async fn scheduler_emits_http_probe_result() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let cfg = make_config(vec![ProbeConfig {
+            name: "sched-http".into(),
+            probe_type: ProbeType::Http,
+            target: server.uri(),
+            interval_secs: 1,
+            timeout_secs: 2,
+            expected_status: Some(200),
+            dns_query: None,
+            dns_expected_ip: None,
+        }]);
+
+        let hub = Arc::new(EventHub::new(256));
+        let mut rx = hub.subscribe();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for http probe event")
+            .expect("channel closed");
+
+        let ProbeEvent::ProbeCompleted(result) = event;
+        assert_eq!(result.probe_name, "sched-http");
+        assert!(result.up, "error: {:?}", result.error);
+
+        drop(shutdown_tx);
+    }
+
+    #[tokio::test]
+    async fn scheduler_emits_udp_probe_result() {
+        use tokio::net::UdpSocket;
+
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                if let Ok((n, peer)) = server.recv_from(&mut buf).await {
+                    let _ = server.send_to(&buf[..n], peer).await;
+                }
+            }
+        });
+
+        let cfg = make_config(vec![ProbeConfig {
+            name: "sched-udp".into(),
+            probe_type: ProbeType::Udp,
+            target: addr.to_string(),
+            interval_secs: 1,
+            timeout_secs: 2,
+            expected_status: None,
+            dns_query: None,
+            dns_expected_ip: None,
+        }]);
+
+        let hub = Arc::new(EventHub::new(256));
+        let mut rx = hub.subscribe();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for udp probe event")
+            .expect("channel closed");
+
+        let ProbeEvent::ProbeCompleted(result) = event;
+        assert_eq!(result.probe_name, "sched-udp");
+        assert!(result.up, "error: {:?}", result.error);
+
+        drop(shutdown_tx);
+    }
+
+    fn build_dns_a_response(query: &[u8], ip: [u8; 4]) -> Vec<u8> {
+        let mut r = Vec::new();
+        r.extend_from_slice(&query[0..2]);
+        r.extend_from_slice(&[0x81, 0x80]);
+        r.extend_from_slice(&[0x00, 0x01]);
+        r.extend_from_slice(&[0x00, 0x01]);
+        r.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        r.extend_from_slice(&query[12..]);
+        r.extend_from_slice(&[0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01]);
+        r.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C, 0x00, 0x04]);
+        r.extend_from_slice(&ip);
+        r
+    }
+
+    #[tokio::test]
+    async fn scheduler_emits_dns_probe_result() {
+        use tokio::net::UdpSocket;
+
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                if let Ok((n, peer)) = server.recv_from(&mut buf).await {
+                    let resp = build_dns_a_response(&buf[..n], [1, 2, 3, 4]);
+                    let _ = server.send_to(&resp, peer).await;
+                }
+            }
+        });
+
+        let cfg = make_config(vec![ProbeConfig {
+            name: "sched-dns".into(),
+            probe_type: ProbeType::Dns,
+            target: addr.to_string(),
+            interval_secs: 1,
+            timeout_secs: 2,
+            expected_status: None,
+            dns_query: Some("example.com".into()),
+            dns_expected_ip: None,
+        }]);
+
+        let hub = Arc::new(EventHub::new(256));
+        let mut rx = hub.subscribe();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+
+        let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for dns probe event")
+            .expect("channel closed");
+
+        let ProbeEvent::ProbeCompleted(result) = event;
+        assert_eq!(result.probe_name, "sched-dns");
+        assert!(result.up, "error: {:?}", result.error);
+
+        drop(shutdown_tx);
     }
 }
 

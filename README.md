@@ -1,9 +1,9 @@
-# 🦅 hugin.dec
+# 🦅 hugin.dev
 
 **Uptime & response-time monitoring** — YAML-configurable, InfluxDB backend, similar to the Prometheus Blackbox Exporter.
 
-[![CI](https://github.com/OWNER/hugin-dec/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/hugin-dec/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/OWNER/hugin-dec/branch/main/graph/badge.svg)](https://codecov.io/gh/OWNER/hugin-dec)
+[![CI](https://github.com/OWNER/hugin-dev/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/hugin-dev/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/OWNER/hugin-dev/branch/main/graph/badge.svg)](https://codecov.io/gh/OWNER/hugin-dev)
 
 ## Features
 
@@ -39,7 +39,7 @@ open http://localhost:9116
 ## CLI Usage
 
 ```
-hugin-dec [OPTIONS]
+hugin-dev [OPTIONS]
 
 Options:
   -c, --config <FILE>   Config file path [env: HUGIN_CONFIG] [default: /etc/hugin/config.yaml]
@@ -100,7 +100,7 @@ Coverage is also measured in CI and enforced at **≥ 80%** (see [`ci.yml`](.git
 
 ```bash
 cargo build --release --locked
-./target/release/hugin-dec --config config/config.example.yaml
+./target/release/hugin-dev --config config/config.example.yaml
 ```
 
 ## License

@@ -1,18 +1,19 @@
 [workspace]
 members = [
-    "hugin-dec",
+    "hugin-dev",
     "crates/hugin-core",
     "crates/hugin-probes",
     "crates/hugin-influx",
+    "crates/hugin-web",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["hugin.dec contributors"]
+authors = ["hugin.dev contributors"]
 license = "MIT"
-repository = "https://github.com/placeholder/hugin-dec"
+repository = "https://github.com/placeholder/hugin-dev"
 
 [workspace.dependencies]
 # Async runtime
@@ -56,6 +57,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # tokio-cron-scheduler removed: scheduler uses simple tokio::time::interval()
 # tokio-cron-scheduler = "0.11"
 
+# DNS resolver
+hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+
 # Test helpers (available workspace-wide)
 tempfile = "3"
 wiremock = "0.6"
+tokio-stream = { version = "0.1", features = ["sync"] }

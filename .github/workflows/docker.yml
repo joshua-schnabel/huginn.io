@@ -23,12 +23,12 @@ jobs:
         with:
           context: .
           push: false
-          tags: hugin-dec:ci
+          tags: hugin-dev:ci
           load: true
       - name: Scan with Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: hugin-dec:ci
+          image-ref: hugin-dev:ci
           format: table
           exit-code: 1
           severity: CRITICAL,HIGH

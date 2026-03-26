@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2025-03-25
 
 ### Added
-- Cargo workspace with 3 library crates (`hugin-core`, `hugin-probes`, `hugin-influx`) and binary `hugin-dec`
+- Cargo workspace with 3 library crates (`hugin-core`, `hugin-probes`, `hugin-influx`) and binary `hugin-dev`
 - **6 probe types**: TCP, HTTP, HTTPS, SMTP (banner check), IMAP (greeting check), UDP (DNS payload)
 - **InfluxDB 2.x writer** using native line protocol via `reqwest` + `rustls`; token read from file, never from ENV
 - **YAML configuration** (`config/config.example.yaml`) with full ENV override support (`HUGIN_*`, `INFLUX_TOKEN_FILE`)
@@ -25,5 +25,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: `README.md`, `docs/getting-started.md`, `docs/configuration.md`, `docs/influxdb.md`, `docs/security.md`, `docs/troubleshooting.md`
 - `CONTRIBUTING.md` with branching workflow, PR process, Conventional Commits, release process
 
-[Unreleased]: https://github.com/OWNER/hugin-dec/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/hugin-dec/releases/tag/v0.1.0
+[Unreleased]: https://github.com/OWNER/hugin-dev/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/OWNER/hugin-dev/releases/tag/v0.1.0
