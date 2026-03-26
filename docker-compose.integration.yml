@@ -1,0 +1,43 @@
+# docker-compose.integration.yml
+#
+# System Integration Test stack for CI.
+# Starts InfluxDB + hugin-dev with a short-interval test config,
+# using inline env vars instead of secret files so no local setup is needed.
+#
+# Usage (CI creates the token file first):
+#   echo -n "integration-test-token-hugin-dev-ci" > /tmp/influx_token.txt
+#   docker compose -f docker-compose.integration.yml up -d --build
+#   bash scripts/integration-test.sh
+#   docker compose -f docker-compose.integration.yml down -v
+
+services:
+  hugin-dev:
+    build: .
+    environment:
+      HUGIN_UI_ENABLED: "true"
+    volumes:
+      - ./config/config.integration.yaml:/etc/hugin/config.yaml:ro
+      - /tmp/influx_token.txt:/run/secrets/influx_token:ro
+    ports:
+      - "9116:9116"
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  influxdb:
+    image: influxdb:2.7-alpine
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_ORG: testorg
+      DOCKER_INFLUXDB_INIT_BUCKET: testbucket
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: testpassword123
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: integration-test-token-hugin-dev-ci
+    ports:
+      - "8086:8086"
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s

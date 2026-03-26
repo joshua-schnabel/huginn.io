@@ -8,12 +8,14 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/hugin-core/Cargo.toml   crates/hugin-core/Cargo.toml
 COPY crates/hugin-probes/Cargo.toml crates/hugin-probes/Cargo.toml
 COPY crates/hugin-influx/Cargo.toml crates/hugin-influx/Cargo.toml
+COPY crates/hugin-web/Cargo.toml    crates/hugin-web/Cargo.toml
 COPY hugin-dev/Cargo.toml           hugin-dev/Cargo.toml
 
 # Dummy source files to cache the dependency layer
 RUN mkdir -p crates/hugin-core/src   && echo "pub fn _f(){}" > crates/hugin-core/src/lib.rs \
  && mkdir -p crates/hugin-probes/src && echo "pub fn _f(){}" > crates/hugin-probes/src/lib.rs \
  && mkdir -p crates/hugin-influx/src && echo "pub fn _f(){}" > crates/hugin-influx/src/lib.rs \
+ && mkdir -p crates/hugin-web/src    && echo "pub fn _f(){}" > crates/hugin-web/src/lib.rs \
  && mkdir -p hugin-dev/src           && echo "fn main(){}"   > hugin-dev/src/main.rs \
  && cargo build --release --locked \
  && rm -rf crates/*/src hugin-dev/src

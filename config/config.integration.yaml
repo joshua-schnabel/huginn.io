@@ -1,0 +1,32 @@
+influx:
+  url: "http://influxdb:8086"
+  org: "testorg"
+  bucket: "testbucket"
+  token_file: "/run/secrets/influx_token"
+  # Flush immediately so the test can query InfluxDB right away
+  batch_size: 1
+  batch_timeout_ms: 200
+
+ui:
+  enabled: true
+  port: 9116
+
+log:
+  format: json
+  level: info
+
+probes:
+  # Probe the InfluxDB TCP port — always reachable in the test stack
+  - name: "influxdb-tcp"
+    type: tcp
+    target: "influxdb:8086"
+    interval_secs: 2
+    timeout_secs: 2
+
+  # Probe the InfluxDB HTTP health endpoint
+  - name: "influxdb-http"
+    type: http
+    target: "http://influxdb:8086/health"
+    interval_secs: 2
+    timeout_secs: 2
+    expected_status: 200

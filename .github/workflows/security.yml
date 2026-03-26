@@ -1,0 +1,61 @@
+name: Security Scan
+
+# Runs only on PRs targeting main (dev → main) and on pushes to main.
+# A PR is blocked if fixable CRITICAL or HIGH CVEs are found in the Docker image.
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write  # required to upload SARIF results to GitHub Security tab
+
+jobs:
+  trivy:
+    name: Trivy CVE Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build image locally — never pushed here, no registry credentials needed
+      - name: Build Docker image for scanning
+        run: docker build -t hugin-dev:security-scan .
+
+      # ── Pass 1: Full scan → SARIF (all severities, uploaded to Security tab) ──
+      # exit-code 0 so the SARIF upload step always runs even when findings exist
+      - name: Trivy – full scan (SARIF)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: hugin-dev:security-scan
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      # ── Pass 2: Blocking scan (only fixable CRITICAL/HIGH) ────────────────
+      # ignore-unfixed: true  → skip CVEs that have no fix available
+      # exit-code: 1          → fail the job (= block the MR) if any remain
+      - name: Trivy – blocking scan (fixable CRITICAL/HIGH only)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: hugin-dev:security-scan
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

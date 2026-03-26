@@ -6,29 +6,33 @@ This document describes the testing philosophy, structure, and requirements for 
 
 ## The Test Pyramid
 
-hugin.dev follows the classic test pyramid: many fast unit tests at the base, fewer integration tests in the middle, and a small number of end-to-end tests at the top.
+hugin.dev follows a four-level test pyramid: many fast unit tests at the base, fewer component-integration tests, a small number of end-to-end tests, and one Docker-level system integration test at the top.
 
 ```
-             ▲
-            /E\
-           / 2 \       End-to-End Tests
-          /─────\      • Full running stack
-         /       \     • Slow, but high confidence
-        / Integr. \
-       /     22    \   Integration Tests
-      /─────────────\  • Multiple components together
-     /               \ • Real sockets / mock HTTP servers
-    /   Unit  ~55     \
-   /───────────────────\  Unit Tests
-  /                     \ • Single function / module
- /─────────────────────── \ • Fast, isolated, deterministic
+               ▲
+              /S\
+             / 4 \       System Integration Test
+            /─────\      • Real Docker stack (InfluxDB + hugin-dev)
+           /       \     • CI only, ~2 min, highest confidence
+          / E2E  ~9 \
+         /───────────\   End-to-End Tests
+        /             \  • Full running stack in-process
+       /   Integ. ~27  \ • Slow, but high confidence
+      /─────────────────\
+     /                   \ Integration Tests
+    /    Unit  ~73        \• Multiple components together
+   /───────────────────────\• Real sockets / mock HTTP servers
+  /                         \Unit Tests
+ /─────────────────────────── \• Single function / module
+                               • Fast, isolated, deterministic
 ```
 
 | Level | Count | Location | Speed |
 |---|---:|---|---|
-| Unit | ~55 | `#[cfg(test)]` inside source modules | < 50 ms total |
-| Integration | ~22 | `hugin-dev/tests/*.rs` | < 5 s total |
-| E2E | ~1 | `hugin-dev/tests/sse_test.rs` | < 3 s |
+| Unit | ~73 | `#[cfg(test)]` inside source modules | < 100 ms total |
+| Integration | ~27 | `hugin-dev/tests/*.rs` | < 10 s total |
+| E2E | ~9 | `hugin-dev/tests/*.rs` | < 15 s total |
+| System Integration | 1 | `scripts/integration-test.sh` + Docker Compose | ~2 min (CI only) |
 
 ---
 
@@ -178,6 +182,51 @@ E2E tests are the most expensive to maintain. Only add one when a new user-visib
 
 ---
 
+## System Integration Tests
+
+### What they test
+The complete production stack running inside Docker containers:
+- The real Docker image builds without errors
+- `hugin-dev` connects to a real InfluxDB instance and writes data
+- `/health` returns `OK`
+- Probe results appear in `/metrics/latest`
+- InfluxDB actually contains `probe_result` measurements
+
+### How they run
+System integration tests run in CI only. They use a dedicated Compose file and a bash assertion script:
+
+```
+docker-compose.integration.yml   – InfluxDB + hugin-dev (short interval config)
+config/config.integration.yaml   – 2-second probes targeting InfluxDB itself
+scripts/integration-test.sh      – curl + Python assertions
+```
+
+### Running locally
+
+```bash
+# Write the test token
+echo -n "integration-test-token-hugin-dev-ci" > /tmp/influx_token.txt
+
+# Start the stack (builds the image)
+docker compose -f docker-compose.integration.yml up -d --build
+
+# Run assertions
+bash scripts/integration-test.sh
+
+# Clean up
+docker compose -f docker-compose.integration.yml down -v
+```
+
+### What NOT to test here
+- Unit-level logic (belongs in unit tests)
+- Route handlers in isolation (belongs in integration tests)
+- Race conditions or edge cases (too expensive/flaky at this level)
+
+### Keep them minimal
+One system integration test covering the core data flow (probe → InfluxDB write) is enough. Do not duplicate unit/integration test scenarios here.
+
+---
+
 ## TDD Workflow
 
 hugin.dev uses **Test-Driven Development**. New features and bug fixes follow the Red → Green → Refactor cycle:
@@ -228,3 +277,4 @@ cargo llvm-cov --workspace --open
 | New config option | Integration | `config_integration_test.rs` |
 | New user-visible push feature | E2E | `hugin-dev/tests/` |
 | Bug fix | Unit (reproduce the bug first) | same file as the fix |
+| New external service dependency | System Integration | `scripts/integration-test.sh` |
