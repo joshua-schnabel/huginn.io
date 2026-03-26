@@ -78,6 +78,8 @@ jobs:
           tags: |
             # dev branch → :dev
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            # dev branch → :x.y.z-dev  (e.g. 0.1.0-dev)
+            type=raw,value=${{ steps.version.outputs.version }}-dev,enable=${{ github.ref == 'refs/heads/dev' }}
             # main branch → :latest
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             # main branch + version from CHANGELOG → :x.y.z
