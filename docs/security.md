@@ -54,15 +54,27 @@ secrets/
 
 ## Dependency Audit
 
-```bash
-# Install
-cargo install cargo-audit --locked
+`cargo-deny` replaces `cargo-audit` and adds license and registry checks:
 
-# Run
-cargo audit
+```bash
+cargo deny check
 ```
 
-Run automatically in CI (`audit` job in `.github/workflows/ci.yml`).
+Configuration in `deny.toml`:
+- **Advisories** — RustSec advisory database (like cargo-audit)
+- **Licenses** — only approved SPDX licenses (MIT, Apache-2.0, BSD, ISC, …)
+- **Bans** — forbidden crates; warns on duplicate versions
+- **Sources** — only `crates.io` as registry
+
+Runs automatically in CI (`supply-chain` job).
+
+## Static Analysis (SAST)
+
+Semgrep scans all Rust source on every PR:
+- `p/rust` — Rust security patterns (unsafe, integer overflows, …)
+- `p/secrets` — hardcoded secrets in source code
+
+Findings appear in the GitHub Security tab. ERROR-severity findings block the PR.
 
 ## Image Scanning
 

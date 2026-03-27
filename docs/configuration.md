@@ -11,12 +11,14 @@ probes:          # List of probes (required)
 
 ## `influx` section
 
-| Key | Type | Required | Description |
-|---|---|---|---|
-| `url` | string | ✅ | InfluxDB base URL |
-| `org` | string | ✅ | InfluxDB organisation |
-| `bucket` | string | ✅ | Target bucket |
-| `token_file` | string | ✅ | Path to file containing the token |
+| Key | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `url` | string | ✅ | — | InfluxDB base URL |
+| `org` | string | ✅ | — | InfluxDB organisation |
+| `bucket` | string | ✅ | — | Target bucket |
+| `token_file` | string | ✅ | — | Path to file containing the token |
+| `batch_size` | int | — | `10` | Write when this many points are buffered |
+| `batch_timeout_ms` | int | — | `1000` | Write after this many ms even if batch is not full |
 
 > ⚠️ **Never** set the token directly in YAML or as an ENV variable.
 > Use `token_file` pointing to a Docker secret or a protected file.
@@ -42,11 +44,30 @@ Each probe entry:
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | string | ✅ | — | Unique probe name (used as InfluxDB tag) |
-| `type` | enum | ✅ | — | `tcp`, `http`, `https`, `smtp`, `imap`, `udp` |
-| `target` | string | ✅ | — | `host:port` or URL |
-| `interval_secs` | int | — | `30` | Probe interval in seconds (must be > 0) |
-| `timeout_secs` | int | — | `5` | Connection/read timeout (must be > 0) |
-| `expected_status` | int | — | `200` | HTTP only: expected status code |
+| `type` | enum | ✅ | — | `tcp`, `http`, `https`, `smtp`, `imap`, `udp`, `dns` |
+| `target` | string | ✅ | — | `host:port` or URL (DNS: nameserver `IP:port`) |
+| `interval_secs` | int | — | `30` | Probe interval in seconds |
+| `timeout_secs` | int | — | `5` | Connection/read timeout |
+| `expected_status` | int | — | `200` | HTTP/HTTPS only: expected status code |
+| `dns_query` | string | — | `example.com` | DNS only: hostname to resolve |
+| `dns_expected_ip` | string | — | — | DNS only: if set, probe fails when resolved IP doesn't match |
+
+### DNS probe example
+
+```yaml
+- name: my-dns
+  type: dns
+  target: "8.8.8.8:53"        # nameserver IP:port
+  dns_query: "example.com"
+  dns_expected_ip: "93.184.216.34"   # optional IP validation
+  interval_secs: 60
+```
+
+## App-level settings
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `event_hub_capacity` | int | `256` | Broadcast channel capacity for internal probe events |
 
 ## ENV Overrides
 
