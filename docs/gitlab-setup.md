@@ -176,25 +176,6 @@ The `DOCKERHUB_TOKEN` secret is **only injected** into `publish:*` jobs (protect
 
 ---
 
-## Creating a New Feature Branch
-
-```bash
-# Always branch from dev
-git checkout dev
-git pull origin dev
-git checkout -b feature/my-new-probe
-
-# ... make changes ...
-
-git add -A
-git commit -m "feat: add ICMP probe"
-git push origin feature/my-new-probe
-
-# Then open a Merge Request to dev on GitLab
-```
-
----
-
 ## Releasing a New Version
 
 1. Update `CHANGELOG.md` — add a new `## [x.y.z] - YYYY-MM-DD` entry at the top
@@ -225,31 +206,13 @@ To view the full SARIF report:
 ## Troubleshooting
 
 ### Pipeline not starting after push
-
-Make sure `.gitlab-ci.yml` is in the root of the repository and is valid YAML:
-
-```bash
-# Validate locally (requires Python)
-pip install pyyaml
-python -c "import yaml; yaml.safe_load(open('.gitlab-ci.yml'))"
-```
-
-Or use the GitLab UI: **CI/CD → Editor → Validate** tab.
-
-### Docker build fails in CI
-
-The `system-integration` and `trivy` jobs use Docker-in-Docker (DinD). Make sure the GitLab Runner being used has the Docker executor configured. On gitlab.com shared runners this works by default.
-
-For self-hosted runners, the runner must be registered with `--executor docker` and have `privileged = true` in `/etc/gitlab-runner/config.toml`.
+Validate `.gitlab-ci.yml` in the GitLab UI: **CI/CD → Editor → Validate** tab.
 
 ### DOCKERHUB_TOKEN not injected (publish job fails with unauthorized)
-
-Check that `DOCKERHUB_TOKEN` is set as a **Protected** variable and that the pipeline is running on a protected branch (`main` or `dev`).
+Ensure `DOCKERHUB_TOKEN` is set as a **Protected** variable and the pipeline runs on a protected branch.
 
 ### git tag push fails in publish:release
-
 Enable **Settings → CI/CD → Token Access → Allow job token to write to the current project's repository**.
 
-### Trivy scan fails with "no such image"
-
-The `trivy` job builds the image in a DinD environment. Make sure the Docker socket is shared correctly. The job uses `DOCKER_HOST: tcp://docker:2376` — do not override this.
+### DinD build fails on self-hosted runner
+The runner must use the Docker executor with `privileged = true` in `/etc/gitlab-runner/config.toml`.

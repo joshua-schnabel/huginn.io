@@ -1,6 +1,6 @@
-<img src="docs/logo.png" width="120" align="right" alt="Huginn — a low-poly raven">
-
 # hugin.dev
+
+![Huginn — a low-poly raven](docs/logo.png)
 
 > *Huginn* (Old Norse: *Thought*) is one of Odin's ravens. Every day he flies across the world, observes everything, and reports back to Odin. **hugin.dev** does the same for your infrastructure.
 
@@ -41,11 +41,11 @@ cargo test --workspace                             # all tests
 cargo llvm-cov --workspace --open                  # coverage HTML report
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 cargo deny check                                   # supply-chain audit
+cargo build --release --locked                     # production binary
 ```
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md)
 - [Configuration Reference](docs/configuration.md)
 - [Testing Guide](docs/testing.md)
 - [Security](docs/security.md)
