@@ -185,7 +185,6 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
 | `sast.yml` | all PRs + pushes | Semgrep SAST (p/rust + p/secrets) → SARIF + blocking on ERROR |
 | `security.yml` | PR/push → `main` | Trivy CVE scan — blocks if fixable CRITICAL/HIGH found |
 | `docker.yml` | push → `dev`/`main` | Build + DockerHub publish (`:dev` + `:X.Y.Z-dev` / `:latest` + `:X.Y.Z`) |
-| `.gitlab-ci.yml` | all branches (GitLab) | Same quality gates + DinD system integration + DockerHub publish |
 
 ---
 

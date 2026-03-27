@@ -16,13 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`hugin-web` crate** — axum web server extracted into its own crate with SSE push updates, separate HTML/CSS/JS assets
 - **EventHub architecture** — central `broadcast::Sender` in `hugin-core`; probes publish events, InfluxDB writer and web server subscribe independently
 - **CI/CD redesign** — split into `ci.yml` (quality gate), `security.yml` (Trivy CVE, PR→main), `sast.yml` (Semgrep SAST, all PRs), `docker.yml` (DockerHub publish)
-- **GitLab CI** — `.gitlab-ci.yml` with 5 stages, DinD system integration, Trivy GitLab SAST format, multi-arch DockerHub publish
 - **SAST tooling** — Semgrep (`p/rust` + `p/secrets`) two-pass: SARIF upload + blocking on ERROR severity
 - **Supply-chain security** — `deny.toml` for `cargo-deny`; replaces `cargo-audit` with advisories + license allow-list + registry restriction
 - **Branch setup** — `main` (stable) and `dev` (integration) branches; direct push blocked via branch protection
 - **DockerHub tags** — `:dev` + `:X.Y.Z-dev` on dev push; `:latest` + `:X.Y.Z` on main push
 - **`docs/ci-cd.md`** — pipeline documentation and branch protection guide
-- **`docs/gitlab-setup.md`** — complete GitLab setup and migration guide
 - **`docs/testing.md`** — four-level test pyramid, TDD workflow, coverage requirements
 
 ### Changed

@@ -19,7 +19,7 @@ Lightweight uptime & latency monitor. Configures via YAML, writes to InfluxDB, s
 | **Output** | Coloured CLI or `--output json` |
 | **Debug UI** | Live push updates via SSE at `:9116` (optional) |
 | **Security** | Distroless · nonroot · Semgrep SAST · Trivy CVE scan · cargo-deny |
-| **CI/CD** | GitHub Actions + GitLab CI · DockerHub |
+| **CI/CD** | GitHub Actions · DockerHub |
 
 ## Quickstart
 
