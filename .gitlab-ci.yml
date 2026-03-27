@@ -12,6 +12,10 @@
 #   push dev  → DockerHub :dev + :x.y.z-dev
 #   push main → DockerHub :latest + :x.y.z
 
+# ── GitLab built-in SAST template (provides the `semgrep` job base) ──────────
+include:
+  - template: Security/SAST.gitlab-ci.yml
+
 # ── Global defaults ──────────────────────────────────────────────────────────
 default:
   image: rust:slim
@@ -24,6 +28,9 @@ variables:
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   # Docker-in-Docker TLS
   DOCKER_TLS_CERTDIR: /certs
+  # Semgrep SAST config (used by the included template)
+  SAST_EXCLUDED_PATHS: "target, tests"
+  SEARCH_MAX_DEPTH: "10"
 
 stages:
   - lint
@@ -107,13 +114,45 @@ test:beta:
   script:
     - cargo test --all --locked
 
-audit:
+supply-chain:
   extends: [.cargo_cache, .rules_all]
   stage: test
   needs: [fmt-clippy]
   script:
-    - cargo install cargo-audit --locked
-    - cargo audit
+    - cargo install cargo-deny --locked
+    - cargo deny check
+
+# ── Override GitLab SAST template: Semgrep with blocking pass ────────────────
+# Overrides the `semgrep` job from the included Security/SAST.gitlab-ci.yml.
+# Results appear in the MR Security widget (GitLab SAST report format).
+semgrep:
+  extends: .rules_all
+  stage: security
+  needs: []
+  image: semgrep/semgrep
+  script:
+    # Pass 1: Full scan → GitLab SAST JSON (all findings, always uploaded)
+    - semgrep scan
+        --config p/rust
+        --config p/secrets
+        --json
+        --output gl-sast-semgrep.json
+        --exclude target
+        . || true
+    # Pass 2: Blocking scan — fails pipeline on ERROR-severity findings
+    - semgrep scan
+        --config p/rust
+        --config p/secrets
+        --error
+        --exclude target
+        .
+  artifacts:
+    reports:
+      sast: gl-sast-semgrep.json
+    paths:
+      - gl-sast-semgrep.json
+    when: always
+    expire_in: 7 days
 
 coverage:
   extends: [.cargo_cache, .rules_all]

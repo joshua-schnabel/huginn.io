@@ -35,15 +35,17 @@ feature/my-feature
 | Format & Lint | ✅ | ✅ | ✅ | ✅ |
 | Tests (stable) | ✅ | ✅ | ✅ | ✅ |
 | Tests (beta) | ✅ | ✅ | ✅ | ✅ |
-| Dependency Audit | ✅ | ✅ | ✅ | ✅ |
+| Supply-Chain (cargo-deny) | ✅ | ✅ | ✅ | ✅ |
 | Code Coverage ≥ 80% | ✅ | ✅ | ✅ | ✅ |
 | System Integration Test | ✅ | ✅ | ✅ | ✅ |
+| **Semgrep SAST** | ✅ 🚫* | ✅ 🚫* | ✅ | ✅ |
 | Trivy CVE Scan (SARIF) | ❌ | ✅ | ❌ | ✅ |
 | Trivy blocking scan | ❌ | ✅ 🚫 | ❌ | ✅ |
 | Build Docker Image | ✅ | ✅ | ✅ | ✅ |
-| Publish to DockerHub | ❌ | ❌ | ✅ :dev | ✅ :latest |
+| Publish to DockerHub | ❌ | ❌ | ✅ :dev + :0.1.0-dev | ✅ :latest + :0.1.0 |
 
-🚫 = Blocks the PR if fixable CRITICAL/HIGH CVEs are found
+🚫 = Blocks the PR  
+🚫* = Blocks only on ERROR-severity findings (hardcoded secrets, critical code patterns)
 
 ---
 
@@ -54,28 +56,74 @@ Runs on all pull requests and pushes to `dev`/`main`.
 
 - **check**: `cargo fmt --check` + `cargo clippy -D warnings`
 - **test**: `cargo test --all` on Rust stable *and* beta (`fail-fast: false`)
-- **audit**: `cargo audit` — checks for known vulnerabilities in dependencies
+- **supply-chain**: `cargo deny check` — advisory CVEs + licenses + banned crates + registry sources
 - **coverage**: `cargo llvm-cov` — fails if any file falls below 80 % region coverage
 - **system-integration**: Docker Compose test (InfluxDB + hugin-dev, curl assertions)
 
-None of these jobs use production secrets. The system integration test uses a hardcoded test-only InfluxDB token.
+None of these jobs use production secrets.
+
+### `sast.yml` — Semgrep Source Code Analysis
+Runs on **all** pull requests and pushes (feature→dev and dev→main).
+
+**Two-pass strategy:**
+1. **Full scan → SARIF**: All findings uploaded to GitHub Security tab (exit 0, always runs)
+2. **Blocking scan** (`--error`): Only ERROR-severity findings → exit code 1 → **PR blocked**
+
+Rulesets used:
+- `p/rust` — Rust-specific security patterns (unsafe code, integer overflow, format string injection, …)
+- `p/secrets` — Hardcoded secrets, API keys, tokens in source files
 
 ### `security.yml` — Trivy CVE Scan
 Runs only on pull requests targeting `main` and pushes to `main`.
 
 **Two-pass strategy:**
 
-1. **Full scan → SARIF**: All CRITICAL/HIGH/MEDIUM findings (including unfixed) are uploaded to the GitHub Security tab. Results appear inline on the pull request.
-2. **Blocking scan**: Only fixable (`ignore-unfixed: true`) CRITICAL/HIGH CVEs. Returns exit code 1 if any are found → PR is blocked.
-
-This means:
-- CVEs with no available fix are **visible but do not block** (informational)
-- CVEs that *can* be fixed **always block** the merge to main
+1. **Full scan → SARIF**: All CRITICAL/HIGH/MEDIUM findings (including unfixed) → GitHub Security tab
+2. **Blocking scan**: Only fixable (`ignore-unfixed: true`) CRITICAL/HIGH CVEs → exit 1 → PR blocked
 
 ### `docker.yml` — Build & Publish
-- **PR events**: Validates that the Dockerfile builds successfully. Uses GitHub Actions layer cache. No credentials, no push.
-- **Push to `dev`**: Builds multi-platform image and pushes to DockerHub with the `:dev` tag.
-- **Push to `main`**: Pushes `:latest` + `:x.y.z` (version read from `CHANGELOG.md`). Creates a matching git tag if it doesn't exist yet.
+- **PR events**: Validates that the Dockerfile builds successfully. No credentials, no push.
+- **Push to `dev`**: Pushes `:dev` **and** `:x.y.z-dev` (e.g. `0.1.0-dev`) to DockerHub
+- **Push to `main`**: Pushes `:latest` + `:x.y.z`. Creates git tag `vx.y.z`.
+
+---
+
+## Security Tools Overview
+
+| Tool | Layer | Finds | Blocks |
+|---|---|---|:---:|
+| `cargo deny` | Dependencies | Known CVEs (RustSec), bad licenses, unknown registries | ✅ |
+| Semgrep `p/rust` | Source code | Unsafe patterns, logic errors, taint flows | ✅ ERROR-level |
+| Semgrep `p/secrets` | Source code | Hardcoded API keys, tokens, passwords | ✅ ERROR-level |
+| Trivy | Docker image | OS + library CVEs (fixable only) | ✅ only PR→main |
+
+### deny.toml Customization
+
+To allow an advisory (accepted risk or false positive), add it to `deny.toml`:
+
+```toml
+[advisories]
+ignore = ["RUSTSEC-2024-0001"]   # add reason in a comment
+```
+
+To allow an additional license:
+
+```toml
+[licenses]
+allow = [
+    # ... existing entries ...
+    "MPL-2.0",    # add new license here
+]
+```
+
+To ban a specific crate:
+
+```toml
+[bans]
+deny = [
+    { name = "openssl", reason = "use rustls instead" },
+]
+```
 
 ---
 
@@ -112,7 +160,7 @@ These rules must be configured manually in **Settings → Branches**.
 | Required approvals | 1 |
 | Dismiss stale reviews when new commits are pushed | ✅ |
 | Require status checks to pass | ✅ |
-| Required status checks | `Format & Lint`, `Tests (stable)`, `Tests (beta)`, `Dependency Audit`, `Code Coverage (≥ 80%)`, `System Integration Test` |
+| Required status checks | `Format & Lint`, `Tests (stable)`, `Tests (beta)`, `Supply-Chain Security`, `Code Coverage (≥ 80%)`, `System Integration Test`, `Semgrep SAST` |
 | Do not allow bypassing the above settings | ✅ |
 
 ### `main` branch
