@@ -1,8 +1,4 @@
-# Contributing to hugin.dev
-
-Thank you for your interest in contributing! This document explains the development workflow, branching strategy, and release process.
-
----
+# Contributing to huginn.io
 
 ## Branching Strategy
 
@@ -11,25 +7,20 @@ feature/xyz ──┐
 feature/abc ──┤  PR → dev  ──────────── PR → main
               └► dev (integration)          │
                   │                         │
-                  │ push → GHCR :dev        │ push → GHCR :latest + :vX.Y.Z
-                  │                         │        (version from CHANGELOG.md)
+                  │ push → DockerHub :dev   │ push → DockerHub :latest + :vX.Y.Z
+                  │        + :X.Y.Z-dev     │        (version from CHANGELOG.md)
                   └─────────────────────────┘
 ```
 
 | Branch | Purpose | Protected | Merge from |
 |---|---|---|---|
-| `main` | Stable releases | ✅ yes | `dev` only (via PR) |
-| `dev` | Integration / latest dev build | ✅ yes | `feature/*` only (via PR) |
-| `feature/<name>` | New features / bugfixes | ❌ no | branch from `dev` |
+| `main` | Stable releases | ✅ | `dev` only (via PR) |
+| `dev` | Integration / latest dev build | ✅ | `feature/*` only (via PR) |
+| `feature/<name>` | New features / bugfixes | ❌ | branch from `dev` |
 
-**Rules:**
 - Never push directly to `main` or `dev`
-- All changes go through a Pull Request
-- PRs require at least one review before merging
-- Squash-merge feature branches into `dev` to keep history clean
+- Squash-merge feature branches into `dev`
 - Merge-commit (no squash) when merging `dev` → `main`
-
----
 
 ## Branch Naming
 
@@ -89,7 +80,7 @@ test(influx): add line protocol escaping edge cases
 ### Prerequisites
 - Rust (stable) — `rustup install stable`
 - Docker + Docker Compose (for integration testing with InfluxDB)
-- `cargo-audit` — `cargo install cargo-audit`
+- `cargo-deny` — `cargo install cargo-deny --locked`
 
 ### Run tests
 
@@ -100,10 +91,10 @@ See **[docs/testing.md](docs/testing.md)** for the full testing guide (test pyra
 cargo test --workspace
 
 # Single crate
-cargo test -p hugin-probes
+cargo test -p huginn-probes
 
 # Specific test
-cargo test -p hugin-probes fails_on_empty_banner
+cargo test -p huginn-probes fails_on_empty_banner
 
 # Watch mode (requires cargo-watch)
 cargo watch -x "test --workspace"
@@ -117,7 +108,7 @@ cargo llvm-cov --workspace --open
 ```bash
 cargo fmt --all
 cargo clippy --all-targets --all-features -- -D warnings
-cargo audit
+cargo deny check
 ```
 
 All three must be clean before opening a PR — CI enforces this.
@@ -182,7 +173,7 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
    - Reads version `0.2.0` from `CHANGELOG.md`
    - Creates git tag `v0.2.0`
    - Builds Docker image
-   - Pushes `ghcr.io/OWNER/hugin-dev:0.2.0` and `ghcr.io/OWNER/hugin-dev:latest`
+   - Pushes `your-dockerhub-user/huginn:0.2.0` and `:latest` to DockerHub
 
 ---
 
@@ -190,9 +181,10 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
 
 | Workflow | Trigger | What happens |
 |---|---|---|
-| `ci.yml` | push/PR → `dev`, `main` | fmt ✓ clippy ✓ test (stable+beta) ✓ cargo-audit ✓ |
-| `docker.yml` | push → `dev` | build + Trivy scan + push `:dev` to GHCR |
-| `docker.yml` | push → `main` | build + Trivy scan + read version from CHANGELOG + create git tag + push `:vX.Y.Z` + `:latest` to GHCR |
+| `ci.yml` | push/PR → `dev`, `main` | fmt · clippy · test (stable+beta) · cargo-deny · coverage · system integration |
+| `sast.yml` | all PRs + pushes | Semgrep SAST (p/rust + p/secrets) → SARIF + blocking on ERROR |
+| `security.yml` | PR/push → `main` | Trivy CVE scan — blocks if fixable CRITICAL/HIGH found |
+| `docker.yml` | push → `dev`/`main` | Build + DockerHub publish (`:dev` + `:X.Y.Z-dev` / `:latest` + `:X.Y.Z`) |
 
 ---
 
@@ -202,7 +194,7 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
 - `cargo clippy -- -D warnings` — all clippy warnings are errors in CI
 - Comments only where the code is not self-explanatory
 - Tests alongside implementation (`#[cfg(test)]`) for unit tests
-- Integration tests in `hugin-dev/tests/` following TDD: write test first, then implementation
+- Integration tests in `huginn/tests/` following TDD: write test first, then implementation
 
 ---
 

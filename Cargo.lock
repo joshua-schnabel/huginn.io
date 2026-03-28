@@ -645,7 +645,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
-name = "hugin-core"
+name = "huginn"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "colored",
+ "huginn-core",
+ "huginn-influx",
+ "huginn-probes",
+ "huginn-web",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "huginn-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -659,32 +679,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "hugin-dev"
+name = "huginn-influx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "clap",
- "colored",
- "hugin-core",
- "hugin-influx",
- "hugin-probes",
- "hugin-web",
- "reqwest",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "hugin-influx"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "hugin-core",
+ "huginn-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -696,13 +696,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "hugin-probes"
+name = "huginn-probes"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "hickory-resolver",
- "hugin-core",
+ "huginn-core",
  "reqwest",
  "thiserror 1.0.69",
  "tokio",
@@ -711,12 +711,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "hugin-web"
+name = "huginn-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
- "hugin-core",
+ "huginn-core",
  "serde_json",
  "tokio",
  "tokio-stream",

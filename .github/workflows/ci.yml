@@ -53,19 +53,21 @@ jobs:
       - name: cargo test
         run: cargo test --all --locked
 
-  # ── Gate 3: Dependency vulnerability audit ────────────────────────────────
-  audit:
-    name: Dependency Audit
+  # ── Gate 3: Supply-chain security (cargo-deny) ────────────────────────────
+  # cargo-deny is a superset of cargo-audit: checks advisories, licenses,
+  # banned crates, and registry sources in one pass.
+  supply-chain:
+    name: Supply-Chain Security
     runs-on: ubuntu-latest
     needs: check
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - name: cargo audit
-        run: cargo audit
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: cargo deny check
+        run: cargo deny check
 
   # ── Gate 4a: Code coverage ≥ 80 % ────────────────────────────────────────
   coverage:
@@ -108,7 +110,7 @@ jobs:
 
       # Hardcoded test-only token — NOT a production secret
       - name: Create test token file
-        run: echo -n "integration-test-token-hugin-dev-ci" > /tmp/influx_token.txt
+        run: echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
 
       - name: Build and start services
         run: docker compose -f docker-compose.integration.yml up -d --build

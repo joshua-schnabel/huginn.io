@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-This document describes the branch model, CI/CD pipeline design, and required GitHub repository configuration for hugin.dev.
+This document describes the branch model, CI/CD pipeline design, and required GitHub repository configuration for huginn.io.
 
 ---
 
@@ -35,15 +35,17 @@ feature/my-feature
 | Format & Lint | ✅ | ✅ | ✅ | ✅ |
 | Tests (stable) | ✅ | ✅ | ✅ | ✅ |
 | Tests (beta) | ✅ | ✅ | ✅ | ✅ |
-| Dependency Audit | ✅ | ✅ | ✅ | ✅ |
+| Supply-Chain (cargo-deny) | ✅ | ✅ | ✅ | ✅ |
 | Code Coverage ≥ 80% | ✅ | ✅ | ✅ | ✅ |
 | System Integration Test | ✅ | ✅ | ✅ | ✅ |
+| **Semgrep SAST** | ✅ 🚫* | ✅ 🚫* | ✅ | ✅ |
 | Trivy CVE Scan (SARIF) | ❌ | ✅ | ❌ | ✅ |
 | Trivy blocking scan | ❌ | ✅ 🚫 | ❌ | ✅ |
 | Build Docker Image | ✅ | ✅ | ✅ | ✅ |
-| Publish to DockerHub | ❌ | ❌ | ✅ :dev | ✅ :latest |
+| Publish to DockerHub | ❌ | ❌ | ✅ :dev + :0.1.0-dev | ✅ :latest + :0.1.0 |
 
-🚫 = Blocks the PR if fixable CRITICAL/HIGH CVEs are found
+🚫 = Blocks the PR  
+🚫* = Blocks only on ERROR-severity findings (hardcoded secrets, critical code patterns)
 
 ---
 
@@ -54,111 +56,73 @@ Runs on all pull requests and pushes to `dev`/`main`.
 
 - **check**: `cargo fmt --check` + `cargo clippy -D warnings`
 - **test**: `cargo test --all` on Rust stable *and* beta (`fail-fast: false`)
-- **audit**: `cargo audit` — checks for known vulnerabilities in dependencies
+- **supply-chain**: `cargo deny check` — advisory CVEs + licenses + banned crates + registry sources
 - **coverage**: `cargo llvm-cov` — fails if any file falls below 80 % region coverage
-- **system-integration**: Docker Compose test (InfluxDB + hugin-dev, curl assertions)
+- **system-integration**: Docker Compose test (InfluxDB + huginn, curl assertions)
 
-None of these jobs use production secrets. The system integration test uses a hardcoded test-only InfluxDB token.
+None of these jobs use production secrets.
+
+### `sast.yml` — Semgrep Source Code Analysis
+Runs on **all** pull requests and pushes (feature→dev and dev→main).
+
+**Two-pass strategy:**
+1. **Full scan → SARIF**: All findings uploaded to GitHub Security tab (exit 0, always runs)
+2. **Blocking scan** (`--error`): Only ERROR-severity findings → exit code 1 → **PR blocked**
+
+Rulesets used:
+- `p/rust` — Rust-specific security patterns (unsafe code, integer overflow, format string injection, …)
+- `p/secrets` — Hardcoded secrets, API keys, tokens in source files
 
 ### `security.yml` — Trivy CVE Scan
 Runs only on pull requests targeting `main` and pushes to `main`.
 
 **Two-pass strategy:**
 
-1. **Full scan → SARIF**: All CRITICAL/HIGH/MEDIUM findings (including unfixed) are uploaded to the GitHub Security tab. Results appear inline on the pull request.
-2. **Blocking scan**: Only fixable (`ignore-unfixed: true`) CRITICAL/HIGH CVEs. Returns exit code 1 if any are found → PR is blocked.
-
-This means:
-- CVEs with no available fix are **visible but do not block** (informational)
-- CVEs that *can* be fixed **always block** the merge to main
+1. **Full scan → SARIF**: All CRITICAL/HIGH/MEDIUM findings (including unfixed) → GitHub Security tab
+2. **Blocking scan**: Only fixable (`ignore-unfixed: true`) CRITICAL/HIGH CVEs → exit 1 → PR blocked
 
 ### `docker.yml` — Build & Publish
-- **PR events**: Validates that the Dockerfile builds successfully. Uses GitHub Actions layer cache. No credentials, no push.
-- **Push to `dev`**: Builds multi-platform image and pushes to DockerHub with the `:dev` tag.
-- **Push to `main`**: Pushes `:latest` + `:x.y.z` (version read from `CHANGELOG.md`). Creates a matching git tag if it doesn't exist yet.
+- **PR events**: Validates that the Dockerfile builds successfully. No credentials, no push.
+- **Push to `dev`**: Pushes `:dev` **and** `:x.y.z-dev` (e.g. `0.1.0-dev`) to DockerHub
+- **Push to `main`**: Pushes `:latest` + `:x.y.z`. Creates git tag `vx.y.z`.
 
 ---
 
-## Security Design
+## Security Tools Overview
 
-### Token / Secret Protection
+| Tool | Layer | Finds | Blocks |
+|---|---|---|:---:|
+| `cargo deny` | Dependencies | Known CVEs (RustSec), bad licenses, unknown registries | ✅ |
+| Semgrep `p/rust` | Source code | Unsafe patterns, logic errors, taint flows | ✅ ERROR-level |
+| Semgrep `p/secrets` | Source code | Hardcoded API keys, tokens, passwords | ✅ ERROR-level |
+| Trivy | Docker image | OS + library CVEs (fixable only) | ✅ only PR→main |
 
-| Scenario | DOCKERHUB_TOKEN used? | Reason |
-|---|:---:|---|
-| Feature branch PR to dev | ❌ | `pull_request` event — `if: github.event_name == 'push'` excludes it |
-| dev → main PR | ❌ | Same |
-| Push to dev | ✅ | Only authenticated pushes to DockerHub |
-| Push to main | ✅ | Only authenticated pushes to DockerHub |
+### deny.toml Customization
 
-Using `pull_request` (not `pull_request_target`) ensures that PRs from external forks run with **no access to repository secrets** by GitHub's own security model.
+To allow an advisory (accepted risk or false positive), add it to `deny.toml`:
 
-### Trivy `ignore-unfixed: true`
+```toml
+[advisories]
+ignore = ["RUSTSEC-2024-0001"]   # add reason in a comment
+```
 
-This flag filters out CVEs that have no patch available. Without it, the scan would block PRs for issues that the project cannot resolve (upstream not fixed yet). With it:
-- **Fixable** CRITICAL/HIGH → ❌ MR blocked
-- **Unfixed** CRITICAL/HIGH → ⚠️ visible in Security tab, does not block
+To allow an additional license:
 
----
+```toml
+[licenses]
+allow = [
+    # ... existing entries ...
+    "MPL-2.0",    # add new license here
+]
+```
 
-## Required GitHub Branch Protection Rules
+To ban a specific crate:
 
-These rules must be configured manually in **Settings → Branches**.
-
-### `dev` branch
-
-| Setting | Value |
-|---|---|
-| Require a pull request before merging | ✅ |
-| Required approvals | 1 |
-| Dismiss stale reviews when new commits are pushed | ✅ |
-| Require status checks to pass | ✅ |
-| Required status checks | `Format & Lint`, `Tests (stable)`, `Tests (beta)`, `Dependency Audit`, `Code Coverage (≥ 80%)`, `System Integration Test` |
-| Do not allow bypassing the above settings | ✅ |
-
-### `main` branch
-
-| Setting | Value |
-|---|---|
-| Require a pull request before merging | ✅ |
-| Required approvals | 1 |
-| Dismiss stale reviews | ✅ |
-| Require status checks to pass | ✅ |
-| Required status checks | All `dev` checks + `Trivy CVE Scan`, `Build Docker Image` |
-| Require linear history | ✅ (clean merge commit) |
-| Do not allow bypassing | ✅ |
-
----
-
-## DockerHub Setup
-
-Two repository secrets must be configured in **Settings → Secrets → Actions**:
-
-| Secret | Value |
-|---|---|
-| `DOCKERHUB_USERNAME` | Your DockerHub username |
-| `DOCKERHUB_TOKEN` | A DockerHub Access Token (not your password) — create at hub.docker.com → Account Settings → Security |
-
-The published image name will be: `<DOCKERHUB_USERNAME>/hugin-dev`
-
----
-
-## Running the Security Scan Locally
-
-```bash
-# Build the image
-docker build -t hugin-dev:local .
-
-# Full scan (informational)
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  aquasec/trivy:latest image --severity CRITICAL,HIGH,MEDIUM hugin-dev:local
-
-# Blocking scan (same criteria as CI)
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  aquasec/trivy:latest image \
-  --severity CRITICAL,HIGH \
-  --ignore-unfixed \
-  --exit-code 1 \
-  hugin-dev:local
+```toml
+[bans]
+deny = [
+    { name = "openssl", reason = "use rustls instead" },
+]
 ```
 
 ---

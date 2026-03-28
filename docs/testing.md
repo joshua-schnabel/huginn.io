@@ -1,18 +1,18 @@
 # Testing Guide
 
-This document describes the testing philosophy, structure, and requirements for hugin.dev contributors.
+This document describes the testing philosophy, structure, and requirements for huginn.io contributors.
 
 ---
 
 ## The Test Pyramid
 
-hugin.dev follows a four-level test pyramid: many fast unit tests at the base, fewer component-integration tests, a small number of end-to-end tests, and one Docker-level system integration test at the top.
+huginn.io follows a four-level test pyramid: many fast unit tests at the base, fewer component-integration tests, a small number of end-to-end tests, and one Docker-level system integration test at the top.
 
 ```
                ▲
               /S\
              / 4 \       System Integration Test
-            /─────\      • Real Docker stack (InfluxDB + hugin-dev)
+            /─────\      • Real Docker stack (InfluxDB + huginn)
            /       \     • CI only, ~2 min, highest confidence
           / E2E  ~9 \
          /───────────\   End-to-End Tests
@@ -30,8 +30,8 @@ hugin.dev follows a four-level test pyramid: many fast unit tests at the base, f
 | Level | Count | Location | Speed |
 |---|---:|---|---|
 | Unit | ~73 | `#[cfg(test)]` inside source modules | < 100 ms total |
-| Integration | ~27 | `hugin-dev/tests/*.rs` | < 10 s total |
-| E2E | ~9 | `hugin-dev/tests/*.rs` | < 15 s total |
+| Integration | ~27 | `huginn/tests/*.rs` | < 10 s total |
+| E2E | ~9 | `huginn/tests/*.rs` | < 15 s total |
 | System Integration | 1 | `scripts/integration-test.sh` + Docker Compose | ~2 min (CI only) |
 
 ---
@@ -62,11 +62,6 @@ CI will fail the PR if any file drops below 80 %.
 - Error paths (connection refused, empty response, unexpected status, etc.)
 - Boundary values (0 bytes, empty strings, capacity limits)
 
-### What NOT to test
-- Trivial getters / setters
-- Rust standard-library behaviour (e.g. `Vec::push`)
-- Log statements in isolation
-
 ### Where they live
 Unit tests live in a `#[cfg(test)]` block at the **bottom of the same file**:
 
@@ -88,33 +83,8 @@ mod tests {
 ```
 
 ### Naming convention
-Use plain English that reads as a sentence:
-
-```
-succeeds_on_220_banner
-fails_when_port_closed
-fails_on_empty_banner
-event_loop_inserts_result_on_probe_completed
-subscriber_handles_lagged_events
-```
-
-Avoid `test_`, `should_`, or numbered names like `test1`.
-
-### Helper pattern for network tests
-Bind a real socket on port `0` (OS assigns a free port), spawn a minimal server, pass the address to the probe under test:
-
-```rust
-async fn fake_smtp_server(banner: &'static str) -> std::net::SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        if let Ok((mut socket, _)) = listener.accept().await {
-            let _ = socket.write_all(banner.as_bytes()).await;
-        }
-    });
-    addr
-}
-```
+Plain English that reads as a sentence: `succeeds_on_220_banner`, `fails_when_port_closed`, `event_loop_inserts_result_on_probe_completed`.  
+Avoid `test_`, `should_`, or numbered names.
 
 ---
 
@@ -125,111 +95,60 @@ async fn fake_smtp_server(banner: &'static str) -> std::net::SocketAddr {
 - HTTP route handlers via a real bound port (axum test server)
 - Config loading from actual YAML files on disk
 
-### What NOT to test
-- The behaviour of a single module in isolation (that is a unit test)
-- External services — use mock servers ([`wiremock`](https://github.com/LukeMathWalker/wiremock-rs))
-
 ### Where they live
-Integration tests live in **`hugin-dev/tests/`** as separate `.rs` files:
+Integration tests live in **`huginn/tests/`** as separate `.rs` files:
 
 ```
-hugin-dev/tests/
-├── cli_output_test.rs        – ProbeResult serialisation
-├── config_integration_test.rs – config loading + ENV overrides
-├── debug_ui_test.rs          – full HTTP server + reqwest client
-└── sse_test.rs               – SSE stream delivery
+huginn/tests/
+├── cli_output_test.rs          – ProbeResult serialisation
+├── config_integration_test.rs  – config loading + ENV overrides
+├── debug_ui_test.rs            – full HTTP server + reqwest client
+└── sse_test.rs                 – SSE stream delivery
 ```
 
-Each file is compiled as its own test binary by Cargo.
-
-### Mock HTTP servers
-Use `wiremock` to simulate InfluxDB or HTTP probe targets:
-
-```rust
-use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
-
-let server = MockServer::start().await;
-Mock::given(method("POST"))
-    .respond_with(ResponseTemplate::new(204))
-    .expect(1)           // assert exactly 1 request was made
-    .mount(&server)
-    .await;
-
-// … exercise code under test …
-
-server.verify().await;  // fails the test if expectation was not met
-```
+Use `wiremock` to mock InfluxDB or HTTP probe targets — never hit real external services in tests.
 
 ---
 
 ## End-to-End Tests
 
-### What to test
-The complete user-visible path: binary entry point (or equivalent wiring) → real network I/O → observable output.
+The complete user-visible path: binary wiring → real network I/O → observable output.
 
-Currently: `sse_test.rs::sse_endpoint_delivers_probe_event_as_data_message`
-- Starts a real `run_server()` on a random port
-- Opens a streaming HTTP connection to `/events`
-- Publishes a `ProbeEvent` on the `EventHub`
-- Asserts that a `data:` line appears in the SSE stream
+Example: `sse_test.rs` starts a real `run_server()`, opens a streaming HTTP connection to `/events`, publishes a `ProbeEvent`, and asserts a `data:` line appears in the SSE stream.
 
-### What NOT to test in E2E
-- Internal implementation details
-- Error branches already covered by unit/integration tests
-
-### Keep E2E tests few and stable
-E2E tests are the most expensive to maintain. Only add one when a new user-visible feature cannot be adequately covered by the layers below.
+Add an E2E test only when a new user-visible feature cannot be adequately covered by the layers below.
 
 ---
 
 ## System Integration Tests
 
-### What they test
-The complete production stack running inside Docker containers:
-- The real Docker image builds without errors
-- `hugin-dev` connects to a real InfluxDB instance and writes data
-- `/health` returns `OK`
-- Probe results appear in `/metrics/latest`
-- InfluxDB actually contains `probe_result` measurements
-
-### How they run
-System integration tests run in CI only. They use a dedicated Compose file and a bash assertion script:
+Tests the complete production stack in Docker:
+- Image builds without errors
+- `huginn` connects to InfluxDB and writes data
+- `/health` returns `OK`, `/metrics/latest` returns probe results
 
 ```
-docker-compose.integration.yml   – InfluxDB + hugin-dev (short interval config)
-config/config.integration.yaml   – 2-second probes targeting InfluxDB itself
-scripts/integration-test.sh      – curl + Python assertions
+docker-compose.integration.yml   – InfluxDB + huginn
+config/config.integration.yaml   – 2-second probes
+scripts/integration-test.sh      – curl assertions
 ```
 
-### Running locally
+**Run locally:**
 
 ```bash
-# Write the test token
-echo -n "integration-test-token-hugin-dev-ci" > /tmp/influx_token.txt
-
-# Start the stack (builds the image)
+echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
 docker compose -f docker-compose.integration.yml up -d --build
-
-# Run assertions
 bash scripts/integration-test.sh
-
-# Clean up
 docker compose -f docker-compose.integration.yml down -v
 ```
 
-### What NOT to test here
-- Unit-level logic (belongs in unit tests)
-- Route handlers in isolation (belongs in integration tests)
-- Race conditions or edge cases (too expensive/flaky at this level)
-
-### Keep them minimal
-One system integration test covering the core data flow (probe → InfluxDB write) is enough. Do not duplicate unit/integration test scenarios here.
+One system integration test covering the core data flow is enough.
 
 ---
 
 ## TDD Workflow
 
-hugin.dev uses **Test-Driven Development**. New features and bug fixes follow the Red → Green → Refactor cycle:
+huginn.io uses **Test-Driven Development**. New features and bug fixes follow the Red → Green → Refactor cycle:
 
 ```
 1. RED    – Write a failing test that describes the desired behaviour.
@@ -253,10 +172,10 @@ hugin.dev uses **Test-Driven Development**. New features and bug fixes follow th
 cargo test --workspace
 
 # Run tests for a single crate
-cargo test -p hugin-probes
+cargo test -p huginn-probes
 
 # Run a specific test by name (substring match)
-cargo test -p hugin-probes fails_on_empty_banner
+cargo test -p huginn-probes fails_on_empty_banner
 
 # Watch mode (requires cargo-watch)
 cargo watch -x "test --workspace"
@@ -275,6 +194,6 @@ cargo llvm-cov --workspace --open
 | New EventHub behaviour | Unit | `event.rs #[cfg(test)]` |
 | New HTTP route | Unit + Integration | `server.rs` + `debug_ui_test.rs` |
 | New config option | Integration | `config_integration_test.rs` |
-| New user-visible push feature | E2E | `hugin-dev/tests/` |
+| New user-visible push feature | E2E | `huginn/tests/` |
 | Bug fix | Unit (reproduce the bug first) | same file as the fix |
 | New external service dependency | System Integration | `scripts/integration-test.sh` |

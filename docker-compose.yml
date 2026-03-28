@@ -1,16 +1,16 @@
 services:
-  hugin-dev:
+  huginn:
     build: .
     restart: unless-stopped
     environment:
-      HUGIN_CONFIG: /etc/hugin/config.yaml
-      HUGIN_UI_ENABLED: "true"
+      HUGINN_CONFIG: /etc/huginn/config.yaml
+      HUGINN_UI_ENABLED: "true"
       INFLUX_URL: http://influxdb:8086
       INFLUX_ORG: myorg
       INFLUX_BUCKET: monitoring
       INFLUX_TOKEN_FILE: /run/secrets/influx_token
     volumes:
-      - ./config/config.yaml:/etc/hugin/config.yaml:ro
+      - ./config/config.yaml:/etc/huginn/config.yaml:ro
     ports:
       - "9116:9116"
     secrets:
