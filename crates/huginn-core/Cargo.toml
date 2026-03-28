@@ -18,4 +18,5 @@ features = ["sync"]
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = { workspace = true }
 
