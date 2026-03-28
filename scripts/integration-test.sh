@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # scripts/integration-test.sh
 #
-# System Integration Test for hugin.dev.
+# System Integration Test for huginn.io.
 # Assumes docker-compose.integration.yml is up and services are starting.
 #
 # Assertions:
-#   1. hugin-dev /health returns "OK"
+#   1. huginn /health returns "OK"
 #   2. /metrics/latest returns at least 2 probe results
 #   3. Expected probe names (influxdb-tcp, influxdb-http) are present
 #   4. All probes are up: true
@@ -13,9 +13,9 @@
 
 set -euo pipefail
 
-HUGIN_URL="http://localhost:9116"
+HUGINN_URL="http://localhost:9116"
 INFLUX_URL="http://localhost:8086"
-INFLUX_TOKEN="integration-test-token-hugin-dev-ci"
+INFLUX_TOKEN="integration-test-token-huginn-ci"
 INFLUX_ORG="testorg"
 INFLUX_BUCKET="testbucket"
 
@@ -30,29 +30,29 @@ info() { echo -e "${YELLOW}→ $*${NC}"; }
 
 echo ""
 echo "════════════════════════════════════════════════"
-echo "  hugin.dev — System Integration Test"
+echo "  huginn.io — System Integration Test"
 echo "════════════════════════════════════════════════"
 echo ""
 
-# ── 1. Wait for hugin-dev /health ─────────────────────────────────────────────
-info "Waiting for hugin-dev /health (up to 60s)..."
+# ── 1. Wait for huginn /health ─────────────────────────────────────────────
+info "Waiting for huginn /health (up to 60s)..."
 for i in $(seq 1 30); do
-  if curl -sf "$HUGIN_URL/health" > /dev/null 2>&1; then
-    pass "hugin-dev is responding"
+  if curl -sf "$HUGINN_URL/health" > /dev/null 2>&1; then
+    pass "huginn is responding"
     break
   fi
-  [ "$i" -eq 30 ] && fail "hugin-dev did not respond after 60s"
+  [ "$i" -eq 30 ] && fail "huginn did not respond after 60s"
   sleep 2
 done
 
 # ── 2. Assert /health content ─────────────────────────────────────────────────
-HEALTH=$(curl -sf "$HUGIN_URL/health")
+HEALTH=$(curl -sf "$HUGINN_URL/health")
 [ "$HEALTH" = "OK" ] && pass "/health returned 'OK'" || fail "/health returned unexpected: $HEALTH"
 
 # ── 3. Wait for probe results (probes run every 2s) ───────────────────────────
 info "Waiting for probe results in /metrics/latest (up to 30s)..."
 for i in $(seq 1 15); do
-  COUNT=$(curl -sf "$HUGIN_URL/metrics/latest" \
+  COUNT=$(curl -sf "$HUGINN_URL/metrics/latest" \
     | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
   if [ "$COUNT" -ge 2 ]; then
     pass "/metrics/latest has $COUNT results"
@@ -63,7 +63,7 @@ for i in $(seq 1 15); do
 done
 
 # ── 4. Assert expected probe names are present ────────────────────────────────
-METRICS=$(curl -sf "$HUGIN_URL/metrics/latest")
+METRICS=$(curl -sf "$HUGINN_URL/metrics/latest")
 python3 - <<'EOF'
 import json, sys
 

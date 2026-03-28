@@ -1,18 +1,18 @@
 # Testing Guide
 
-This document describes the testing philosophy, structure, and requirements for hugin.dev contributors.
+This document describes the testing philosophy, structure, and requirements for huginn.io contributors.
 
 ---
 
 ## The Test Pyramid
 
-hugin.dev follows a four-level test pyramid: many fast unit tests at the base, fewer component-integration tests, a small number of end-to-end tests, and one Docker-level system integration test at the top.
+huginn.io follows a four-level test pyramid: many fast unit tests at the base, fewer component-integration tests, a small number of end-to-end tests, and one Docker-level system integration test at the top.
 
 ```
                ▲
               /S\
              / 4 \       System Integration Test
-            /─────\      • Real Docker stack (InfluxDB + hugin-dev)
+            /─────\      • Real Docker stack (InfluxDB + huginn)
            /       \     • CI only, ~2 min, highest confidence
           / E2E  ~9 \
          /───────────\   End-to-End Tests
@@ -30,8 +30,8 @@ hugin.dev follows a four-level test pyramid: many fast unit tests at the base, f
 | Level | Count | Location | Speed |
 |---|---:|---|---|
 | Unit | ~73 | `#[cfg(test)]` inside source modules | < 100 ms total |
-| Integration | ~27 | `hugin-dev/tests/*.rs` | < 10 s total |
-| E2E | ~9 | `hugin-dev/tests/*.rs` | < 15 s total |
+| Integration | ~27 | `huginn/tests/*.rs` | < 10 s total |
+| E2E | ~9 | `huginn/tests/*.rs` | < 15 s total |
 | System Integration | 1 | `scripts/integration-test.sh` + Docker Compose | ~2 min (CI only) |
 
 ---
@@ -96,10 +96,10 @@ Avoid `test_`, `should_`, or numbered names.
 - Config loading from actual YAML files on disk
 
 ### Where they live
-Integration tests live in **`hugin-dev/tests/`** as separate `.rs` files:
+Integration tests live in **`huginn/tests/`** as separate `.rs` files:
 
 ```
-hugin-dev/tests/
+huginn/tests/
 ├── cli_output_test.rs          – ProbeResult serialisation
 ├── config_integration_test.rs  – config loading + ENV overrides
 ├── debug_ui_test.rs            – full HTTP server + reqwest client
@@ -124,11 +124,11 @@ Add an E2E test only when a new user-visible feature cannot be adequately covere
 
 Tests the complete production stack in Docker:
 - Image builds without errors
-- `hugin-dev` connects to InfluxDB and writes data
+- `huginn` connects to InfluxDB and writes data
 - `/health` returns `OK`, `/metrics/latest` returns probe results
 
 ```
-docker-compose.integration.yml   – InfluxDB + hugin-dev
+docker-compose.integration.yml   – InfluxDB + huginn
 config/config.integration.yaml   – 2-second probes
 scripts/integration-test.sh      – curl assertions
 ```
@@ -136,7 +136,7 @@ scripts/integration-test.sh      – curl assertions
 **Run locally:**
 
 ```bash
-echo -n "integration-test-token-hugin-dev-ci" > /tmp/influx_token.txt
+echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
 docker compose -f docker-compose.integration.yml up -d --build
 bash scripts/integration-test.sh
 docker compose -f docker-compose.integration.yml down -v
@@ -148,7 +148,7 @@ One system integration test covering the core data flow is enough.
 
 ## TDD Workflow
 
-hugin.dev uses **Test-Driven Development**. New features and bug fixes follow the Red → Green → Refactor cycle:
+huginn.io uses **Test-Driven Development**. New features and bug fixes follow the Red → Green → Refactor cycle:
 
 ```
 1. RED    – Write a failing test that describes the desired behaviour.
@@ -172,10 +172,10 @@ hugin.dev uses **Test-Driven Development**. New features and bug fixes follow th
 cargo test --workspace
 
 # Run tests for a single crate
-cargo test -p hugin-probes
+cargo test -p huginn-probes
 
 # Run a specific test by name (substring match)
-cargo test -p hugin-probes fails_on_empty_banner
+cargo test -p huginn-probes fails_on_empty_banner
 
 # Watch mode (requires cargo-watch)
 cargo watch -x "test --workspace"
@@ -194,6 +194,6 @@ cargo llvm-cov --workspace --open
 | New EventHub behaviour | Unit | `event.rs #[cfg(test)]` |
 | New HTTP route | Unit + Integration | `server.rs` + `debug_ui_test.rs` |
 | New config option | Integration | `config_integration_test.rs` |
-| New user-visible push feature | E2E | `hugin-dev/tests/` |
+| New user-visible push feature | E2E | `huginn/tests/` |
 | Bug fix | Unit (reproduce the bug first) | same file as the fix |
 | New external service dependency | System Integration | `scripts/integration-test.sh` |

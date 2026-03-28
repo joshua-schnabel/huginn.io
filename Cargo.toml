@@ -1,19 +1,19 @@
 [workspace]
 members = [
-    "hugin-dev",
-    "crates/hugin-core",
-    "crates/hugin-probes",
-    "crates/hugin-influx",
-    "crates/hugin-web",
+    "huginn",
+    "crates/huginn-core",
+    "crates/huginn-probes",
+    "crates/huginn-influx",
+    "crates/huginn-web",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["hugin.dev contributors"]
+authors = ["huginn.io contributors"]
 license = "MIT"
-repository = "https://github.com/placeholder/hugin-dev"
+repository = "https://github.com/placeholder/huginn"
 
 [workspace.dependencies]
 # Async runtime

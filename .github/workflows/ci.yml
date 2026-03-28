@@ -110,7 +110,7 @@ jobs:
 
       # Hardcoded test-only token — NOT a production secret
       - name: Create test token file
-        run: echo -n "integration-test-token-hugin-dev-ci" > /tmp/influx_token.txt
+        run: echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
 
       - name: Build and start services
         run: docker compose -f docker-compose.integration.yml up -d --build

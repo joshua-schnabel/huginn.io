@@ -5,20 +5,20 @@ WORKDIR /build
 
 # Cache dependencies before copying source
 COPY Cargo.toml Cargo.lock ./
-COPY crates/hugin-core/Cargo.toml   crates/hugin-core/Cargo.toml
-COPY crates/hugin-probes/Cargo.toml crates/hugin-probes/Cargo.toml
-COPY crates/hugin-influx/Cargo.toml crates/hugin-influx/Cargo.toml
-COPY crates/hugin-web/Cargo.toml    crates/hugin-web/Cargo.toml
-COPY hugin-dev/Cargo.toml           hugin-dev/Cargo.toml
+COPY crates/huginn-core/Cargo.toml   crates/huginn-core/Cargo.toml
+COPY crates/huginn-probes/Cargo.toml crates/huginn-probes/Cargo.toml
+COPY crates/huginn-influx/Cargo.toml crates/huginn-influx/Cargo.toml
+COPY crates/huginn-web/Cargo.toml    crates/huginn-web/Cargo.toml
+COPY huginn/Cargo.toml           huginn/Cargo.toml
 
 # Dummy source files to cache the dependency layer
-RUN mkdir -p crates/hugin-core/src   && echo "pub fn _f(){}" > crates/hugin-core/src/lib.rs \
- && mkdir -p crates/hugin-probes/src && echo "pub fn _f(){}" > crates/hugin-probes/src/lib.rs \
- && mkdir -p crates/hugin-influx/src && echo "pub fn _f(){}" > crates/hugin-influx/src/lib.rs \
- && mkdir -p crates/hugin-web/src    && echo "pub fn _f(){}" > crates/hugin-web/src/lib.rs \
- && mkdir -p hugin-dev/src           && echo "fn main(){}"   > hugin-dev/src/main.rs \
+RUN mkdir -p crates/huginn-core/src   && echo "pub fn _f(){}" > crates/huginn-core/src/lib.rs \
+ && mkdir -p crates/huginn-probes/src && echo "pub fn _f(){}" > crates/huginn-probes/src/lib.rs \
+ && mkdir -p crates/huginn-influx/src && echo "pub fn _f(){}" > crates/huginn-influx/src/lib.rs \
+ && mkdir -p crates/huginn-web/src    && echo "pub fn _f(){}" > crates/huginn-web/src/lib.rs \
+ && mkdir -p huginn/src           && echo "fn main(){}"   > huginn/src/main.rs \
  && cargo build --release --locked \
- && rm -rf crates/*/src hugin-dev/src
+ && rm -rf crates/*/src huginn/src
 
 # Real build
 COPY . .
@@ -27,12 +27,12 @@ RUN cargo build --release --locked
 # ── Stage 2: Runtime (distroless — no shell, no package manager) ──────────
 FROM gcr.io/distroless/cc-debian12
 
-COPY --from=builder /build/target/release/hugin-dev /usr/local/bin/hugin-dev
-COPY config/config.example.yaml /etc/hugin/config.yaml
+COPY --from=builder /build/target/release/huginn /usr/local/bin/huginn
+COPY config/config.example.yaml /etc/huginn/config.yaml
 
 # Run as non-root
 USER nonroot:nonroot
 
 EXPOSE 9116
 
-ENTRYPOINT ["/usr/local/bin/hugin-dev", "--config", "/etc/hugin/config.yaml"]
+ENTRYPOINT ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml"]

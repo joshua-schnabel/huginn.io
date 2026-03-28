@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-This document describes the branch model, CI/CD pipeline design, and required GitHub repository configuration for hugin.dev.
+This document describes the branch model, CI/CD pipeline design, and required GitHub repository configuration for huginn.io.
 
 ---
 
@@ -58,7 +58,7 @@ Runs on all pull requests and pushes to `dev`/`main`.
 - **test**: `cargo test --all` on Rust stable *and* beta (`fail-fast: false`)
 - **supply-chain**: `cargo deny check` — advisory CVEs + licenses + banned crates + registry sources
 - **coverage**: `cargo llvm-cov` — fails if any file falls below 80 % region coverage
-- **system-integration**: Docker Compose test (InfluxDB + hugin-dev, curl assertions)
+- **system-integration**: Docker Compose test (InfluxDB + huginn, curl assertions)
 
 None of these jobs use production secrets.
 

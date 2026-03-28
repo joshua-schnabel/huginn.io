@@ -1,4 +1,4 @@
-# Contributing to hugin.dev
+# Contributing to huginn.io
 
 ## Branching Strategy
 
@@ -91,10 +91,10 @@ See **[docs/testing.md](docs/testing.md)** for the full testing guide (test pyra
 cargo test --workspace
 
 # Single crate
-cargo test -p hugin-probes
+cargo test -p huginn-probes
 
 # Specific test
-cargo test -p hugin-probes fails_on_empty_banner
+cargo test -p huginn-probes fails_on_empty_banner
 
 # Watch mode (requires cargo-watch)
 cargo watch -x "test --workspace"
@@ -173,7 +173,7 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
    - Reads version `0.2.0` from `CHANGELOG.md`
    - Creates git tag `v0.2.0`
    - Builds Docker image
-   - Pushes `your-dockerhub-user/hugin-dev:0.2.0` and `:latest` to DockerHub
+   - Pushes `your-dockerhub-user/huginn:0.2.0` and `:latest` to DockerHub
 
 ---
 
@@ -194,7 +194,7 @@ Releases are triggered by merging `dev` into `main`. The version is read from `C
 - `cargo clippy -- -D warnings` — all clippy warnings are errors in CI
 - Comments only where the code is not self-explanatory
 - Tests alongside implementation (`#[cfg(test)]`) for unit tests
-- Integration tests in `hugin-dev/tests/` following TDD: write test first, then implementation
+- Integration tests in `huginn/tests/` following TDD: write test first, then implementation
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Secrets Management
 
-hugin.dev follows a strict **no-secrets-in-ENV** policy.
+huginn.io follows a strict **no-secrets-in-ENV** policy.
 
 ### ✅ Correct: Token in a file
 ```yaml
@@ -17,14 +17,14 @@ The token is read from the file at startup. The file should be:
 ### ❌ Wrong: Token in ENV
 ```bash
 # DO NOT do this
-INFLUX_TOKEN=mytoken hugin-dev   # token visible in ps, /proc/environ, logs
+INFLUX_TOKEN=mytoken huginn   # token visible in ps, /proc/environ, logs
 ```
 
 ## Docker Secrets
 ```yaml
 # docker-compose.yml
 services:
-  hugin-dev:
+  huginn:
     secrets:
       - influx_token
     environment:
@@ -80,8 +80,8 @@ Findings appear in the GitHub Security tab. ERROR-severity findings block the PR
 
 ```bash
 # Scan locally with Trivy
-docker build -t hugin-dev .
-trivy image --severity HIGH,CRITICAL hugin-dev
+docker build -t huginn .
+trivy image --severity HIGH,CRITICAL huginn
 ```
 
 Also runs automatically in CI before any image push.

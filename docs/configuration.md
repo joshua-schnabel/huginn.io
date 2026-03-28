@@ -75,11 +75,11 @@ All values can be overridden without editing the YAML file:
 
 | Variable | Overrides |
 |---|---|
-| `HUGIN_CONFIG` | Config file path |
-| `HUGIN_LOG_FORMAT` | `log.format` |
-| `HUGIN_LOG_LEVEL` | `log.level` |
-| `HUGIN_UI_ENABLED` | `ui.enabled` |
-| `HUGIN_UI_PORT` | `ui.port` |
+| `HUGINN_CONFIG` | Config file path |
+| `HUGINN_LOG_FORMAT` | `log.format` |
+| `HUGINN_LOG_LEVEL` | `log.level` |
+| `HUGINN_UI_ENABLED` | `ui.enabled` |
+| `HUGINN_UI_PORT` | `ui.port` |
 | `INFLUX_URL` | `influx.url` |
 | `INFLUX_ORG` | `influx.org` |
 | `INFLUX_BUCKET` | `influx.bucket` |

@@ -1,13 +1,13 @@
-# hugin.dev
+# huginn.io
 
 ![Huginn — a low-poly raven](docs/logo.png)
 
-> *Huginn* (Old Norse: *Thought*) is one of Odin's ravens. Every day he flies across the world, observes everything, and reports back to Odin. **hugin.dev** does the same for your infrastructure.
+> *Huginn* (Old Norse: *Thought*) is one of Odin's ravens. Every day he flies across the world, observes everything, and reports back to Odin. **huginn.io** does the same for your infrastructure.
 
 Lightweight uptime & latency monitor. Configures via YAML, writes to InfluxDB, ships as a distroless Docker image.
 
-[![CI](https://github.com/OWNER/hugin-dev/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/hugin-dev/actions/workflows/ci.yml)
-[![SAST](https://github.com/OWNER/hugin-dev/actions/workflows/sast.yml/badge.svg)](https://github.com/OWNER/hugin-dev/actions/workflows/sast.yml)
+[![CI](https://github.com/OWNER/huginn/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/huginn/actions/workflows/ci.yml)
+[![SAST](https://github.com/OWNER/huginn/actions/workflows/sast.yml/badge.svg)](https://github.com/OWNER/huginn/actions/workflows/sast.yml)
 
 ## Features
 

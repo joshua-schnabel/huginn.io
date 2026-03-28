@@ -28,14 +28,14 @@ jobs:
 
       # Build image locally — never pushed here, no registry credentials needed
       - name: Build Docker image for scanning
-        run: docker build -t hugin-dev:security-scan .
+        run: docker build -t huginn:security-scan .
 
       # ── Pass 1: Full scan → SARIF (all severities, uploaded to Security tab) ──
       # exit-code 0 so the SARIF upload step always runs even when findings exist
       - name: Trivy – full scan (SARIF)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: hugin-dev:security-scan
+          image-ref: huginn:security-scan
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH,MEDIUM
@@ -54,7 +54,7 @@ jobs:
       - name: Trivy – blocking scan (fixable CRITICAL/HIGH only)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: hugin-dev:security-scan
+          image-ref: huginn:security-scan
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true

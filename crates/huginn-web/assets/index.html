@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>huginn.io</title>
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <h1>🦅 huginn.io</h1>
+  <p class="subtitle">
+    Live updates via push &nbsp;|&nbsp;
+    <a href="/metrics/latest">JSON</a> &nbsp;|&nbsp;
+    <a href="/health">health</a>
+  </p>
+  <table id="probes">
+    <thead>
+      <tr>
+        <th>Probe</th>
+        <th>Type</th>
+        <th>Target</th>
+        <th>Status</th>
+        <th>Response</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody id="probe-body">
+      <tr id="placeholder"><td colspan="6" class="placeholder">Waiting for first probe result…</td></tr>
+    </tbody>
+  </table>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
