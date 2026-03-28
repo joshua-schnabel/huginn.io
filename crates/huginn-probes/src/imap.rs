@@ -15,7 +15,13 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let mut stream = match connect {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            return ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed_ms(), e.to_string())
+            return ProbeResult::failure(
+                &cfg.name,
+                "imap",
+                &cfg.target,
+                elapsed_ms(),
+                e.to_string(),
+            )
         }
         Err(_) => {
             return ProbeResult::failure(
@@ -130,6 +136,10 @@ mod tests {
 
         let result = probe(&imap_cfg(&addr.to_string())).await;
         assert!(!result.up);
-        assert!(result.error.as_deref().unwrap_or("").contains("empty greeting"));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("empty greeting"));
     }
 }

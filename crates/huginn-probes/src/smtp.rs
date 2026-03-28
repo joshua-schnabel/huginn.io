@@ -15,7 +15,13 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let mut stream = match connect {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            return ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed_ms(), e.to_string())
+            return ProbeResult::failure(
+                &cfg.name,
+                "smtp",
+                &cfg.target,
+                elapsed_ms(),
+                e.to_string(),
+            )
         }
         Err(_) => {
             return ProbeResult::failure(
@@ -47,9 +53,13 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
                 )
             }
         }
-        Ok(Ok(_)) => {
-            ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, "empty banner".to_string())
-        }
+        Ok(Ok(_)) => ProbeResult::failure(
+            &cfg.name,
+            "smtp",
+            &cfg.target,
+            elapsed,
+            "empty banner".to_string(),
+        ),
         Ok(Err(e)) => ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, e.to_string()),
         Err(_) => ProbeResult::failure(
             &cfg.name,
@@ -126,6 +136,10 @@ mod tests {
 
         let result = probe(&smtp_cfg(&addr.to_string())).await;
         assert!(!result.up);
-        assert!(result.error.as_deref().unwrap_or("").contains("empty banner"));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("empty banner"));
     }
 }

@@ -104,30 +104,30 @@ mod tests {
     /// Copies the transaction ID and question from the query, appends one answer.
     fn build_a_response(query: &[u8], ip: [u8; 4]) -> Vec<u8> {
         let mut r = Vec::new();
-        r.extend_from_slice(&query[0..2]);          // transaction ID
-        r.extend_from_slice(&[0x81, 0x80]);         // flags: response, RCODE=0
-        r.extend_from_slice(&[0x00, 0x01]);         // QDCOUNT=1
-        r.extend_from_slice(&[0x00, 0x01]);         // ANCOUNT=1
+        r.extend_from_slice(&query[0..2]); // transaction ID
+        r.extend_from_slice(&[0x81, 0x80]); // flags: response, RCODE=0
+        r.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+        r.extend_from_slice(&[0x00, 0x01]); // ANCOUNT=1
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // NS, AR = 0
-        r.extend_from_slice(&query[12..]);          // question section
-        // answer
-        r.extend_from_slice(&[0xC0, 0x0C]);         // name ptr → offset 12
-        r.extend_from_slice(&[0x00, 0x01]);         // type A
-        r.extend_from_slice(&[0x00, 0x01]);         // class IN
+        r.extend_from_slice(&query[12..]); // question section
+                                           // answer
+        r.extend_from_slice(&[0xC0, 0x0C]); // name ptr → offset 12
+        r.extend_from_slice(&[0x00, 0x01]); // type A
+        r.extend_from_slice(&[0x00, 0x01]); // class IN
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL=60
-        r.extend_from_slice(&[0x00, 0x04]);         // rdlength=4
-        r.extend_from_slice(&ip);                   // rdata
+        r.extend_from_slice(&[0x00, 0x04]); // rdlength=4
+        r.extend_from_slice(&ip); // rdata
         r
     }
 
     fn build_nxdomain_response(query: &[u8]) -> Vec<u8> {
         let mut r = Vec::new();
-        r.extend_from_slice(&query[0..2]);          // transaction ID
-        r.extend_from_slice(&[0x81, 0x83]);         // flags: response, RCODE=3 (NXDOMAIN)
-        r.extend_from_slice(&[0x00, 0x01]);         // QDCOUNT=1
-        r.extend_from_slice(&[0x00, 0x00]);         // ANCOUNT=0
+        r.extend_from_slice(&query[0..2]); // transaction ID
+        r.extend_from_slice(&[0x81, 0x83]); // flags: response, RCODE=3 (NXDOMAIN)
+        r.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+        r.extend_from_slice(&[0x00, 0x00]); // ANCOUNT=0
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-        r.extend_from_slice(&query[12..]);          // question section
+        r.extend_from_slice(&query[12..]); // question section
         r
     }
 

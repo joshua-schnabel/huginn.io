@@ -67,9 +67,9 @@ async fn ui_index_html_contains_probe_name() {
     let hub = start_server(port).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    hub.publish(ProbeEvent::ProbeCompleted(
-        ProbeResult::success("myprobe", "tcp", "host:80", 5.0, None)
-    ));
+    hub.publish(ProbeEvent::ProbeCompleted(ProbeResult::success(
+        "myprobe", "tcp", "host:80", 5.0, None,
+    )));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let resp = reqwest::get(format!("http://127.0.0.1:{port}/"))
@@ -98,4 +98,3 @@ fn free_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()
 }
-
