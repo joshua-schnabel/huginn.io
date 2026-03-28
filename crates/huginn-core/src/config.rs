@@ -100,17 +100,12 @@ fn default_ui_port() -> u16 {
 // Log / output config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
+    #[default]
     Pretty,
     Json,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        LogFormat::Pretty
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
