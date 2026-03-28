@@ -173,9 +173,8 @@ mod tests {
 
         let outcome = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                match rx.recv().await {
-                    Err(broadcast::error::RecvError::Closed) => return true,
-                    _ => {}
+                if let Err(broadcast::error::RecvError::Closed) = rx.recv().await {
+                    return true;
                 }
             }
         })

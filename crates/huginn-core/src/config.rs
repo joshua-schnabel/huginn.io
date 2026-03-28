@@ -493,7 +493,7 @@ probes:
     fn read_token_trims_whitespace() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, "  mytoken  \n").unwrap();
+        writeln!(tmp, "  mytoken  ").unwrap();
         let path = tmp.path().to_string_lossy().into_owned();
         let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
         cfg.influx.token_file = path;

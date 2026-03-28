@@ -86,9 +86,8 @@ async fn graceful_shutdown_completes_within_deadline() {
     // Verify channel closes within 2 seconds — no deadlock
     let closed = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            match rx.recv().await {
-                Err(broadcast::error::RecvError::Closed) => return true,
-                _ => {}
+            if let Err(broadcast::error::RecvError::Closed) = rx.recv().await {
+                return true;
             }
         }
     })
@@ -145,9 +144,8 @@ async fn immediate_shutdown_before_first_probe() {
 
     let closed = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            match rx.recv().await {
-                Err(broadcast::error::RecvError::Closed) => return true,
-                _ => {}
+            if let Err(broadcast::error::RecvError::Closed) = rx.recv().await {
+                return true;
             }
         }
     })
