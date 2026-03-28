@@ -132,10 +132,16 @@ pub(crate) async fn run(
         });
     }
 
+    // Subscribe to shutdown BEFORE moving shutdown_tx into the scheduler
+    let mut shutdown_rx = shutdown_tx.subscribe();
+
     // Start scheduler — publishes ProbeEvents to the hub
     scheduler::run(Arc::clone(&cfg), Arc::clone(&hub), shutdown_tx).await;
 
-    // Wait until the hub is dropped (scheduler exits on shutdown, hub closes)
+    // Block until a shutdown signal arrives; this keeps all spawned tasks alive.
+    let _ = shutdown_rx.recv().await;
+
+    // Drop hub — signals RecvError::Closed to all event subscribers
     drop(hub);
 
     Ok(())
