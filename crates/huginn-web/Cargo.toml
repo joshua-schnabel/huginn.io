@@ -2,9 +2,10 @@
 name = "huginn-web"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
-huginn-core = { path = "../huginn-core" }
+huginn-core = { path = "../huginn-core", version = "0.1.0" }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
