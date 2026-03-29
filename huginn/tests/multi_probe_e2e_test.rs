@@ -35,10 +35,21 @@ async fn multiple_probes_all_appear_in_metrics() {
     let body: serde_json::Value = resp.json().await.unwrap();
     let arr = body.as_array().expect("expected JSON array");
 
-    assert_eq!(arr.len(), 3, "expected 3 results, got {}: {body}", arr.len());
+    assert_eq!(
+        arr.len(),
+        3,
+        "expected 3 results, got {}: {body}",
+        arr.len()
+    );
 
-    let names: Vec<&str> = arr.iter().filter_map(|v| v["probe_name"].as_str()).collect();
-    assert!(names.contains(&"http-check"), "http-check missing: {names:?}");
+    let names: Vec<&str> = arr
+        .iter()
+        .filter_map(|v| v["probe_name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"http-check"),
+        "http-check missing: {names:?}"
+    );
     assert!(names.contains(&"tcp-check"), "tcp-check missing: {names:?}");
     assert!(names.contains(&"dns-check"), "dns-check missing: {names:?}");
 
@@ -52,24 +63,35 @@ async fn all_probes_report_correct_probe_type_field() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     hub.publish(ProbeEvent::ProbeCompleted(ProbeResult::success(
-        "smtp-mon", "smtp", "mail.example.com:25", 30.0, None,
+        "smtp-mon",
+        "smtp",
+        "mail.example.com:25",
+        30.0,
+        None,
     )));
     hub.publish(ProbeEvent::ProbeCompleted(ProbeResult::success(
-        "imap-mon", "imap", "mail.example.com:143", 28.0, None,
+        "imap-mon",
+        "imap",
+        "mail.example.com:143",
+        28.0,
+        None,
     )));
     hub.publish(ProbeEvent::ProbeCompleted(ProbeResult::success(
-        "udp-mon", "udp", "8.8.8.8:53", 2.0, None,
+        "udp-mon",
+        "udp",
+        "8.8.8.8:53",
+        2.0,
+        None,
     )));
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let body: serde_json::Value =
-        reqwest::get(format!("http://127.0.0.1:{port}/metrics/latest"))
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
+    let body: serde_json::Value = reqwest::get(format!("http://127.0.0.1:{port}/metrics/latest"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
 
     let arr = body.as_array().unwrap();
     assert_eq!(arr.len(), 3);

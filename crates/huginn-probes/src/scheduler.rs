@@ -12,11 +12,7 @@ use crate::{dns, http, imap, smtp, tcp, udp};
 /// Run all probes from the config, each on its own tokio interval.
 /// Results are published to the given `EventHub` as `ProbeEvent::ProbeCompleted`.
 /// Each probe loop listens on its own shutdown receiver and exits cleanly.
-pub async fn run(
-    cfg: Arc<AppConfig>,
-    hub: Arc<EventHub>,
-    shutdown_tx: broadcast::Sender<()>,
-) {
+pub async fn run(cfg: Arc<AppConfig>, hub: Arc<EventHub>, shutdown_tx: broadcast::Sender<()>) {
     let http_client = Arc::new(http::build_client());
 
     for probe_cfg in &cfg.probes {
@@ -123,7 +119,11 @@ mod tests {
     async fn scheduler_emits_probe_result() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { loop { let _ = listener.accept().await; } });
+        tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
 
         let cfg = make_config(vec![tcp_probe(&addr.to_string(), 1)]);
         let hub = Arc::new(EventHub::new(256));
@@ -149,7 +149,11 @@ mod tests {
     async fn scheduler_stops_on_shutdown() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { loop { let _ = listener.accept().await; } });
+        tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
 
         let cfg = make_config(vec![tcp_probe(&addr.to_string(), 60)]); // long interval
         let hub = Arc::new(EventHub::new(256));
@@ -167,20 +171,19 @@ mod tests {
         // Drop hub so the channel closes after all probe loops exit
         drop(hub);
 
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(2),
-            async {
-                loop {
-                    match rx.recv().await {
-                        Err(broadcast::error::RecvError::Closed) => return true,
-                        _ => {}
-                    }
+        let outcome = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Err(broadcast::error::RecvError::Closed) = rx.recv().await {
+                    return true;
                 }
-            },
-        )
+            }
+        })
         .await;
 
-        assert!(outcome.is_ok(), "probe loops did not exit after shutdown signal");
+        assert!(
+            outcome.is_ok(),
+            "probe loops did not exit after shutdown signal"
+        );
     }
 
     #[tokio::test]
@@ -323,4 +326,3 @@ mod tests {
         drop(shutdown_tx);
     }
 }
-

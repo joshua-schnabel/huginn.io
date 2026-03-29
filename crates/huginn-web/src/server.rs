@@ -13,8 +13,8 @@ use crate::state::WebState;
 
 // Embed assets at compile time so the binary is self-contained.
 const INDEX_HTML: &str = include_str!("../assets/index.html");
-const STYLE_CSS: &str  = include_str!("../assets/style.css");
-const APP_JS: &str     = include_str!("../assets/app.js");
+const STYLE_CSS: &str = include_str!("../assets/style.css");
+const APP_JS: &str = include_str!("../assets/app.js");
 
 /// Start the web UI server.
 ///
@@ -25,12 +25,12 @@ pub async fn run_server(port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
     Arc::clone(&state).start_event_loop(Arc::clone(&hub));
 
     let app = Router::new()
-        .route("/",               get(handle_index))
-        .route("/events",         get(sse_handler))
+        .route("/", get(handle_index))
+        .route("/events", get(sse_handler))
         .route("/metrics/latest", get(handle_metrics))
-        .route("/health",         get(handle_health))
+        .route("/health", get(handle_health))
         .route("/assets/style.css", get(handle_css))
-        .route("/assets/app.js",    get(handle_js))
+        .route("/assets/app.js", get(handle_js))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
@@ -51,9 +51,7 @@ async fn handle_health() -> &'static str {
     "OK"
 }
 
-async fn handle_metrics(
-    State(state): State<Arc<WebState>>,
-) -> Json<Vec<ProbeResult>> {
+async fn handle_metrics(State(state): State<Arc<WebState>>) -> Json<Vec<ProbeResult>> {
     let guard = state.results.read().await;
     Json(guard.values().cloned().collect())
 }
@@ -63,7 +61,10 @@ async fn handle_css() -> ([(&'static str, &'static str); 1], &'static str) {
 }
 
 async fn handle_js() -> ([(&'static str, &'static str); 1], &'static str) {
-    ([("content-type", "application/javascript; charset=utf-8")], APP_JS)
+    (
+        [("content-type", "application/javascript; charset=utf-8")],
+        APP_JS,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +146,10 @@ mod tests {
     #[tokio::test]
     async fn js_handler_returns_js_content_type() {
         let (headers, body) = handle_js().await;
-        assert_eq!(headers[0], ("content-type", "application/javascript; charset=utf-8"));
+        assert_eq!(
+            headers[0],
+            ("content-type", "application/javascript; charset=utf-8")
+        );
         assert!(!body.is_empty());
     }
 }

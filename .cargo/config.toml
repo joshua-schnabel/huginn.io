@@ -50,11 +50,9 @@ cov-ci       = "llvm-cov --workspace --all-features --summary-only"
 # ── Code Quality ─────────────────────────────────────────────────────────────
 # cargo lint                Clippy: alle Targets, alle Features, Warnungen = Fehler
 # cargo lint-fix            Clippy: automatisch behebbare Probleme anwenden
-# cargo fmt                 Formatierung anwenden
 # cargo fmt-check           Formatierung nur prüfen (kein Schreiben, gut für CI)
 lint         = "clippy --workspace --all-targets --all-features -- -D warnings"
 lint-fix     = "clippy --workspace --all-targets --all-features --fix --allow-dirty"
-fmt          = "fmt --all"
 fmt-check    = "fmt --all -- --check"
 
 # ── Security & Audit ─────────────────────────────────────────────────────────

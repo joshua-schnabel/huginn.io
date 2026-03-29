@@ -4,8 +4,8 @@ use std::sync::Arc;
 use huginn_core::event::{EventHub, ProbeEvent};
 use huginn_core::types::ProbeResult;
 use serde_json;
-use tokio::sync::{broadcast, RwLock};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast, RwLock};
 use tracing::error;
 
 /// Shared state for web handlers.
@@ -121,7 +121,10 @@ mod tests {
             .expect("timed out waiting for SSE broadcast")
             .expect("sse_tx closed");
 
-        assert!(json.contains("smtp"), "probe_name missing from SSE JSON: {json}");
+        assert!(
+            json.contains("smtp"),
+            "probe_name missing from SSE JSON: {json}"
+        );
     }
 
     #[tokio::test]
@@ -147,4 +150,3 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
-

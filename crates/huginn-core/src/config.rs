@@ -100,17 +100,12 @@ fn default_ui_port() -> u16 {
 // Log / output config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
+    #[default]
     Pretty,
     Json,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        LogFormat::Pretty
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,43 +483,29 @@ probes:
         let result = cfg.influx.read_token();
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("huginn-token-xyz") || msg.contains("token"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("huginn-token-xyz") || msg.contains("token"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
     fn read_token_trims_whitespace() {
         use std::io::Write;
-        let path = std::env::temp_dir().join(format!(
-            "huginn-token-test-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .subsec_nanos()
-        ));
-        {
-            let mut f = std::fs::File::create(&path).unwrap();
-            write!(f, "  mytoken  \n").unwrap();
-        }
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "  mytoken  ").unwrap();
+        let path = tmp.path().to_string_lossy().into_owned();
         let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
-        cfg.influx.token_file = path.to_string_lossy().into_owned();
+        cfg.influx.token_file = path;
         let token = cfg.influx.read_token().unwrap();
-        let _ = std::fs::remove_file(&path);
         assert_eq!(token, "mytoken");
     }
 
     #[test]
     fn env_token_file_override_applies() {
-        let path = std::env::temp_dir().join(format!(
-            "huginn-env-token-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .subsec_nanos()
-        ));
-        let _ = std::fs::write(&path, "envtoken");
-        let path_str = path.to_string_lossy().into_owned();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "envtoken").unwrap();
+        let path_str = tmp.path().to_string_lossy().into_owned();
 
         std::env::set_var("INFLUX_TOKEN_FILE", &path_str);
         let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
@@ -532,7 +513,6 @@ probes:
         assert_eq!(cfg.influx.token_file, path_str);
         let token = cfg.influx.read_token().unwrap();
         std::env::remove_var("INFLUX_TOKEN_FILE");
-        let _ = std::fs::remove_file(&path);
         assert_eq!(token, "envtoken");
     }
 }

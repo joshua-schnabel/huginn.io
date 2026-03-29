@@ -1,0 +1,5 @@
+target/
+temp-int/
+.git/
+docs/
+*.md
