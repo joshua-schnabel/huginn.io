@@ -20,12 +20,12 @@ anyhow             = { workspace = true }
 serde_json         = { workspace = true }
 colored            = { workspace = true }
 chrono             = { workspace = true }
+reqwest            = { workspace = true }
 
 [dev-dependencies]
 tempfile  = { workspace = true }
 reqwest   = { workspace = true }
-tokio     = { workspace = true }
-serde_json = { workspace = true }
+wiremock  = "0.6"
 huginn-core = { path = "../crates/huginn-core" }
 huginn-web  = { path = "../crates/huginn-web" }
 

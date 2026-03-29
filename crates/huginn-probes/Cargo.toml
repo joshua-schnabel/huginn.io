@@ -15,4 +15,3 @@ hickory-resolver = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6"
-tokio = { workspace = true }

@@ -5,7 +5,8 @@ use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, Resol
 use hickory_resolver::TokioAsyncResolver;
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
-use tokio::time::timeout;
+
+use crate::with_probe_timeout;
 
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let query = cfg.dns_query.as_deref().unwrap_or("example.com");
@@ -24,19 +25,17 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
 
     let resolver = build_resolver(nameserver, cfg.timeout_secs);
     let start = Instant::now();
-    let result = timeout(cfg.timeout(), resolver.lookup_ip(query)).await;
+    let result = with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        resolver.lookup_ip(query),
+    )
+    .await;
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
     match result {
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            "dns",
-            &cfg.target,
-            elapsed,
-            format!("timeout after {}s", cfg.timeout_secs),
-        ),
-        Ok(Err(e)) => ProbeResult::failure(&cfg.name, "dns", &cfg.target, elapsed, e.to_string()),
-        Ok(Ok(lookup)) => {
+        Err(msg) => ProbeResult::failure(&cfg.name, "dns", &cfg.target, elapsed, msg),
+        Ok(lookup) => {
             if let Some(expected) = &cfg.dns_expected_ip {
                 let expected_ip: IpAddr = match expected.parse() {
                     Ok(ip) => ip,

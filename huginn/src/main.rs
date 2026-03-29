@@ -8,10 +8,17 @@ use huginn_core::config::{AppConfig, LogFormat};
 use huginn_core::event::{EventHub, ProbeEvent};
 use huginn_core::types::ProbeResult;
 use huginn_influx::writer::{run_subscriber_batched, InfluxWriter};
-use huginn_probes::scheduler;
 use tokio::sync::broadcast;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+
+mod scheduler;
+
+// ---------------------------------------------------------------------------
+// Type aliases
+// ---------------------------------------------------------------------------
+
+type Shutdown = broadcast::Sender<()>;
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -49,9 +56,29 @@ async fn main() -> anyhow::Result<()> {
     let use_json = args.output.to_lowercase() == "json"
         || cfg.log.format == LogFormat::Json;
 
-    // Initialise tracing
+    init_tracing(use_json, &cfg.log.level);
+
+    info!("huginn starting — config: {}", args.config);
+
+    // Shutdown channel — Ctrl+C sends the signal
+    let (shutdown_tx, _): (Shutdown, _) = broadcast::channel(1);
+    let shutdown_ctrl = shutdown_tx.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Shutdown signal received");
+        let _ = shutdown_ctrl.send(());
+    });
+
+    run(Arc::new(cfg), use_json, shutdown_tx).await
+}
+
+// ---------------------------------------------------------------------------
+// Tracing initialisation
+// ---------------------------------------------------------------------------
+
+fn init_tracing(use_json: bool, log_level: &str) {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cfg.log.level));
+        .unwrap_or_else(|_| EnvFilter::new(log_level));
 
     if use_json {
         tracing_subscriber::fmt()
@@ -64,19 +91,6 @@ async fn main() -> anyhow::Result<()> {
             .pretty()
             .init();
     }
-
-    info!("huginn starting — config: {}", args.config);
-
-    // Shutdown channel — Ctrl+C sends the signal
-    let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    let shutdown_tx_ctrl = shutdown_tx.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("Shutdown signal received");
-        let _ = shutdown_tx_ctrl.send(());
-    });
-
-    run(Arc::new(cfg), use_json, shutdown_tx).await
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
 pub(crate) async fn run(
     cfg: Arc<AppConfig>,
     use_json: bool,
-    shutdown_tx: broadcast::Sender<()>,
+    shutdown_tx: Shutdown,
 ) -> anyhow::Result<()> {
     // Central event hub — all components subscribe here
     let hub = Arc::new(EventHub::new(cfg.event_hub_capacity));
@@ -178,7 +192,6 @@ mod tests {
     use huginn_core::types::ProbeResult;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::broadcast;
 
     // -----------------------------------------------------------------------
     // Fixtures
@@ -275,7 +288,7 @@ mod tests {
     async fn run_exits_cleanly_on_shutdown() {
         let tf = tempfile_with("mytoken");
         let cfg = Arc::new(minimal_config(&tf));
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         let handle = tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
 
@@ -294,7 +307,7 @@ mod tests {
     async fn run_json_mode_exits_cleanly() {
         let tf = tempfile_with("mytoken");
         let cfg = Arc::new(minimal_config(&tf));
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         let handle = tokio::spawn(run(Arc::clone(&cfg), true, shutdown_tx.clone()));
 
@@ -318,7 +331,7 @@ mod tests {
         cfg.ui.port = port;
         let cfg = Arc::new(cfg);
 
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
         tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
 
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -338,7 +351,7 @@ mod tests {
         cfg.influx.token_file = "/nonexistent/path/to/token.file".into();
         cfg.ui.enabled = false;
         let cfg = Arc::new(cfg);
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         let result = run(cfg, false, shutdown_tx).await;
         assert!(result.is_err(), "expected error for missing token file");

@@ -7,16 +7,14 @@ use tokio::sync::broadcast;
 use tokio::time::interval;
 use tracing::{error, info};
 
-use crate::{dns, http, imap, smtp, tcp, udp};
+use huginn_probes::{dns, http, imap, smtp, tcp, udp};
+
+use crate::Shutdown;
 
 /// Run all probes from the config, each on its own tokio interval.
 /// Results are published to the given `EventHub` as `ProbeEvent::ProbeCompleted`.
 /// Each probe loop listens on its own shutdown receiver and exits cleanly.
-pub async fn run(
-    cfg: Arc<AppConfig>,
-    hub: Arc<EventHub>,
-    shutdown_tx: broadcast::Sender<()>,
-) {
+pub async fn run(cfg: Arc<AppConfig>, hub: Arc<EventHub>, shutdown_tx: Shutdown) {
     let http_client = Arc::new(http::build_client());
 
     for probe_cfg in &cfg.probes {
@@ -88,6 +86,7 @@ mod tests {
     use huginn_core::event::{EventHub, ProbeEvent};
     use std::time::Duration;
     use tokio::net::TcpListener;
+    use tokio::sync::broadcast;
 
     fn make_config(probes: Vec<ProbeConfig>) -> Arc<AppConfig> {
         Arc::new(AppConfig {
@@ -128,8 +127,6 @@ mod tests {
         let cfg = make_config(vec![tcp_probe(&addr.to_string(), 1)]);
         let hub = Arc::new(EventHub::new(256));
         let mut rx = hub.subscribe();
-        // Keep shutdown_tx alive so the probe loop doesn't exit immediately
-        // when run() drops its copy (broadcast channel closes when all senders drop).
         let (shutdown_tx, _) = broadcast::channel(1);
         run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
@@ -146,7 +143,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduler_stops_on_shutdown() {
+    async fn immediate_shutdown_before_first_probe() {
+        let cfg = make_config(vec![tcp_probe("127.0.0.1:65534", 1)]);
+        let hub = Arc::new(EventHub::new(256));
+        let mut rx = hub.subscribe();
+        let (shutdown_tx, _) = broadcast::channel(1);
+        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+
+        // Shut down immediately without waiting for any probe to fire
+        tokio::task::yield_now().await;
+        shutdown_tx.send(()).unwrap();
+        drop(hub);
+
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Err(broadcast::error::RecvError::Closed) = rx.recv().await { return true }
+            }
+        })
+        .await;
+
+        assert!(closed.is_ok(), "Scheduler did not exit after immediate shutdown");
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_completes_within_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { loop { let _ = listener.accept().await; } });
@@ -157,24 +177,18 @@ mod tests {
         let (shutdown_tx, _) = broadcast::channel(1);
         run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
-        // Get the first result (fires immediately on start)
         let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
             .expect("no initial result");
 
-        // Send shutdown — probe loops must exit
         shutdown_tx.send(()).unwrap();
-        // Drop hub so the channel closes after all probe loops exit
         drop(hub);
 
         let outcome = tokio::time::timeout(
             Duration::from_secs(2),
             async {
                 loop {
-                    match rx.recv().await {
-                        Err(broadcast::error::RecvError::Closed) => return true,
-                        _ => {}
-                    }
+                    if let Err(broadcast::error::RecvError::Closed) = rx.recv().await { return true }
                 }
             },
         )
@@ -323,4 +337,3 @@ mod tests {
         drop(shutdown_tx);
     }
 }
-

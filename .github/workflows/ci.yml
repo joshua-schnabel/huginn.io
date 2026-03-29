@@ -18,6 +18,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ── Gate 1: Format & Lint ──────────────────────────────────────────────────
@@ -112,8 +113,19 @@ jobs:
       - name: Create test token file
         run: echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
 
+      # Reuse Docker layer cache from docker.yml to avoid rebuilding from scratch
+      - name: Build huginn image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: huginn:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Build and start services
-        run: docker compose -f docker-compose.integration.yml up -d --build
+        run: docker compose -f docker-compose.integration.yml up -d --no-build
 
       - name: Wait for InfluxDB to be healthy
         run: |

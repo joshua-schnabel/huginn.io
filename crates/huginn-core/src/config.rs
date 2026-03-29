@@ -100,17 +100,12 @@ fn default_ui_port() -> u16 {
 // Log / output config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
+    #[default]
     Pretty,
     Json,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        LogFormat::Pretty
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,7 +211,7 @@ impl AppConfig {
                 path.as_ref().display()
             ))
         })?;
-        let mut cfg: AppConfig = serde_yaml::from_str(&content)
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(&content)
             .map_err(|e| HuginError::Config(format!("YAML parse error: {e}")))?;
         cfg.apply_env_overrides();
         cfg.validate()?;
@@ -343,7 +338,7 @@ probes:
 "#;
 
     fn parse(yaml: &str) -> AppConfig {
-        let cfg: AppConfig = serde_yaml::from_str(yaml).expect("parse failed");
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).expect("parse failed");
         cfg.validate().expect("validation failed");
         cfg
     }
@@ -414,7 +409,7 @@ influx:
   bucket: "b"
   token_file: "/tmp/t"
 "#;
-        let cfg: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.validate().is_err());
     }
 
@@ -432,14 +427,14 @@ probes:
     target: "host:80"
     interval_secs: 0
 "#;
-        let cfg: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn env_override_influx_url() {
         std::env::set_var("INFLUX_URL", "http://remotehost:8086");
-        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
         cfg.apply_env_overrides();
         assert_eq!(cfg.influx.url, "http://remotehost:8086");
         std::env::remove_var("INFLUX_URL");
@@ -448,7 +443,7 @@ probes:
     #[test]
     fn env_override_log_format_json() {
         std::env::set_var("HUGINN_LOG_FORMAT", "json");
-        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
         cfg.apply_env_overrides();
         assert_eq!(cfg.log.format, LogFormat::Json);
         std::env::remove_var("HUGINN_LOG_FORMAT");
@@ -458,7 +453,7 @@ probes:
     fn env_override_ui_enabled() {
         std::env::set_var("HUGINN_UI_ENABLED", "true");
         std::env::set_var("HUGINN_UI_PORT", "8080");
-        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
         cfg.apply_env_overrides();
         assert!(cfg.ui.enabled);
         assert_eq!(cfg.ui.port, 8080);
@@ -483,7 +478,7 @@ probes:
 
     #[test]
     fn read_token_fails_for_nonexistent_file() {
-        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
         cfg.influx.token_file = "/nonexistent/path/to/huginn-token-xyz.txt".into();
         let result = cfg.influx.read_token();
         assert!(result.is_err());
@@ -498,9 +493,9 @@ probes:
     fn read_token_trims_whitespace() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, "  mytoken  \n").unwrap();
+        writeln!(tmp, "  mytoken  ").unwrap();
         let path = tmp.path().to_string_lossy().into_owned();
-        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
         cfg.influx.token_file = path;
         let token = cfg.influx.read_token().unwrap();
         assert_eq!(token, "mytoken");
@@ -513,7 +508,7 @@ probes:
         let path_str = tmp.path().to_string_lossy().into_owned();
 
         std::env::set_var("INFLUX_TOKEN_FILE", &path_str);
-        let mut cfg: AppConfig = serde_yaml::from_str(MINIMAL_YAML).unwrap();
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
         cfg.apply_env_overrides();
         assert_eq!(cfg.influx.token_file, path_str);
         let token = cfg.influx.read_token().unwrap();

@@ -3,20 +3,25 @@ use std::time::Instant;
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use reqwest::Client;
-use tokio::time::timeout;
+
+use crate::with_probe_timeout;
 
 /// Perform an HTTP/HTTPS GET request and measure response time.
 pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
     let expected = cfg.expected_status.unwrap_or(200);
     let start = Instant::now();
-
-    let fut = client.get(&cfg.target).send();
-    let result = timeout(cfg.timeout(), fut).await;
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     let probe_type = cfg.probe_type.to_string();
 
+    let result = with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        client.get(&cfg.target).send(),
+    )
+    .await;
+    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
     match result {
-        Ok(Ok(resp)) => {
+        Ok(resp) => {
             let status = resp.status().as_u16();
             if status == expected {
                 ProbeResult::success(&cfg.name, &probe_type, &cfg.target, elapsed, Some(status))
@@ -30,16 +35,7 @@ pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
                 )
             }
         }
-        Ok(Err(e)) => {
-            ProbeResult::failure(&cfg.name, &probe_type, &cfg.target, elapsed, e.to_string())
-        }
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            &probe_type,
-            &cfg.target,
-            elapsed,
-            format!("timeout after {}s", cfg.timeout_secs),
-        ),
+        Err(msg) => ProbeResult::failure(&cfg.name, &probe_type, &cfg.target, elapsed, msg),
     }
 }
 

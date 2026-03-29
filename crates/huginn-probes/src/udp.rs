@@ -3,7 +3,8 @@ use std::time::Instant;
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use tokio::net::UdpSocket;
-use tokio::time::timeout;
+
+use crate::with_probe_timeout;
 
 /// Send a minimal DNS query payload to the target and wait for any response.
 /// A non-empty response indicates the service is alive.
@@ -38,22 +39,18 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     }
 
     let mut buf = [0u8; 512];
-    let recv = timeout(cfg.timeout(), socket.recv(&mut buf)).await;
+    let recv = with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        socket.recv(&mut buf),
+    )
+    .await;
     let elapsed = elapsed_ms();
 
     match recv {
-        Ok(Ok(n)) if n > 0 => ProbeResult::success(&cfg.name, "udp", &cfg.target, elapsed, None),
-        Ok(Ok(_)) => {
-            ProbeResult::failure(&cfg.name, "udp", &cfg.target, elapsed, "empty response".to_string())
-        }
-        Ok(Err(e)) => ProbeResult::failure(&cfg.name, "udp", &cfg.target, elapsed, e.to_string()),
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            "udp",
-            &cfg.target,
-            elapsed,
-            format!("timeout after {}s", cfg.timeout_secs),
-        ),
+        Ok(n) if n > 0 => ProbeResult::success(&cfg.name, "udp", &cfg.target, elapsed, None),
+        Ok(_) => ProbeResult::failure(&cfg.name, "udp", &cfg.target, elapsed, "empty response".to_string()),
+        Err(msg) => ProbeResult::failure(&cfg.name, "udp", &cfg.target, elapsed, msg),
     }
 }
 

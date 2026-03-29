@@ -3,10 +3,12 @@
 /// Uses `huginn_web::server::run_server` directly — no real InfluxDB needed.
 /// Three probe result types (http, tcp, dns) are injected via the EventHub
 /// and then verified via GET /metrics/latest.
-use huginn_core::event::{EventHub, ProbeEvent};
+use huginn_core::event::ProbeEvent;
 use huginn_core::types::ProbeResult;
-use std::sync::Arc;
 use std::time::Duration;
+
+mod common;
+use common::{free_port, start_server};
 
 #[tokio::test]
 async fn multiple_probes_all_appear_in_metrics() {
@@ -88,17 +90,3 @@ async fn all_probes_report_correct_probe_type_field() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async fn start_server(port: u16) -> Arc<EventHub> {
-    let hub = Arc::new(EventHub::new(256));
-    let hub_clone = Arc::clone(&hub);
-    tokio::spawn(async move {
-        huginn_web::server::run_server(port, hub_clone).await.ok();
-    });
-    hub
-}
-
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}

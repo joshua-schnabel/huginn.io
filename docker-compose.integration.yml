@@ -13,6 +13,7 @@
 services:
   huginn:
     build: .
+    image: huginn:ci
     environment:
       HUGINN_UI_ENABLED: "true"
     volumes:
