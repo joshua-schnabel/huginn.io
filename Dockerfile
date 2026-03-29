@@ -20,9 +20,10 @@ RUN mkdir -p crates/huginn-core/src   && echo "pub fn _f(){}" > crates/huginn-co
  && cargo build --release --locked \
  && rm -rf crates/*/src huginn/src
 
-# Real build
+# Real build — touch source files so cargo detects them as newer than the
+# dummy artifacts from the dependency-caching step above.
 COPY . .
-RUN cargo build --release --locked
+RUN find . -name "*.rs" -exec touch {} \; && cargo build --release --locked
 
 # ── Stage 2: Runtime (distroless — no shell, no package manager) ──────────
 FROM gcr.io/distroless/cc-debian12
