@@ -1,18 +1,15 @@
 name: Auto PR
 
-# Opens a draft PR against dev automatically when a feature branch is pushed.
-# Skips if a PR already exists for the branch.
+# Opens a draft PR against dev for branches with a valid prefix.
+# Deletes branches that don't follow the naming convention.
 on:
   push:
-    branches:
-      - "feature/**"
-      - "fix/**"
-      - "chore/**"
-      - "docs/**"
-      - "test/**"
+    branches-ignore:
+      - "main"
+      - "dev"
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 env:
@@ -20,16 +17,24 @@ env:
 
 jobs:
   open-pr:
-    name: Open Draft PR
+    name: Open Draft PR or Delete Invalid Branch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Create PR if none exists
+      - name: Enforce branch naming and create PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="${GITHUB_REF_NAME}"
+          VALID_PATTERN="^(feature|fix|chore|docs|test)/.+"
+
+          # Delete branch if it doesn't match the naming convention
+          if ! echo "$BRANCH" | grep -qE "$VALID_PATTERN"; then
+            echo "::warning::Branch '$BRANCH' does not match naming convention. Deleting."
+            gh api -X DELETE "/repos/${{ github.repository }}/git/refs/heads/$BRANCH"
+            exit 0
+          fi
 
           # Check if a PR already exists for this branch
           EXISTING=$(gh pr list --head "$BRANCH" --base dev --json number --jq length)
