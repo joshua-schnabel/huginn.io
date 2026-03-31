@@ -1,0 +1,62 @@
+name: Auto PR
+
+# Opens a draft PR against dev automatically when a feature branch is pushed.
+# Skips if a PR already exists for the branch.
+on:
+  push:
+    branches:
+      - "feature/**"
+      - "fix/**"
+      - "chore/**"
+      - "docs/**"
+      - "test/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  open-pr:
+    name: Open Draft PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create PR if none exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+
+          # Check if a PR already exists for this branch
+          EXISTING=$(gh pr list --head "$BRANCH" --base dev --json number --jq length)
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "PR already exists for $BRANCH — skipping."
+            exit 0
+          fi
+
+          # Derive a title from the branch name:
+          # "feature/add-smtp-tls" → "feat: add smtp tls"
+          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
+          DESCRIPTION=$(echo "$BRANCH" | cut -d'/' -f2- | tr '-' ' ')
+
+          case "$PREFIX" in
+            feature) TYPE="feat" ;;
+            fix)     TYPE="fix" ;;
+            chore)   TYPE="chore" ;;
+            docs)    TYPE="docs" ;;
+            test)    TYPE="test" ;;
+            *)       TYPE="$PREFIX" ;;
+          esac
+
+          TITLE="${TYPE}: ${DESCRIPTION}"
+
+          gh pr create \
+            --base dev \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body "Automatically opened by push to \`$BRANCH\`." \
+            --draft
