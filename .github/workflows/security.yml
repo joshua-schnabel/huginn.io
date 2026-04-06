@@ -1,14 +1,14 @@
 name: Security
 
 # Semgrep SAST (source code) + Trivy CVE scan (Docker image).
-# Semgrep: all PRs and branch pushes — early developer feedback.
-# Trivy:   only PRs → main and pushes to main — blocks on fixable CRITICAL/HIGH CVEs.
+# Semgrep: all pushes and PRs to dev — early developer feedback on every branch.
+# Trivy:   PRs → dev and pushes to main — blocks on fixable CRITICAL/HIGH CVEs.
 
 on:
   push:
-    branches: ["main", "dev"]
+    branches-ignore: []   # all branches
   pull_request:
-    branches: ["main", "dev"]
+    branches: ["dev"]
 
 concurrency:
   group: security-${{ github.ref }}
@@ -58,11 +58,11 @@ jobs:
             --exclude target \
             .
 
-  # ── Trivy CVE scan (Docker image) — only on PRs/pushes to main ─────────────
+  # ── Trivy CVE scan (Docker image) — PRs → dev and pushes to main ────────────
   trivy:
     name: Trivy CVE Scan
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
+    if: github.base_ref == 'dev' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
