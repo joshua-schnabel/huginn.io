@@ -86,8 +86,24 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+      # Cache the compiled cargo-llvm-cov binary, keyed on a pinned version, so
+      # it is built from source once and restored on later runs. This is NOT a
+      # prebuilt-binary download — the tool is still compiled with --locked; the
+      # cache just skips recompiling it. Pinned so the cache key is stable; bump
+      # it when a new cargo-llvm-cov is worth picking up (coverage tooling does
+      # not need to be bleeding-edge).
+      # Note: cargo-deny is deliberately NOT cached/pinned — it is a security
+      # tool and stays on the latest release so it keeps detecting new advisory
+      # classes (see the supply-chain job).
+      - name: Cache cargo-llvm-cov
+        id: cache-llvm-cov
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-${{ runner.os }}-0.8.7
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
       - name: Run coverage
         run: cargo llvm-cov --all --lcov --output-path lcov.info --fail-under-lines 80
       - name: Upload LCOV report
@@ -164,22 +180,101 @@ jobs:
   # also avoids the `workflow_run` trap, where `github.ref` resolves to the
   # default branch and every `github.ref == 'refs/heads/dev'` check below would
   # silently read false.
-  publish:
-    name: Publish to DockerHub
-    runs-on: ubuntu-latest
+  # ── Build & push one image per architecture, by digest ────────────────────
+  #
+  # Each architecture builds on its OWN native runner — amd64 on ubuntu-latest,
+  # arm64 on ubuntu-24.04-arm — instead of emulating arm64 under QEMU on an
+  # amd64 runner, which turned a few-minute build into tens of minutes. Neither
+  # job applies tags; each pushes a digest-only image, and the `merge` job below
+  # assembles the multi-arch manifest and tags it.
+  build-image:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
     needs: [check, test, supply-chain, coverage, system-integration]
     # Push events only — never on pull_request, so DockerHub credentials are
     # never reachable from a PR build.
     if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Docker metadata (labels only)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ vars.DOCKERHUB_USERNAME }}/huginn
+          labels: |
+            org.opencontainers.image.title=huginn.io
+            org.opencontainers.image.description=Lightweight infrastructure probe monitor
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Per-platform cache scope so amd64 and arm64 don't clobber each other.
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+          outputs: type=image,name=${{ vars.DOCKERHUB_USERNAME }}/huginn,push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v6
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Assemble the multi-arch manifest, tag it, tag the release ─────────────
+  publish:
+    name: Publish to DockerHub
+    runs-on: ubuntu-latest
+    needs: [build-image]
+    if: github.event_name == 'push'
     permissions:
-      # Needed by the "Create git tag" step. The old workflow inherited
-      # `contents: read`, so `git push origin vX.Y.Z` got a 403 — which is why
-      # the repo has no tags despite the documented release flow.
+      # Needed by the "Create git tag" step. Inheriting `contents: read` made
+      # `git push origin vX.Y.Z` 403.
       contents: write
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # needed to read git history for version tagging
+
+      - name: Download digests
+        uses: actions/download-artifact@v7
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
 
       # ── Version detection (from CHANGELOG.md) ────────────────────────────
       - name: Read version from CHANGELOG.md
@@ -235,16 +330,17 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
+      - name: Create and push manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          # shellcheck disable=SC2046  # word-splitting is intentional: each -t
+          # and each digest must become a separate argument.
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ vars.DOCKERHUB_USERNAME }}/huginn@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect ${{ vars.DOCKERHUB_USERNAME }}/huginn:${{ steps.meta.outputs.version }}
 
       # ── Create git tag on main (if new version) ───────────────────────────
       - name: Create git tag
