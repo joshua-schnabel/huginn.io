@@ -8,6 +8,22 @@ influx:
   # NEVER put the token value directly in this file or in an ENV variable.
   token_file: "/run/secrets/influx_token"
 
+  # ── Batching ──────────────────────────────────────────────────────────────
+  # Results are grouped into one write instead of one POST per probe.
+  batch_size: 10          # write once this many results are buffered
+  batch_timeout_ms: 1000  # ...or after this long, whichever comes first
+
+  # ── Resilience ────────────────────────────────────────────────────────────
+  # A failed write is retried, not discarded. Retries are unbounded in attempts
+  # but bounded in memory: when the queue is full the OLDEST batch is dropped,
+  # so the most recent data survives an outage. Batches InfluxDB will never
+  # accept (bad token, wrong bucket, malformed data) are discarded immediately
+  # rather than blocking everything behind them.
+  max_buffered_bytes: 8388608     # 8 MiB ≈ 35k–55k results
+  retry_initial_backoff_ms: 500   # doubles per attempt...
+  retry_max_backoff_ms: 30000     # ...up to this
+  shutdown_drain_timeout_ms: 5000 # give up draining after this on shutdown
+
 # Optional debug web UI (axum, no external JS/CSS)
 ui:
   enabled: false

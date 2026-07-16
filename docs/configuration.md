@@ -17,11 +17,38 @@ probes:          # List of probes (required)
 | `org` | string | ✅ | — | InfluxDB organisation |
 | `bucket` | string | ✅ | — | Target bucket |
 | `token_file` | string | ✅ | — | Path to file containing the token |
-| `batch_size` | int | — | `10` | Write when this many points are buffered |
+| `batch_size` | int | — | `10` | Write when this many points are buffered. Must be > 0 |
 | `batch_timeout_ms` | int | — | `1000` | Write after this many ms even if batch is not full |
+| `max_buffered_bytes` | int | — | `8388608` | Memory ceiling for batches waiting while InfluxDB is unreachable (8 MiB ≈ 35k–55k results) |
+| `retry_initial_backoff_ms` | int | — | `500` | First retry delay after a failed write; doubles per attempt |
+| `retry_max_backoff_ms` | int | — | `30000` | Ceiling for the retry backoff |
+| `shutdown_drain_timeout_ms` | int | — | `5000` | How long to keep draining buffered batches after a shutdown signal |
 
 > ⚠️ **Never** set the token directly in YAML or as an ENV variable.
 > Use `token_file` pointing to a Docker secret or a protected file.
+
+### What happens when InfluxDB is down
+
+Results are batched and queued, not written directly. If a write fails, the batch
+stays queued and is retried with exponential backoff — it is **not** discarded.
+
+- **Retries are unbounded in attempts, bounded in memory.** Capping attempts
+  would mean every batch dies a few seconds into an outage, so the buffer would
+  never fill and would protect nothing. The real limit is `max_buffered_bytes`:
+  when the queue is full, the **oldest** batch is dropped, keeping the most
+  recent window. Evictions are logged.
+- **Only transient failures are retried.** Network errors, 5xx, 429 and 408 are
+  retried (`Retry-After` is honoured). 400/401/403/404/413/422 mean InfluxDB will
+  never accept that batch — a bad token, a wrong bucket, malformed data — so it
+  is discarded immediately and logged at error level. Retrying it would block
+  every good batch behind it forever.
+- **Shutdown drains, but not indefinitely.** After a shutdown signal the writer
+  gets `shutdown_drain_timeout_ms` to flush what is queued. If InfluxDB is still
+  unreachable when that expires, the buffered results are discarded and the count
+  is logged — otherwise unbounded retry would mean a process that never exits.
+
+If you see `single InfluxDB batch exceeds max_buffered_bytes`, lower
+`influx.batch_size` or raise `max_buffered_bytes`.
 
 ## `ui` section
 
@@ -51,6 +78,20 @@ Each probe entry:
 | `expected_status` | int | — | `200` | HTTP/HTTPS only: expected status code |
 | `dns_query` | string | — | `example.com` | DNS only: hostname to resolve |
 | `dns_expected_ip` | string | — | — | DNS only: if set, probe fails when resolved IP doesn't match |
+
+### Validation
+
+The config is checked at startup and huginn refuses to run rather than fail
+later in a way that looks like an outage:
+
+- `name` must be **unique**. Names key the web UI's map and the InfluxDB tag
+  series, so duplicates silently overwrite each other's history.
+- `target` must match the probe type: `dns` needs a nameserver address with a
+  port (`8.8.8.8:53`, `[2001:4860:4860::8888]:53`); `tcp`/`smtp`/`imap`/`udp`
+  need a port; `http`/`https` need an absolute URL. The URL scheme does **not**
+  have to match the probe type — `type: http` with an `https://` target is fine.
+- `interval_secs`, `timeout_secs`, `batch_size` and `event_hub_capacity` must be
+  greater than 0.
 
 ### DNS probe example
 
@@ -85,4 +126,17 @@ All values can be overridden without editing the YAML file:
 | `INFLUX_BUCKET` | `influx.bucket` |
 | `INFLUX_TOKEN_FILE` | `influx.token_file` |
 
-Priority: **ENV > YAML > built-in defaults**
+Priority: **CLI > ENV > YAML > built-in defaults**
+
+`--output pretty|json` overrides `log.format` in **both** directions — including
+overriding a config file that says `json` back to `pretty`. (It previously
+could not: the check was an OR.)
+
+An ENV variable that is set but unusable is **warned about, not silently
+ignored**: `HUGINN_UI_PORT=abc`, `HUGINN_LOG_FORMAT=xml` and
+`HUGINN_UI_ENABLED=yes` each log a warning and leave the previous value in
+place. `HUGINN_UI_ENABLED` accepts `true`/`false`/`1`/`0`.
+
+These warnings appear *after* the tracing subscriber starts — the log level to
+start it with comes from the very config being read — so they arrive a few lines
+below `huginn starting`, not before it.
