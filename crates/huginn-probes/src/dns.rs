@@ -123,9 +123,8 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         }
     }
 
@@ -209,9 +208,8 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("nonexistent.example".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up, "should fail on NXDOMAIN");
@@ -229,9 +227,8 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 1,
-            expected_status: None,
             dns_query: Some("example.com".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up);
@@ -245,9 +242,8 @@ mod tests {
             target: "not_a_valid_address_xyz".into(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up);
@@ -271,9 +267,9 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
             dns_expected_ip: Some("1.2.3.4".into()),
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(result.up, "error: {:?}", result.error);
@@ -296,9 +292,9 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
             dns_expected_ip: Some("9.9.9.9".into()),
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up);

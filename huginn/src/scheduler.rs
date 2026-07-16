@@ -112,9 +112,7 @@ mod tests {
             target: addr.to_string(),
             interval_secs,
             timeout_secs: 2,
-            expected_status: None,
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }
     }
 
@@ -230,8 +228,7 @@ mod tests {
             interval_secs: 1,
             timeout_secs: 2,
             expected_status: Some(200),
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }]);
 
         let hub = Arc::new(EventHub::new(256));
@@ -272,9 +269,7 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }]);
 
         let hub = Arc::new(EventHub::new(256));
@@ -342,9 +337,8 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         }]);
 
         let hub = Arc::new(EventHub::new(256));

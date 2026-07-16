@@ -180,6 +180,28 @@ pub struct ProbeConfig {
     pub dns_expected_ip: Option<String>,
 }
 
+/// Hand-written rather than `#[derive(Default)]`.
+///
+/// Deriving would need a `#[default]` variant on `ProbeType`. That variant would
+/// then be sitting there as the obvious thing to pair with `#[serde(default)]`,
+/// which would turn a config with a typo'd or missing `type:` into a silent TCP
+/// probe. A missing probe type must stay a deserialisation error; this impl
+/// exists for test fixtures, not for YAML.
+impl Default for ProbeConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            probe_type: ProbeType::Tcp,
+            target: String::new(),
+            interval_secs: default_interval(),
+            timeout_secs: default_timeout(),
+            expected_status: None,
+            dns_query: None,
+            dns_expected_ip: None,
+        }
+    }
+}
+
 impl ProbeConfig {
     pub fn timeout(&self) -> Duration {
         Duration::from_secs(self.timeout_secs)

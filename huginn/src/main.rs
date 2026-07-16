@@ -289,9 +289,7 @@ mod tests {
                 target: "127.0.0.1:1".into(),
                 interval_secs: 1,
                 timeout_secs: 1,
-                expected_status: None,
-                dns_query: None,
-                dns_expected_ip: None,
+                ..Default::default()
             }],
             ui: UiConfig {
                 enabled: false,

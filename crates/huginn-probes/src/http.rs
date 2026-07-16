@@ -62,8 +62,7 @@ mod tests {
             interval_secs: 10,
             timeout_secs: 5,
             expected_status,
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }
     }
 
