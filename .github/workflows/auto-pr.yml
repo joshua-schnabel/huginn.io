@@ -1,0 +1,67 @@
+name: Auto PR
+
+# Opens a draft PR against dev for branches with a valid prefix.
+# Deletes branches that don't follow the naming convention.
+on:
+  push:
+    branches-ignore:
+      - "main"
+      - "dev"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  open-pr:
+    name: Open Draft PR or Delete Invalid Branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enforce branch naming and create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          VALID_PATTERN="^(feature|fix|chore|docs|test)/.+"
+
+          # Delete branch if it doesn't match the naming convention
+          if ! echo "$BRANCH" | grep -qE "$VALID_PATTERN"; then
+            echo "::warning::Branch '$BRANCH' does not match naming convention. Deleting."
+            gh api -X DELETE "/repos/${{ github.repository }}/git/refs/heads/$BRANCH"
+            exit 0
+          fi
+
+          # Check if a PR already exists for this branch
+          EXISTING=$(gh pr list --head "$BRANCH" --base dev --json number --jq length)
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "PR already exists for $BRANCH — skipping."
+            exit 0
+          fi
+
+          # Derive a title from the branch name:
+          # "feature/add-smtp-tls" → "feat: add smtp tls"
+          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
+          DESCRIPTION=$(echo "$BRANCH" | cut -d'/' -f2- | tr '-' ' ')
+
+          case "$PREFIX" in
+            feature) TYPE="feat" ;;
+            fix)     TYPE="fix" ;;
+            chore)   TYPE="chore" ;;
+            docs)    TYPE="docs" ;;
+            test)    TYPE="test" ;;
+            *)       TYPE="$PREFIX" ;;
+          esac
+
+          TITLE="${TYPE}: ${DESCRIPTION}"
+
+          gh pr create \
+            --base dev \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body "Automatically opened by push to \`$BRANCH\`." \
+            --draft

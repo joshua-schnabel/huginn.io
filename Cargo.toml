@@ -11,9 +11,20 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# Must match the builder image in the Dockerfile. CI tests on floating stable, so
+# a dependency raising the MSRV leaves CI green while the Docker build — the
+# actual artefact — fails. That is not hypothetical: hickory-resolver 0.26,
+# required for RUSTSEC-2026-0119, needs 1.88 and broke the image build against
+# the previous 1.85 pin while every local check stayed green.
+#
+# Note this field documents our floor; with edition 2021 the resolver does not
+# refuse dependencies that exceed it (that needs
+# `resolver.incompatible-rust-versions = "fallback"`, which here would silently
+# pick a hickory without the CVE fix). The Docker build is the real gate.
+rust-version = "1.88"
 authors = ["huginn.io contributors"]
 license = "MIT"
-repository = "https://github.com/placeholder/huginn"
+repository = "https://github.com/joshua-schnabel/huginn"
 
 [workspace.dependencies]
 # Async runtime
@@ -21,7 +32,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 serde_json = "1"
 
 # HTTP client
@@ -41,6 +52,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 anyhow = "1"
 thiserror = "1"
 
+# Object-safe async traits.
+# Native `async fn` in traits is stable since 1.75, but AFIT traits are not
+# dyn-compatible, and `&dyn Probe` is the whole point. Proc-macro only, and
+# already in the tree via axum — zero new runtime dependencies.
+async-trait = "0.1"
+
 # Colored output
 colored = "2"
 
@@ -58,7 +75,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # tokio-cron-scheduler = "0.11"
 
 # DNS resolver
-hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+# 0.26 required: 0.24 pulls hickory-proto <0.26.1 (RUSTSEC-2026-0119, O(n²) name compression)
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
 
 # Test helpers (available workspace-wide)
 tempfile = "3"

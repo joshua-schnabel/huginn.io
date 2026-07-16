@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Local;
@@ -7,11 +8,19 @@ use colored::Colorize;
 use huginn_core::config::{AppConfig, LogFormat};
 use huginn_core::event::{EventHub, ProbeEvent};
 use huginn_core::types::ProbeResult;
-use huginn_influx::writer::{run_subscriber_batched, InfluxWriter};
-use huginn_probes::scheduler;
+use huginn_influx::queue::RetryQueue;
+use huginn_influx::writer::{run_batcher, run_writer, InfluxWriter};
 use tokio::sync::broadcast;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+
+mod scheduler;
+
+// ---------------------------------------------------------------------------
+// Type aliases
+// ---------------------------------------------------------------------------
+
+type Shutdown = broadcast::Sender<()>;
 
 // ---------------------------------------------------------------------------
 // CLI args
@@ -33,9 +42,13 @@ struct Args {
     )]
     config: String,
 
-    /// Output format: pretty (default) or json
-    #[arg(long, env = "HUGINN_LOG_FORMAT", default_value = "pretty")]
-    output: String,
+    /// Output format: pretty or json. Overrides `log.format` from the config file.
+    ///
+    /// Deliberately an Option with no default: with `default_value = "pretty"`
+    /// this was always set, so "not given" and "explicitly pretty" were
+    /// indistinguishable and the config could never be overridden back.
+    #[arg(long, env = "HUGINN_LOG_FORMAT")]
+    output: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -46,16 +59,70 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    // Load config (applies ENV overrides internally)
-    let cfg = AppConfig::load(&args.config)
+    // Load config (applies ENV overrides internally). Warnings are returned
+    // rather than logged: tracing isn't up yet — its log level comes from this
+    // very config — so anything logged here would be discarded.
+    let (cfg, mut warnings) = AppConfig::load_with_warnings(&args.config)
         .with_context(|| format!("Failed to load config from '{}'", args.config))?;
 
-    // Determine log format (CLI flag > ENV > config file)
-    let use_json = args.output.to_lowercase() == "json" || cfg.log.format == LogFormat::Json;
+    let use_json = resolve_output_format(args.output.as_deref(), &cfg.log.format, &mut warnings);
 
-    // Initialise tracing
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.log.level));
+    init_tracing(use_json, &cfg.log.level);
+
+    // Now that there is somewhere for them to go.
+    for w in &warnings {
+        warn!("{w}");
+    }
+
+    info!("huginn starting — config: {}", args.config);
+
+    // Shutdown channel — Ctrl+C sends the signal
+    let (shutdown_tx, _): (Shutdown, _) = broadcast::channel(1);
+    let shutdown_ctrl = shutdown_tx.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        info!("Shutdown signal received");
+        let _ = shutdown_ctrl.send(());
+    });
+
+    run(Arc::new(cfg), use_json, shutdown_tx).await
+}
+
+// ---------------------------------------------------------------------------
+// Output format resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the output format: `--output` (or `HUGINN_LOG_FORMAT`) wins over
+/// `log.format` from the config file — in *both* directions.
+///
+/// This was `args.output == "json" || cfg.log.format == Json`. Being an OR, a
+/// config file saying `format: json` could never be overridden back to pretty
+/// from the CLI, which contradicts the documented CLI > ENV > YAML precedence.
+fn resolve_output_format(
+    cli: Option<&str>,
+    cfg_format: &LogFormat,
+    warnings: &mut Vec<String>,
+) -> bool {
+    match cli {
+        Some(s) if s.eq_ignore_ascii_case("json") => true,
+        Some(s) if s.eq_ignore_ascii_case("pretty") => false,
+        Some(other) => {
+            warnings.push(format!(
+                "--output/HUGINN_LOG_FORMAT='{other}' is not a known format \
+                 (expected json/pretty) — falling back to the config file"
+            ));
+            *cfg_format == LogFormat::Json
+        }
+        None => *cfg_format == LogFormat::Json,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tracing initialisation
+// ---------------------------------------------------------------------------
+
+fn init_tracing(use_json: bool, log_level: &str) {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
 
     if use_json {
         tracing_subscriber::fmt()
@@ -68,19 +135,6 @@ async fn main() -> anyhow::Result<()> {
             .pretty()
             .init();
     }
-
-    info!("huginn starting — config: {}", args.config);
-
-    // Shutdown channel — Ctrl+C sends the signal
-    let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    let shutdown_tx_ctrl = shutdown_tx.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("Shutdown signal received");
-        let _ = shutdown_tx_ctrl.send(());
-    });
-
-    run(Arc::new(cfg), use_json, shutdown_tx).await
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
 pub(crate) async fn run(
     cfg: Arc<AppConfig>,
     use_json: bool,
-    shutdown_tx: broadcast::Sender<()>,
+    shutdown_tx: Shutdown,
 ) -> anyhow::Result<()> {
     // Central event hub — all components subscribe here
     let hub = Arc::new(EventHub::new(cfg.event_hub_capacity));
@@ -99,6 +153,11 @@ pub(crate) async fn run(
     let console_hub = Arc::clone(&hub);
     tokio::spawn(async move {
         let mut rx = console_hub.subscribe();
+        // Drop the Arc once subscribed. Holding it keeps the hub's Sender alive,
+        // so this task would keep the channel open and then wait forever for the
+        // Closed that only its own exit could produce. run_batcher and
+        // WebState::start_event_loop do the same, for the same reason.
+        drop(console_hub);
         loop {
             match rx.recv().await {
                 Ok(ProbeEvent::ProbeCompleted(result)) => print_result(&result, use_json),
@@ -110,15 +169,27 @@ pub(crate) async fn run(
         }
     });
 
-    // InfluxDB subscriber
+    // InfluxDB: two tasks with a bounded queue between them. The batcher never
+    // awaits I/O, so a slow or dead InfluxDB can't stall the EventHub reader and
+    // cause events to be dropped at the source.
     let writer =
         Arc::new(InfluxWriter::new(&cfg.influx).context("Failed to initialise InfluxDB writer")?);
+    let queue = Arc::new(RetryQueue::new(cfg.influx.max_buffered_bytes));
+
     let influx_hub = Arc::clone(&hub);
-    tokio::spawn(run_subscriber_batched(
-        writer,
+    tokio::spawn(run_batcher(
         influx_hub,
+        Arc::clone(&queue),
         cfg.influx.batch_size,
         cfg.influx.batch_timeout_ms,
+    ));
+
+    let writer_handle = tokio::spawn(run_writer(
+        writer,
+        Arc::clone(&queue),
+        cfg.influx.retry_initial_backoff_ms,
+        cfg.influx.retry_max_backoff_ms,
+        shutdown_tx.subscribe(),
     ));
 
     // Web UI subscriber (if enabled)
@@ -141,8 +212,24 @@ pub(crate) async fn run(
     // Block until a shutdown signal arrives; this keeps all spawned tasks alive.
     let _ = shutdown_rx.recv().await;
 
-    // Drop hub — signals RecvError::Closed to all event subscribers
+    // Drop hub — signals RecvError::Closed to all event subscribers. The batcher
+    // takes that as its cue to queue whatever it still holds and close the queue.
     drop(hub);
+
+    // Give the writer a bounded window to drain. Without this await, returning
+    // here tears the runtime down mid-drain and the buffered results — the ones
+    // the queue exists to protect — are lost at the last moment. The bound
+    // matters just as much: retries are unbounded, so an InfluxDB that is down
+    // at shutdown would otherwise keep the process alive forever.
+    let drain = Duration::from_millis(cfg.influx.shutdown_drain_timeout_ms);
+    match tokio::time::timeout(drain, writer_handle).await {
+        Ok(Ok(())) => info!("InfluxDB writer drained cleanly"),
+        Ok(Err(e)) => error!("InfluxDB writer task failed: {e}"),
+        Err(_) => warn!(
+            timeout_ms = cfg.influx.shutdown_drain_timeout_ms,
+            "InfluxDB unreachable at shutdown — discarding buffered results"
+        ),
+    }
 
     Ok(())
 }
@@ -189,7 +276,6 @@ mod tests {
     use huginn_core::types::ProbeResult;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::broadcast;
 
     // -----------------------------------------------------------------------
     // Fixtures
@@ -221,7 +307,16 @@ mod tests {
         l.local_addr().unwrap().port()
     }
 
-    /// Minimal config: 1 TCP probe → connection refused (instant fail), no UI.
+    /// Minimal config: 1 TCP probe against a closed port, no UI, InfluxDB on a
+    /// dead port.
+    ///
+    /// `shutdown_drain_timeout_ms` is deliberately tiny. InfluxDB here is
+    /// unreachable, so on shutdown the writer attempts one doomed POST — and a
+    /// connect to a closed local port takes ~2s to be refused on Windows, not
+    /// microseconds. With the 5s default these tests spend their whole budget
+    /// inside that drain. 200ms exercises the "InfluxDB unreachable at
+    /// shutdown, give up" path, which is exactly the path this config models.
+    /// A *successful* drain is covered by tests/influx_retry_test.rs.
     fn minimal_config(token_file: &tempfile::NamedTempFile) -> AppConfig {
         AppConfig {
             influx: InfluxConfig {
@@ -231,6 +326,8 @@ mod tests {
                 token_file: token_file.path().to_string_lossy().into_owned(),
                 batch_size: 10,
                 batch_timeout_ms: 1000,
+                shutdown_drain_timeout_ms: 200,
+                ..Default::default()
             },
             probes: vec![ProbeConfig {
                 name: "test-probe".into(),
@@ -238,9 +335,7 @@ mod tests {
                 target: "127.0.0.1:1".into(),
                 interval_secs: 1,
                 timeout_secs: 1,
-                expected_status: None,
-                dns_query: None,
-                dns_expected_ip: None,
+                ..Default::default()
             }],
             ui: UiConfig {
                 enabled: false,
@@ -249,6 +344,68 @@ mod tests {
             log: LogConfig::default(),
             event_hub_capacity: 256,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_output_format
+    // -----------------------------------------------------------------------
+
+    /// The regression this function exists for: the old OR meant a config saying
+    /// json could never be overridden back to pretty from the CLI.
+    #[test]
+    fn cli_pretty_overrides_config_json() {
+        let mut w = Vec::new();
+        assert!(!resolve_output_format(
+            Some("pretty"),
+            &LogFormat::Json,
+            &mut w
+        ));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn cli_json_overrides_config_pretty() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(
+            Some("json"),
+            &LogFormat::Pretty,
+            &mut w
+        ));
+    }
+
+    #[test]
+    fn config_decides_when_cli_absent() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(None, &LogFormat::Json, &mut w));
+        assert!(!resolve_output_format(None, &LogFormat::Pretty, &mut w));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn cli_format_is_case_insensitive() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(
+            Some("JSON"),
+            &LogFormat::Pretty,
+            &mut w
+        ));
+        assert!(!resolve_output_format(
+            Some("Pretty"),
+            &LogFormat::Json,
+            &mut w
+        ));
+    }
+
+    /// An unknown value must warn and defer, not silently pick a format.
+    #[test]
+    fn unknown_cli_format_warns_and_falls_back_to_config() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(Some("xml"), &LogFormat::Json, &mut w));
+        assert_eq!(w.len(), 1);
+        assert!(
+            w[0].contains("xml"),
+            "warning should name the bad value: {w:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -284,12 +441,40 @@ mod tests {
     // run() integration tests
     // -----------------------------------------------------------------------
 
+    /// run() must NOT return while no shutdown signal has been sent.
+    ///
+    /// This is the guard for the keep-alive in run(). Deleting the
+    /// `shutdown_rx.recv().await` makes run() fall through to Ok(()) instantly,
+    /// main() returns, and the Tokio runtime cancels every probe before it
+    /// fires — the daemon monitors nothing. That bug shipped on this branch and
+    /// no test caught it: `run_exits_cleanly_on_shutdown` below asserts only
+    /// that run() *does* return, which a broken run() does trivially.
+    #[tokio::test]
+    async fn run_stays_alive_without_shutdown_signal() {
+        let tf = tempfile_with("mytoken");
+        let cfg = Arc::new(minimal_config(&tf));
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        let handle = tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
+
+        // Deliberately send nothing.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert!(
+            !handle.is_finished(),
+            "run() returned without a shutdown signal — probes are killed at startup"
+        );
+
+        shutdown_tx.send(()).ok();
+        let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    }
+
     /// run() starts, fires one probe, then shuts down cleanly.
     #[tokio::test]
     async fn run_exits_cleanly_on_shutdown() {
         let tf = tempfile_with("mytoken");
         let cfg = Arc::new(minimal_config(&tf));
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         let handle = tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
 
@@ -308,7 +493,7 @@ mod tests {
     async fn run_json_mode_exits_cleanly() {
         let tf = tempfile_with("mytoken");
         let cfg = Arc::new(minimal_config(&tf));
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         let handle = tokio::spawn(run(Arc::clone(&cfg), true, shutdown_tx.clone()));
 
@@ -332,17 +517,25 @@ mod tests {
         cfg.ui.port = port;
         let cfg = Arc::new(cfg);
 
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
         tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let resp = reqwest::get(format!("http://127.0.0.1:{port}/health"))
-            .await
-            .expect("health request failed");
-        assert_eq!(resp.status().as_u16(), 200);
+        // Poll rather than sleep a fixed 150ms: under load (a parallel cargo
+        // build, a busy CI runner) the listener isn't necessarily up yet, and a
+        // single unretried request made this test flake.
+        let url = format!("http://127.0.0.1:{port}/health");
+        let ok = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(reqwest::get(&url).await, Ok(r) if r.status().as_u16() == 200) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
 
         shutdown_tx.send(()).ok();
+        assert!(ok.is_ok(), "/health did not return 200 within 10s");
     }
 
     /// run() returns an error when InfluxWriter::new() fails (missing token file).
@@ -352,7 +545,7 @@ mod tests {
         cfg.influx.token_file = "/nonexistent/path/to/token.file".into();
         cfg.ui.enabled = false;
         let cfg = Arc::new(cfg);
-        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let (shutdown_tx, _) = broadcast::channel(1);
 
         let result = run(cfg, false, shutdown_tx).await;
         assert!(result.is_err(), "expected error for missing token file");

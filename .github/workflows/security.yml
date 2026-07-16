@@ -1,12 +1,16 @@
-name: Security Scan
+name: Security
 
-# Runs only on PRs targeting main (dev → main) and on pushes to main.
-# A PR is blocked if fixable CRITICAL or HIGH CVEs are found in the Docker image.
+# Semgrep SAST (source code) + Trivy CVE scan (Docker image).
+# Semgrep: all pushes and PRs — early developer feedback on every branch.
+# Trivy:   every PR and pushes to main — blocks on fixable CRITICAL/HIGH CVEs.
+
 on:
-  pull_request:
-    branches: ["main"]
   push:
-    branches: ["main"]
+    branches-ignore: []   # all branches
+  # Every PR, including dev → main. Previously ["dev"], which meant the release
+  # PR — the one that actually ships to users — triggered no security scan at
+  # all, and CVEs were only noticed after they had already landed on main.
+  pull_request:
 
 concurrency:
   group: security-${{ github.ref }}
@@ -14,29 +18,78 @@ concurrency:
 
 permissions:
   contents: read
-  security-events: write  # required to upload SARIF results to GitHub Security tab
+  security-events: write   # required to upload SARIF to GitHub Security tab
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # ── Semgrep SAST (source code analysis) ────────────────────────────────────
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    container: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pass 1: Full scan → SARIF (all findings, always uploaded)
+      - name: Semgrep – full scan (SARIF)
+        run: |
+          semgrep scan \
+            --config p/rust \
+            --config p/secrets \
+            --sarif \
+            --output semgrep.sarif \
+            --exclude target \
+            .
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+
+      # Pass 2: Blocking scan — ERROR-severity rules only
+      - name: Semgrep – blocking scan (ERROR severity)
+        run: |
+          semgrep scan \
+            --config p/rust \
+            --config p/secrets \
+            --error \
+            --exclude target \
+            .
+
+  # ── Trivy CVE scan (Docker image) — every PR, plus pushes to main ───────────
+  #
+  # Building the image on every branch push would be a lot of CI for little
+  # signal, so this stays PR-gated — but it must cover *every* PR, including
+  # dev → main. It previously read `base_ref == 'dev'`, which skipped exactly
+  # the release PR.
   trivy:
     name: Trivy CVE Scan
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build image locally — never pushed here, no registry credentials needed
+      # Reuse Docker layer cache from docker.yml to avoid rebuilding from scratch
       - name: Build Docker image for scanning
-        run: docker build -t huginn:security-scan .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: huginn:security-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # ── Pass 1: Full scan → SARIF (all severities, uploaded to Security tab) ──
-      # exit-code 0 so the SARIF upload step always runs even when findings exist
+      # Pass 1: Full scan → SARIF (all severities, always uploaded)
       - name: Trivy – full scan (SARIF)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: huginn:security-scan
           format: sarif
@@ -51,11 +104,9 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      # ── Pass 2: Blocking scan (only fixable CRITICAL/HIGH) ────────────────
-      # ignore-unfixed: true  → skip CVEs that have no fix available
-      # exit-code: 1          → fail the job (= block the MR) if any remain
+      # Pass 2: Blocking scan — fixable CRITICAL/HIGH only
       - name: Trivy – blocking scan (fixable CRITICAL/HIGH only)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: huginn:security-scan
           format: table

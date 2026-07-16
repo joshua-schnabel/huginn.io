@@ -4,42 +4,47 @@ use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// SMTP banner check. Stateless.
+pub struct SmtpProbe;
+
+#[async_trait]
+impl Probe for SmtpProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
 
 /// Connect to an SMTP port, read the 220 banner line and measure response time.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let start = Instant::now();
-    let connect = timeout(cfg.timeout(), TcpStream::connect(&cfg.target)).await;
     let elapsed_ms = || start.elapsed().as_secs_f64() * 1000.0;
 
-    let mut stream = match connect {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            return ProbeResult::failure(
-                &cfg.name,
-                "smtp",
-                &cfg.target,
-                elapsed_ms(),
-                e.to_string(),
-            )
-        }
-        Err(_) => {
-            return ProbeResult::failure(
-                &cfg.name,
-                "smtp",
-                &cfg.target,
-                elapsed_ms(),
-                format!("timeout after {}s", cfg.timeout_secs),
-            )
-        }
+    let mut stream = match with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        TcpStream::connect(&cfg.target),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(msg) => return ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed_ms(), msg),
     };
 
     let mut buf = [0u8; 512];
-    let read = timeout(cfg.timeout(), stream.read(&mut buf)).await;
+    let read = with_probe_timeout(
+        cfg.timeout(),
+        "timeout reading banner",
+        stream.read(&mut buf),
+    )
+    .await;
     let elapsed = elapsed_ms();
 
     match read {
-        Ok(Ok(n)) if n > 0 => {
+        Ok(n) if n > 0 => {
             let banner = String::from_utf8_lossy(&buf[..n]);
             if banner.starts_with("220") {
                 ProbeResult::success(&cfg.name, "smtp", &cfg.target, elapsed, None)
@@ -53,21 +58,14 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
                 )
             }
         }
-        Ok(Ok(_)) => ProbeResult::failure(
+        Ok(_) => ProbeResult::failure(
             &cfg.name,
             "smtp",
             &cfg.target,
             elapsed,
             "empty banner".to_string(),
         ),
-        Ok(Err(e)) => ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, e.to_string()),
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            "smtp",
-            &cfg.target,
-            elapsed,
-            "timeout reading banner".to_string(),
-        ),
+        Err(msg) => ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, msg),
     }
 }
 
@@ -85,9 +83,7 @@ mod tests {
             target: target.into(),
             interval_secs: 10,
             timeout_secs: 2,
-            expected_status: None,
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }
     }
 

@@ -3,20 +3,57 @@ use std::time::Instant;
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use reqwest::Client;
-use tokio::time::timeout;
+
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// HTTP/HTTPS status check.
+///
+/// Owns the `reqwest::Client` — the one piece of genuinely shared probe state.
+/// It carries the connection pool, so it is built once here rather than per
+/// tick, and it no longer has to be threaded through probe loops that don't
+/// speak HTTP.
+pub struct HttpProbe {
+    client: Client,
+}
+
+impl HttpProbe {
+    pub fn new() -> Self {
+        Self {
+            client: build_client(),
+        }
+    }
+}
+
+impl Default for HttpProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Probe for HttpProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg, &self.client).await
+    }
+}
 
 /// Perform an HTTP/HTTPS GET request and measure response time.
 pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
     let expected = cfg.expected_status.unwrap_or(200);
     let start = Instant::now();
-
-    let fut = client.get(&cfg.target).send();
-    let result = timeout(cfg.timeout(), fut).await;
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     let probe_type = cfg.probe_type.to_string();
 
+    let result = with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        client.get(&cfg.target).send(),
+    )
+    .await;
+    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
     match result {
-        Ok(Ok(resp)) => {
+        Ok(resp) => {
             let status = resp.status().as_u16();
             if status == expected {
                 ProbeResult::success(&cfg.name, &probe_type, &cfg.target, elapsed, Some(status))
@@ -30,16 +67,7 @@ pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
                 )
             }
         }
-        Ok(Err(e)) => {
-            ProbeResult::failure(&cfg.name, &probe_type, &cfg.target, elapsed, e.to_string())
-        }
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            &probe_type,
-            &cfg.target,
-            elapsed,
-            format!("timeout after {}s", cfg.timeout_secs),
-        ),
+        Err(msg) => ProbeResult::failure(&cfg.name, &probe_type, &cfg.target, elapsed, msg),
     }
 }
 
@@ -66,8 +94,7 @@ mod tests {
             interval_secs: 10,
             timeout_secs: 5,
             expected_status,
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }
     }
 

@@ -2,11 +2,12 @@
 name = "huginn-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde_yaml_ng = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -18,6 +19,5 @@ workspace = true
 features = ["sync"]
 
 [dev-dependencies]
-tokio = { workspace = true }
 tempfile = { workspace = true }
 

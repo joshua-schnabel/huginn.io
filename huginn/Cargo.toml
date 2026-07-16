@@ -2,6 +2,7 @@
 name = "huginn"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
@@ -21,12 +22,10 @@ anyhow             = { workspace = true }
 serde_json         = { workspace = true }
 colored            = { workspace = true }
 chrono             = { workspace = true }
+reqwest            = { workspace = true }
 
 [dev-dependencies]
 tempfile  = { workspace = true }
 reqwest   = { workspace = true }
-tokio     = { workspace = true }
-serde_json = { workspace = true }
-huginn-core = { path = "../crates/huginn-core", version = "0.1.0" }
-huginn-web  = { path = "../crates/huginn-web",  version = "0.1.0" }
+wiremock  = { workspace = true }
 

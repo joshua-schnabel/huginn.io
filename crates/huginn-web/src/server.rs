@@ -23,6 +23,10 @@ const APP_JS: &str = include_str!("../assets/app.js");
 pub async fn run_server(port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
     let state = Arc::new(WebState::new());
     Arc::clone(&state).start_event_loop(Arc::clone(&hub));
+    // Drop our Arc: `axum::serve` below never returns, so holding it would keep
+    // the hub's Sender alive for the life of the process and no subscriber would
+    // ever observe Closed. start_event_loop has its own clone and drops it too.
+    drop(hub);
 
     let app = Router::new()
         .route("/", get(handle_index))

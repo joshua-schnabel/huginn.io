@@ -3,13 +3,19 @@ name: CI
 on:
   push:
     branches: ["main", "dev"]
+    tags: ["v*.*.*"]
+  # Every PR, whatever it targets. Previously limited to main/dev, which left
+  # feature branches with no gate at all — that is how feature/refactoring and
+  # dev diverged into two different "CI fixes", one of which silently dropped
+  # the keep-alive in run().
   pull_request:
-    branches: ["main", "dev"]
 
-# Cancel stale runs for the same ref (e.g. rapid pushes to a feature branch)
+# Cancel stale runs for the same ref (e.g. rapid pushes to a feature branch).
+# Never cancel a push run: this workflow now publishes to DockerHub, and killing
+# that mid-flight is not something to do for a superseded commit.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Minimal default permissions — no secrets exposed to PR builds
 permissions:
@@ -113,8 +119,19 @@ jobs:
       - name: Create test token file
         run: echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
 
+      # Reuse the Docker layer cache from the publish job below
+      - name: Build huginn image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: huginn:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       - name: Build and start services
-        run: docker compose -f docker-compose.integration.yml up -d --build
+        run: docker compose -f docker-compose.integration.yml up -d --no-build
 
       - name: Wait for InfluxDB to be healthy
         run: |
@@ -136,4 +153,106 @@ jobs:
       - name: Tear down services
         if: always()
         run: docker compose -f docker-compose.integration.yml down -v
+
+  # ── Publish to DockerHub ──────────────────────────────────────────────────
+  #
+  # Lives here, not in its own workflow, and this is the point: as a separate
+  # workflow it triggered on `push` in parallel with CI and depended on nothing,
+  # so a commit with failing tests, clippy or cargo-deny still shipped :latest.
+  # Every gate was bypassable on the one path that reaches users.
+  #
+  # As a job it simply waits for the same run's gates via `needs`. Folding it in
+  # also avoids the `workflow_run` trap, where `github.ref` resolves to the
+  # default branch and every `github.ref == 'refs/heads/dev'` check below would
+  # silently read false.
+  publish:
+    name: Publish to DockerHub
+    runs-on: ubuntu-latest
+    needs: [check, test, supply-chain, coverage, system-integration]
+    # Push events only — never on pull_request, so DockerHub credentials are
+    # never reachable from a PR build.
+    if: github.event_name == 'push'
+    permissions:
+      # Needed by the "Create git tag" step. The old workflow inherited
+      # `contents: read`, so `git push origin vX.Y.Z` got a 403 — which is why
+      # the repo has no tags despite the documented release flow.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed to read git history for version tagging
+
+      # ── Version detection (from CHANGELOG.md) ────────────────────────────
+      - name: Read version from CHANGELOG.md
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^## \[[0-9]' CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: No versioned entry found in CHANGELOG.md"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Check if git tag already exists
+        id: tag_check
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${{ steps.version.outputs.version }}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.version.outputs.version }} already exists — skipping tag creation"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Docker metadata (tags + labels) ───────────────────────────────────
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/huginn
+          tags: |
+            # dev branch → :dev
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            # dev branch → :x.y.z-dev  (e.g. 0.1.0-dev)
+            type=raw,value=${{ steps.version.outputs.version }}-dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            # main branch → :latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            # main branch + version from CHANGELOG → :x.y.z
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false' }}
+            # Git tags (v1.2.3) → semver tags (fallback for manual tagging)
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+          labels: |
+            org.opencontainers.image.title=huginn.io
+            org.opencontainers.image.description=Lightweight infrastructure probe monitor
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      # ── Create git tag on main (if new version) ───────────────────────────
+      - name: Create git tag
+        if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
 

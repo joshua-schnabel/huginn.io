@@ -1,8 +1,10 @@
 /// Integration tests for the web UI — now using `huginn_web::server::run_server`.
-use huginn_core::event::{EventHub, ProbeEvent};
+use huginn_core::event::ProbeEvent;
 use huginn_core::types::ProbeResult;
-use std::sync::Arc;
 use std::time::Duration;
+
+mod common;
+use common::{free_port, start_server};
 
 /// Spin up the web server and verify /health returns 200 "OK"
 #[tokio::test]
@@ -84,17 +86,3 @@ async fn ui_index_html_contains_probe_name() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async fn start_server(port: u16) -> Arc<EventHub> {
-    let hub = Arc::new(EventHub::new(256));
-    let hub_clone = Arc::clone(&hub);
-    tokio::spawn(async move {
-        huginn_web::server::run_server(port, hub_clone).await.ok();
-    });
-    hub
-}
-
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}

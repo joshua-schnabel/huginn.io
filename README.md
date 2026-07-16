@@ -6,19 +6,19 @@
 
 Lightweight uptime & latency monitor. Configures via YAML, writes to InfluxDB, ships as a distroless Docker image.
 
-[![CI](https://github.com/OWNER/huginn/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/huginn/actions/workflows/ci.yml)
-[![SAST](https://github.com/OWNER/huginn/actions/workflows/sast.yml/badge.svg)](https://github.com/OWNER/huginn/actions/workflows/sast.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/huginn/ci.yml?branch=main&label=CI&logo=github)](https://github.com/joshua-schnabel/huginn/actions/workflows/ci.yml)
+[![Security](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/huginn/security.yml?branch=main&label=Security&logo=github)](https://github.com/joshua-schnabel/huginn/actions/workflows/security.yml)
 
 ## Features
 
 | | |
 |---|---|
-| **Protocols** | TCP · HTTP · HTTPS · SMTP · IMAP · UDP · DNS |
+| **Probes** | TCP · HTTP · HTTPS · SMTP · IMAP · UDP · DNS |
 | **Backend** | InfluxDB 2.x — batch line protocol, `rustls`, token via file |
 | **Config** | YAML + ENV overrides |
 | **Output** | Coloured CLI or `--output json` |
 | **Debug UI** | Live push updates via SSE at `:9116` (optional) |
-| **Security** | Distroless · nonroot · Semgrep SAST · Trivy CVE scan · cargo-deny |
+| **Security** | Distroless · nonroot · [Semgrep SAST](https://semgrep.dev) · Trivy CVE scan · cargo-deny |
 | **CI/CD** | GitHub Actions · DockerHub |
 
 ## Quickstart

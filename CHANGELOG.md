@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The daemon exited immediately at startup, having run no probes.** `run()` spawned the probe loops and returned; `main()` then exited and the Tokio runtime cancelled every task before the first tick. The fix (keep-alive on the shutdown channel) existed on `dev` but was lost when `feature/refactoring` branched from a parallel CI fix.
+- **Tests could not observe that bug.** They all spawned `run()` into the test's own runtime, which outlives it — production has no such runtime. Added `huginn/tests/binary_lifecycle_test.rs`, which runs the real binary as a subprocess, and a negative shutdown test asserting `run()` does *not* return without a signal.
+- **DockerHub publish ran in parallel with CI and depended on nothing** — a commit with failing tests, clippy or cargo-deny still shipped `:latest`. Publish is now a job in `ci.yml` gated by `needs` on every check, with `contents: write` so the release tag push no longer 403s.
+- **`cargo deny check` was not running at all.** `deny.toml` used `severity-threshold`/`unlicensed`/`copyleft`, removed in cargo-deny ≥ 0.14, so the config failed to parse. Once repaired it surfaced four real advisories: `rustls-webpki` → 0.103.13 (RUSTSEC-2026-0098/-0099/-0104) and `hickory-resolver` 0.24 → 0.26 (RUSTSEC-2026-0119).
+- **CI ran only on PRs targeting `main`/`dev`**, so feature branches had no gate — the condition that let the two branches diverge. It now runs on every PR.
+- **Trivy skipped the release PR.** It was gated on `base_ref == 'dev'`, so `dev → main` was never scanned and CVEs surfaced only after landing on `main`. It now runs on every PR.
+- **A newline in a probe error corrupted an entire InfluxDB batch** — line protocol is newline-delimited and `escape_field_str` did not escape `\n`. Also: `escape_tag` did not escape backslashes, and `urlencode` (formerly `urlenccode`) encoded code points rather than UTF-8 bytes, breaking non-ASCII org/bucket names.
+- **The InfluxDB HTTP client had no timeout**, so a blackholing server would hang the batch subscriber — including its shutdown flush — indefinitely.
+- **`--output pretty` could not override `format: json`** from the config file: the check was an OR, and `--output` always had a default, so "not given" and "explicitly pretty" were indistinguishable.
+- **Invalid ENV values were swallowed** (`HUGINN_UI_PORT=abc`, `HUGINN_LOG_FORMAT=xml`, `HUGINN_UI_ENABLED=yes`). They now warn and keep the previous value; warnings are emitted after tracing initialises, since config is loaded before it exists.
+- **Config errors that only surfaced at runtime** are now rejected at load: `event_hub_capacity: 0` (panicked in `broadcast::channel`), `batch_size: 0` (made every result its own POST), duplicate probe names (collided in the UI map and the InfluxDB series), and malformed per-type targets.
+- Fixed a real flake: `run_with_ui_enabled_responds_to_health_check` slept a fixed 150 ms and made one unretried request.
+
+### Removed
+- `run_subscriber` and `InfluxWriter::write` — unreachable in production, kept alive only by their own tests, and inflating the coverage number that gates CI. Their two meaningful behaviours (clean exit on hub close, surviving a lagged receiver) are now tested against `run_subscriber_batched`, which is what actually ships.
+
 ### Added
 - **DNS probe** (`type: dns`) — resolves hostnames via configurable nameserver using `hickory-resolver`; optional `dns_expected_ip` validation
 - **InfluxDB batch writes** — configurable `batch_size` and `batch_timeout_ms`; reduces HTTP traffic from 1 request per probe to batched line-protocol writes
@@ -15,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **E2E tests** — multi-probe parallel execution, graceful shutdown, DNS probe E2E scenarios
 - **`huginn-web` crate** — axum web server extracted into its own crate with SSE push updates, separate HTML/CSS/JS assets
 - **EventHub architecture** — central `broadcast::Sender` in `huginn-core`; probes publish events, InfluxDB writer and web server subscribe independently
-- **CI/CD redesign** — split into `ci.yml` (quality gate), `security.yml` (Trivy CVE, PR→main), `sast.yml` (Semgrep SAST, all PRs), `docker.yml` (DockerHub publish)
+- **CI/CD redesign** — `ci.yml` (quality gate + gated DockerHub publish) and `security.yml` (Semgrep SAST + Trivy CVE)
 - **SAST tooling** — Semgrep (`p/rust` + `p/secrets`) two-pass: SARIF upload + blocking on ERROR severity
 - **Supply-chain security** — `deny.toml` for `cargo-deny`; replaces `cargo-audit` with advisories + license allow-list + registry restriction
 - **Branch setup** — `main` (stable) and `dev` (integration) branches; direct push blocked via branch protection
