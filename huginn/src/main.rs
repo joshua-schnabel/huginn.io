@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Local;
@@ -7,7 +8,8 @@ use colored::Colorize;
 use huginn_core::config::{AppConfig, LogFormat};
 use huginn_core::event::{EventHub, ProbeEvent};
 use huginn_core::types::ProbeResult;
-use huginn_influx::writer::{run_subscriber_batched, InfluxWriter};
+use huginn_influx::queue::RetryQueue;
+use huginn_influx::writer::{run_batcher, run_writer, InfluxWriter};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -151,6 +153,11 @@ pub(crate) async fn run(
     let console_hub = Arc::clone(&hub);
     tokio::spawn(async move {
         let mut rx = console_hub.subscribe();
+        // Drop the Arc once subscribed. Holding it keeps the hub's Sender alive,
+        // so this task would keep the channel open and then wait forever for the
+        // Closed that only its own exit could produce. run_batcher and
+        // WebState::start_event_loop do the same, for the same reason.
+        drop(console_hub);
         loop {
             match rx.recv().await {
                 Ok(ProbeEvent::ProbeCompleted(result)) => print_result(&result, use_json),
@@ -162,15 +169,27 @@ pub(crate) async fn run(
         }
     });
 
-    // InfluxDB subscriber
+    // InfluxDB: two tasks with a bounded queue between them. The batcher never
+    // awaits I/O, so a slow or dead InfluxDB can't stall the EventHub reader and
+    // cause events to be dropped at the source.
     let writer =
         Arc::new(InfluxWriter::new(&cfg.influx).context("Failed to initialise InfluxDB writer")?);
+    let queue = Arc::new(RetryQueue::new(cfg.influx.max_buffered_bytes));
+
     let influx_hub = Arc::clone(&hub);
-    tokio::spawn(run_subscriber_batched(
-        writer,
+    tokio::spawn(run_batcher(
         influx_hub,
+        Arc::clone(&queue),
         cfg.influx.batch_size,
         cfg.influx.batch_timeout_ms,
+    ));
+
+    let writer_handle = tokio::spawn(run_writer(
+        writer,
+        Arc::clone(&queue),
+        cfg.influx.retry_initial_backoff_ms,
+        cfg.influx.retry_max_backoff_ms,
+        shutdown_tx.subscribe(),
     ));
 
     // Web UI subscriber (if enabled)
@@ -193,8 +212,24 @@ pub(crate) async fn run(
     // Block until a shutdown signal arrives; this keeps all spawned tasks alive.
     let _ = shutdown_rx.recv().await;
 
-    // Drop hub — signals RecvError::Closed to all event subscribers
+    // Drop hub — signals RecvError::Closed to all event subscribers. The batcher
+    // takes that as its cue to queue whatever it still holds and close the queue.
     drop(hub);
+
+    // Give the writer a bounded window to drain. Without this await, returning
+    // here tears the runtime down mid-drain and the buffered results — the ones
+    // the queue exists to protect — are lost at the last moment. The bound
+    // matters just as much: retries are unbounded, so an InfluxDB that is down
+    // at shutdown would otherwise keep the process alive forever.
+    let drain = Duration::from_millis(cfg.influx.shutdown_drain_timeout_ms);
+    match tokio::time::timeout(drain, writer_handle).await {
+        Ok(Ok(())) => info!("InfluxDB writer drained cleanly"),
+        Ok(Err(e)) => error!("InfluxDB writer task failed: {e}"),
+        Err(_) => warn!(
+            timeout_ms = cfg.influx.shutdown_drain_timeout_ms,
+            "InfluxDB unreachable at shutdown — discarding buffered results"
+        ),
+    }
 
     Ok(())
 }
@@ -272,7 +307,16 @@ mod tests {
         l.local_addr().unwrap().port()
     }
 
-    /// Minimal config: 1 TCP probe → connection refused (instant fail), no UI.
+    /// Minimal config: 1 TCP probe against a closed port, no UI, InfluxDB on a
+    /// dead port.
+    ///
+    /// `shutdown_drain_timeout_ms` is deliberately tiny. InfluxDB here is
+    /// unreachable, so on shutdown the writer attempts one doomed POST — and a
+    /// connect to a closed local port takes ~2s to be refused on Windows, not
+    /// microseconds. With the 5s default these tests spend their whole budget
+    /// inside that drain. 200ms exercises the "InfluxDB unreachable at
+    /// shutdown, give up" path, which is exactly the path this config models.
+    /// A *successful* drain is covered by tests/influx_retry_test.rs.
     fn minimal_config(token_file: &tempfile::NamedTempFile) -> AppConfig {
         AppConfig {
             influx: InfluxConfig {
@@ -282,6 +326,8 @@ mod tests {
                 token_file: token_file.path().to_string_lossy().into_owned(),
                 batch_size: 10,
                 batch_timeout_ms: 1000,
+                shutdown_drain_timeout_ms: 200,
+                ..Default::default()
             },
             probes: vec![ProbeConfig {
                 name: "test-probe".into(),

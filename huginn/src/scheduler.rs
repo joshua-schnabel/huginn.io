@@ -94,6 +94,7 @@ mod tests {
                 token_file: "/dev/null".into(),
                 batch_size: 10,
                 batch_timeout_ms: 1000,
+                ..Default::default()
             },
             probes,
             ui: UiConfig::default(),

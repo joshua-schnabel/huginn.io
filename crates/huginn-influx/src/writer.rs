@@ -8,9 +8,60 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
+use crate::queue::RetryQueue;
+
 /// Upper bound on a single write to InfluxDB. Generous — a batch is a few KiB of
 /// line protocol — but finite, which is the point.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Why a write failed, and — the part that matters — whether trying again could
+/// possibly help.
+///
+/// The previous code collapsed every failure into one opaque
+/// `HuginError::Influx(String)`. With unbounded retry that is unusable: a batch
+/// InfluxDB will *never* accept (malformed line protocol, wrong bucket, bad
+/// token) would sit at the head of the queue being retried forever, blocking
+/// every good batch behind it. Classification is what makes head-of-line
+/// blocking impossible.
+#[derive(Debug, thiserror::Error)]
+pub enum WriteError {
+    /// Connection refused, DNS failure, TLS problem, timeout — the server never
+    /// gave a verdict, so the batch is still good.
+    #[error("transport error: {0}")]
+    Transport(String),
+
+    /// InfluxDB answered, but with a fault of its own (5xx) or backpressure
+    /// (429). The batch is fine; the server isn't, yet.
+    #[error("InfluxDB returned HTTP {status}: {body}")]
+    Server {
+        status: u16,
+        body: String,
+        /// Seconds from a `Retry-After` header, when the server sent one.
+        retry_after_secs: Option<u64>,
+    },
+
+    /// InfluxDB rejected the request itself (4xx). Retrying sends the identical
+    /// bytes to the identical endpoint and gets the identical answer.
+    #[error("InfluxDB rejected the write: HTTP {status}: {body}")]
+    Client { status: u16, body: String },
+}
+
+impl WriteError {
+    /// Whether another attempt could plausibly succeed.
+    pub fn is_retryable(&self) -> bool {
+        !matches!(self, Self::Client { .. })
+    }
+
+    /// A server-supplied `Retry-After`, which InfluxDB Cloud sends on 429.
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            Self::Server {
+                retry_after_secs, ..
+            } => *retry_after_secs,
+            _ => None,
+        }
+    }
+}
 
 /// Writes probe results to InfluxDB 2.x via the HTTP line-protocol API.
 pub struct InfluxWriter {
@@ -46,7 +97,10 @@ impl InfluxWriter {
     }
 
     /// Write one or more pre-formatted line-protocol lines (newline-separated).
-    pub async fn write_lines(&self, lines: &str) -> Result<()> {
+    ///
+    /// Failures are classified (see [`WriteError`]) so the caller can tell a
+    /// transient outage from a batch that will never be accepted.
+    pub async fn write_lines(&self, lines: &str) -> std::result::Result<(), WriteError> {
         debug!(lines = %lines, "writing to InfluxDB");
 
         let resp = self
@@ -57,23 +111,54 @@ impl InfluxWriter {
             .body(lines.to_owned())
             .send()
             .await
-            .map_err(|e| HuginError::Influx(e.to_string()))?;
+            .map_err(|e| WriteError::Transport(e.to_string()))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            warn!(status = %status, body = %body, "InfluxDB write failed");
-            return Err(HuginError::Influx(format!("HTTP {status}: {body}")));
+        if resp.status().is_success() {
+            return Ok(());
         }
-        Ok(())
+
+        let status = resp.status().as_u16();
+        let retry_after_secs = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        let body = resp.text().await.unwrap_or_default();
+
+        // 408 and 429 are 4xx but transient: a request timeout and explicit
+        // backpressure both mean "later", not "never".
+        let err = if status >= 500 || status == 429 || status == 408 {
+            warn!(status, body = %body, "InfluxDB write failed — will retry");
+            WriteError::Server {
+                status,
+                body,
+                retry_after_secs,
+            }
+        } else {
+            error!(
+                status,
+                body = %body,
+                "InfluxDB rejected the write — discarding this batch, retrying it would \
+                 send identical bytes to the same endpoint"
+            );
+            WriteError::Client { status, body }
+        };
+        Err(err)
     }
 }
 
-/// Buffers up to `batch_size` results or `batch_timeout_ms`
-/// milliseconds (whichever comes first) before sending a single POST to InfluxDB.
-pub async fn run_subscriber_batched(
-    writer: Arc<InfluxWriter>,
+/// Subscribe to `hub`, group results into batches, and hand them to `queue`.
+///
+/// This task never awaits I/O. That is the point: it is the only thing reading
+/// the broadcast channel, and if it stalled — as it did when the flush was
+/// inline — the channel would fill and `Lagged` would discard results before
+/// they were ever buffered.
+///
+/// Flushes on `batch_size` results or after `batch_timeout_ms`, whichever comes
+/// first. Renders line protocol exactly once, here.
+pub async fn run_batcher(
     hub: Arc<EventHub>,
+    queue: Arc<RetryQueue>,
     batch_size: usize,
     batch_timeout_ms: u64,
 ) {
@@ -82,7 +167,6 @@ pub async fn run_subscriber_batched(
 
     let mut buffer: Vec<ProbeResult> = Vec::with_capacity(batch_size);
     let timeout_dur = Duration::from_millis(batch_timeout_ms);
-    // Start the flush timer — resets after every flush.
     let mut flush_deadline = Box::pin(tokio::time::sleep(timeout_dur));
 
     loop {
@@ -92,43 +176,137 @@ pub async fn run_subscriber_batched(
                     Ok(ProbeEvent::ProbeCompleted(result)) => {
                         buffer.push(result);
                         if buffer.len() >= batch_size {
-                            flush_buffer(&writer, &mut buffer).await;
+                            enqueue(&queue, &mut buffer);
                             flush_deadline = Box::pin(tokio::time::sleep(timeout_dur));
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        error!("InfluxDB batch subscriber dropped {n} events (channel lagged)");
+                        error!("InfluxDB batcher dropped {n} events (channel lagged)");
                     }
                     Err(broadcast::error::RecvError::Closed) => {
-                        if !buffer.is_empty() {
-                            flush_buffer(&writer, &mut buffer).await;
-                        }
-                        debug!("EventHub closed — InfluxDB batch subscriber exiting");
+                        enqueue(&queue, &mut buffer);
+                        // Tells the writer no more work is coming, so it can
+                        // drain what's left and exit.
+                        queue.close();
+                        debug!("EventHub closed — InfluxDB batcher exiting");
                         break;
                     }
                 }
             }
             _ = &mut flush_deadline => {
-                if !buffer.is_empty() {
-                    flush_buffer(&writer, &mut buffer).await;
-                }
+                enqueue(&queue, &mut buffer);
                 flush_deadline = Box::pin(tokio::time::sleep(timeout_dur));
             }
         }
     }
 }
 
-async fn flush_buffer(writer: &InfluxWriter, buffer: &mut Vec<ProbeResult>) {
+/// Render the buffer to line protocol and queue it. No-op when empty.
+fn enqueue(queue: &RetryQueue, buffer: &mut Vec<ProbeResult>) {
+    if buffer.is_empty() {
+        return;
+    }
     let lines = buffer
         .iter()
         .map(to_line_protocol)
         .collect::<Vec<_>>()
         .join("\n");
-    debug!(count = buffer.len(), "flushing InfluxDB batch");
-    if let Err(e) = writer.write_lines(&lines).await {
-        error!("InfluxDB batch write error: {e}");
-    }
+    debug!(
+        count = buffer.len(),
+        bytes = lines.len(),
+        "queueing InfluxDB batch"
+    );
+    queue.push(Arc::from(lines.as_str()));
     buffer.clear();
+}
+
+/// Drain `queue`, writing each batch to InfluxDB and retrying on transient
+/// failure.
+///
+/// Retry of the head batch is **unbounded**, deliberately. Capping attempts is
+/// self-defeating: during an outage every batch would exhaust its attempts in
+/// seconds and be discarded, the queue would never fill, `max_buffered_bytes`
+/// would never engage, and the buffer would be decorative — everything lost
+/// anyway. The real bound is memory: the queue evicts oldest when full.
+///
+/// Unbounded retry is only safe because [`WriteError::is_retryable`] discards
+/// batches InfluxDB will never accept, so a poisoned batch cannot block the
+/// head — and because `shutdown_rx` caps the drain at exit.
+pub async fn run_writer(
+    writer: Arc<InfluxWriter>,
+    queue: Arc<RetryQueue>,
+    initial_backoff_ms: u64,
+    max_backoff_ms: u64,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) {
+    let initial = Duration::from_millis(initial_backoff_ms);
+    let max = Duration::from_millis(max_backoff_ms);
+
+    while let Some(batch) = queue.wait_for_batch().await {
+        let mut attempt: u32 = 0;
+
+        loop {
+            match writer.write_lines(&batch).await {
+                Ok(()) => {
+                    queue.pop();
+                    break;
+                }
+                Err(e) if !e.is_retryable() => {
+                    // Permanent. Dropping it is what keeps the head moving.
+                    error!(error = %e, "discarding InfluxDB batch — not retryable");
+                    queue.pop();
+                    break;
+                }
+                Err(e) => {
+                    let delay = e
+                        .retry_after_secs()
+                        .map(Duration::from_secs)
+                        .unwrap_or_else(|| backoff_delay(initial, max, attempt))
+                        .min(max);
+                    warn!(
+                        error = %e,
+                        attempt = attempt + 1,
+                        delay_ms = delay.as_millis() as u64,
+                        queued_batches = queue.len(),
+                        "InfluxDB write failed — retrying"
+                    );
+                    attempt = attempt.saturating_add(1);
+
+                    // The sleep sits inside the select so a shutdown during a
+                    // long backoff isn't stuck waiting it out.
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = shutdown_rx.recv() => {
+                            debug!("shutdown during backoff — abandoning retry");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let dropped = queue.dropped_batches();
+    if dropped > 0 {
+        warn!(
+            dropped_batches = dropped,
+            dropped_bytes = queue.dropped_bytes(),
+            "InfluxDB writer exiting — batches were evicted while the queue was full"
+        );
+    }
+    debug!("InfluxDB writer exiting");
+}
+
+/// `initial * 2^attempt`, capped at `max`.
+///
+/// No jitter, on purpose: jitter de-synchronises a thundering herd, and huginn
+/// has exactly one writer task per process. Revisit if many instances ever point
+/// at one InfluxDB.
+fn backoff_delay(initial: Duration, max: Duration, attempt: u32) -> Duration {
+    initial
+        .checked_mul(1u32.checked_shl(attempt.min(31)).unwrap_or(u32::MAX))
+        .unwrap_or(max)
+        .min(max)
 }
 
 /// Build an InfluxDB line-protocol string from a ProbeResult.
@@ -367,6 +545,7 @@ mod tests {
             token_file: tf.path().to_string_lossy().into_owned(),
             batch_size: 10,
             batch_timeout_ms: 1000,
+            ..Default::default()
         };
 
         let writer = InfluxWriter::new(&cfg).unwrap();
@@ -392,6 +571,7 @@ mod tests {
             token_file: tf.path().to_string_lossy().into_owned(),
             batch_size: 10,
             batch_timeout_ms: 1000,
+            ..Default::default()
         };
 
         let writer = InfluxWriter::new(&cfg).unwrap();
@@ -411,53 +591,52 @@ mod tests {
             token_file: tf.path().to_string_lossy().into_owned(),
             batch_size: 10,
             batch_timeout_ms: 60_000,
+            ..Default::default()
         }
     }
 
-    /// Closing the hub must make the subscriber return, or shutdown hangs.
+    /// Closing the hub must make the batcher return, or shutdown hangs.
     #[tokio::test]
-    async fn batch_subscriber_exits_cleanly_when_hub_closed() {
+    async fn batcher_exits_cleanly_when_hub_closed() {
         use huginn_core::event::EventHub;
         use std::time::Duration;
 
-        let tf = token_file("mytoken");
-        // Dead port: this test is about the exit path, not about writing.
-        let cfg = influx_cfg("http://127.0.0.1:19999", &tf);
-        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
         let hub = Arc::new(EventHub::new(16));
+        let queue = Arc::new(RetryQueue::new(1024 * 1024));
 
-        let handle = tokio::spawn(run_subscriber_batched(
-            Arc::clone(&writer),
+        let handle = tokio::spawn(run_batcher(
             Arc::clone(&hub),
+            Arc::clone(&queue),
             10,
             60_000,
         ));
 
         drop(hub);
 
-        // 10s, not 2: the close path flushes the buffer, and on Windows a
-        // connect to a closed local port takes ~2s to be refused.
-        tokio::time::timeout(Duration::from_secs(10), handle)
+        // Fast now: the batcher never touches the network, it only queues.
+        tokio::time::timeout(Duration::from_secs(2), handle)
             .await
-            .expect("batch subscriber did not exit within 10s after the hub closed")
-            .expect("batch subscriber task panicked");
+            .expect("batcher did not exit within 2s after the hub closed")
+            .expect("batcher task panicked");
+
+        assert!(
+            queue.is_empty(),
+            "nothing was published, so nothing to queue"
+        );
     }
 
-    /// A lagged broadcast receiver must not take the subscriber down.
+    /// A lagged broadcast receiver must not take the batcher down.
     #[tokio::test]
-    async fn batch_subscriber_survives_lagged_events() {
+    async fn batcher_survives_lagged_events() {
         use huginn_core::event::{EventHub, ProbeEvent};
         use std::time::Duration;
 
-        let tf = token_file("mytoken");
-        let cfg = influx_cfg("http://127.0.0.1:19999", &tf);
-        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-
         // capacity=1: any second publish before recv() is processed causes Lagged.
         let hub = Arc::new(EventHub::new(1));
-        let handle = tokio::spawn(run_subscriber_batched(
-            Arc::clone(&writer),
+        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let handle = tokio::spawn(run_batcher(
             Arc::clone(&hub),
+            Arc::clone(&queue),
             10,
             60_000,
         ));
@@ -473,10 +652,77 @@ mod tests {
         tokio::task::yield_now().await;
         drop(hub);
 
-        tokio::time::timeout(Duration::from_secs(10), handle)
+        tokio::time::timeout(Duration::from_secs(2), handle)
             .await
-            .expect("batch subscriber did not exit within 10s")
-            .expect("batch subscriber task panicked on a lagged receiver");
+            .expect("batcher did not exit within 2s")
+            .expect("batcher task panicked on a lagged receiver");
+    }
+
+    /// The batcher must queue what it holds when the hub closes, not drop it —
+    /// this is the shutdown drain's first half.
+    #[tokio::test]
+    async fn batcher_queues_partial_batch_on_close() {
+        use huginn_core::event::{EventHub, ProbeEvent};
+        use std::time::Duration;
+
+        let hub = Arc::new(EventHub::new(16));
+        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        // batch_size 10 and a long timeout: 3 results would otherwise sit in the
+        // buffer forever.
+        let handle = tokio::spawn(run_batcher(
+            Arc::clone(&hub),
+            Arc::clone(&queue),
+            10,
+            60_000,
+        ));
+        tokio::task::yield_now().await;
+
+        for _ in 0..3 {
+            hub.publish(ProbeEvent::ProbeCompleted(fixed_result(true)));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(hub);
+
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("batcher did not exit")
+            .unwrap();
+
+        assert_eq!(queue.len(), 1, "the partial batch must have been queued");
+        let batch = queue.peek().unwrap();
+        assert_eq!(batch.lines().count(), 3, "all 3 results must be in it");
+    }
+
+    /// Start the full batcher → queue → writer pipeline against `url`.
+    ///
+    /// Backoff is 1ms rather than tokio::time::pause(): wiremock does real I/O,
+    /// which fights a paused clock.
+    fn start_pipeline(
+        url: &str,
+        tf: &tempfile::NamedTempFile,
+        batch_size: usize,
+        batch_timeout_ms: u64,
+        hub: &Arc<huginn_core::event::EventHub>,
+    ) -> (Arc<RetryQueue>, broadcast::Sender<()>) {
+        let cfg = influx_cfg(url, tf);
+        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
+        let queue = Arc::new(RetryQueue::new(8 * 1024 * 1024));
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        tokio::spawn(run_batcher(
+            Arc::clone(hub),
+            Arc::clone(&queue),
+            batch_size,
+            batch_timeout_ms,
+        ));
+        tokio::spawn(run_writer(
+            writer,
+            Arc::clone(&queue),
+            1,
+            10,
+            shutdown_tx.subscribe(),
+        ));
+        (queue, shutdown_tx)
     }
 
     /// 10 events → exactly 1 POST (batch flushed on count)
@@ -495,16 +741,8 @@ mod tests {
             .await;
 
         let tf = token_file("mytoken");
-        let cfg = influx_cfg(&server.uri(), &tf);
-        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
         let hub = Arc::new(EventHub::new(256));
-
-        tokio::spawn(run_subscriber_batched(
-            Arc::clone(&writer),
-            Arc::clone(&hub),
-            10,     // batch_size
-            60_000, // 60s timeout — should never trigger in this test
-        ));
+        let (_queue, _sd) = start_pipeline(&server.uri(), &tf, 10, 60_000, &hub);
         tokio::task::yield_now().await;
 
         for _ in 0..10 {
@@ -517,7 +755,7 @@ mod tests {
         server.verify().await;
     }
 
-    /// 3 events + 200ms wait → exactly 1 POST (batch flushed on timeout)
+    /// 3 events + wait → exactly 1 POST (batch flushed on timeout)
     #[tokio::test]
     async fn batch_writer_flushes_on_timeout() {
         use huginn_core::event::{EventHub, ProbeEvent};
@@ -533,26 +771,186 @@ mod tests {
             .await;
 
         let tf = token_file("mytoken");
-        let cfg = influx_cfg(&server.uri(), &tf);
-        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
         let hub = Arc::new(EventHub::new(256));
-
-        tokio::spawn(run_subscriber_batched(
-            Arc::clone(&writer),
-            Arc::clone(&hub),
-            10, // batch_size=10 — won't be reached by only 3 events
-            50, // 50ms timeout — will trigger well before batch fills
-        ));
+        // batch_size 10 won't be reached by 3 events; the 50ms timeout fires.
+        let (_queue, _sd) = start_pipeline(&server.uri(), &tf, 10, 50, &hub);
         tokio::task::yield_now().await;
 
         for _ in 0..3 {
             hub.publish(ProbeEvent::ProbeCompleted(fixed_result(true)));
         }
 
-        // Wait longer than the 50ms batch timeout
         tokio::time::sleep(Duration::from_millis(300)).await;
 
         drop(hub);
         server.verify().await;
+    }
+
+    // --- retry ----------------------------------------------------------------
+
+    #[test]
+    fn client_errors_are_permanent_server_errors_are_not() {
+        let permanent = [400u16, 401, 403, 404, 413, 422];
+        for status in permanent {
+            let e = WriteError::Client {
+                status,
+                body: String::new(),
+            };
+            assert!(!e.is_retryable(), "HTTP {status} must not be retried");
+        }
+
+        for status in [500u16, 502, 503, 504, 429, 408] {
+            let e = WriteError::Server {
+                status,
+                body: String::new(),
+                retry_after_secs: None,
+            };
+            assert!(e.is_retryable(), "HTTP {status} must be retried");
+        }
+
+        assert!(WriteError::Transport("refused".into()).is_retryable());
+    }
+
+    #[test]
+    fn backoff_doubles_and_is_capped() {
+        let initial = Duration::from_millis(500);
+        let max = Duration::from_secs(30);
+
+        assert_eq!(backoff_delay(initial, max, 0), Duration::from_millis(500));
+        assert_eq!(backoff_delay(initial, max, 1), Duration::from_secs(1));
+        assert_eq!(backoff_delay(initial, max, 2), Duration::from_secs(2));
+        assert_eq!(
+            backoff_delay(initial, max, 6),
+            Duration::from_secs(30),
+            "capped"
+        );
+        // Must not overflow into a panic or a tiny delay.
+        assert_eq!(backoff_delay(initial, max, 99), max);
+    }
+
+    /// A 401 must be discarded, not retried forever — otherwise a bad token
+    /// parks a batch at the head of the queue and blocks every good one behind it.
+    #[tokio::test]
+    async fn permanent_error_discards_the_batch_and_unblocks_the_queue() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+            .expect(1) // exactly one attempt — no retry
+            .mount(&server)
+            .await;
+
+        let tf = token_file("bad-token");
+        let cfg = influx_cfg(&server.uri(), &tf);
+        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
+        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        queue.push(Arc::from("probe_result,probe_name=x up=1i 1"));
+        queue.close();
+
+        let handle = tokio::spawn(run_writer(
+            writer,
+            Arc::clone(&queue),
+            1,
+            10,
+            shutdown_tx.subscribe(),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("writer did not exit — a permanent error was retried")
+            .unwrap();
+
+        assert!(queue.is_empty(), "poisoned batch must be discarded");
+        server.verify().await;
+    }
+
+    /// Transient failures must not lose data: the batch stays queued until the
+    /// server recovers.
+    #[tokio::test]
+    async fn transient_error_is_retried_until_it_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls2 = Arc::clone(&calls);
+
+        // Fail twice with 503, then accept.
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                let n = calls2.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    ResponseTemplate::new(503).set_body_string("unavailable")
+                } else {
+                    ResponseTemplate::new(204)
+                }
+            })
+            .mount(&server)
+            .await;
+
+        let tf = token_file("mytoken");
+        let cfg = influx_cfg(&server.uri(), &tf);
+        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
+        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        queue.push(Arc::from("probe_result,probe_name=x up=1i 1"));
+        queue.close();
+
+        let handle = tokio::spawn(run_writer(
+            writer,
+            Arc::clone(&queue),
+            1,
+            10,
+            shutdown_tx.subscribe(),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("writer did not finish retrying")
+            .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "expected 2 failures + 1 success"
+        );
+        assert!(queue.is_empty(), "batch must be popped after success");
+    }
+
+    /// Unbounded retry must not mean an unbounded process: a shutdown during
+    /// backoff has to break the loop.
+    #[tokio::test]
+    async fn shutdown_during_backoff_stops_the_writer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let tf = token_file("mytoken");
+        let cfg = influx_cfg(&server.uri(), &tf);
+        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
+        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        queue.push(Arc::from("probe_result,probe_name=x up=1i 1"));
+
+        // Long backoff so the writer is definitely sleeping when the signal lands.
+        let handle = tokio::spawn(run_writer(
+            writer,
+            Arc::clone(&queue),
+            10_000,
+            60_000,
+            shutdown_tx.subscribe(),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        shutdown_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("writer kept sleeping through shutdown")
+            .unwrap();
     }
 }

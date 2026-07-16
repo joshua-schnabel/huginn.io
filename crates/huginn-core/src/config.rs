@@ -45,6 +45,28 @@ pub struct InfluxConfig {
     /// Maximum time in milliseconds to wait before flushing a non-full batch (default 1000).
     #[serde(default = "default_batch_timeout_ms")]
     pub batch_timeout_ms: u64,
+    /// Memory ceiling for batches waiting to be written while InfluxDB is
+    /// unreachable (default 8 MiB ≈ 35k–55k results).
+    ///
+    /// Bytes rather than a point count: bytes are what actually bound RSS, and
+    /// what the queue holds is already-rendered line protocol, so no estimation
+    /// is involved. When full, the *oldest* batch is dropped.
+    #[serde(default = "default_max_buffered_bytes")]
+    pub max_buffered_bytes: usize,
+    /// First retry delay after a failed write, in milliseconds (default 500).
+    /// Doubles per attempt up to `retry_max_backoff_ms`.
+    #[serde(default = "default_retry_initial_backoff_ms")]
+    pub retry_initial_backoff_ms: u64,
+    /// Ceiling for the retry backoff, in milliseconds (default 30000).
+    #[serde(default = "default_retry_max_backoff_ms")]
+    pub retry_max_backoff_ms: u64,
+    /// How long to keep draining buffered batches after a shutdown signal,
+    /// in milliseconds (default 5000).
+    ///
+    /// Retries are otherwise unbounded, so without a deadline a shutdown while
+    /// InfluxDB is down would never complete.
+    #[serde(default = "default_shutdown_drain_timeout_ms")]
+    pub shutdown_drain_timeout_ms: u64,
 }
 
 fn default_token_file() -> String {
@@ -57,6 +79,42 @@ fn default_batch_size() -> usize {
 
 fn default_batch_timeout_ms() -> u64 {
     1000
+}
+
+fn default_max_buffered_bytes() -> usize {
+    8 * 1024 * 1024
+}
+
+fn default_retry_initial_backoff_ms() -> u64 {
+    500
+}
+
+fn default_retry_max_backoff_ms() -> u64 {
+    30_000
+}
+
+fn default_shutdown_drain_timeout_ms() -> u64 {
+    5_000
+}
+
+/// Mirrors the serde defaults, so `InfluxConfig::default()` and an empty YAML
+/// `influx:` block agree. Used by test fixtures; `url`/`org`/`bucket` have no
+/// sensible default and `validate()` rejects them empty.
+impl Default for InfluxConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            org: String::new(),
+            bucket: String::new(),
+            token_file: default_token_file(),
+            batch_size: default_batch_size(),
+            batch_timeout_ms: default_batch_timeout_ms(),
+            max_buffered_bytes: default_max_buffered_bytes(),
+            retry_initial_backoff_ms: default_retry_initial_backoff_ms(),
+            retry_max_backoff_ms: default_retry_max_backoff_ms(),
+            shutdown_drain_timeout_ms: default_shutdown_drain_timeout_ms(),
+        }
+    }
 }
 
 impl InfluxConfig {
