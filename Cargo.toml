@@ -11,6 +11,10 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# Must match the builder image in the Dockerfile. CI tests on floating stable, so
+# without this a dependency raising the MSRV past 1.85 leaves CI green while the
+# Docker build — the actual artefact — fails. With it, cargo says so up front.
+rust-version = "1.85"
 authors = ["huginn.io contributors"]
 license = "MIT"
 repository = "https://github.com/joshua-schnabel/huginn"

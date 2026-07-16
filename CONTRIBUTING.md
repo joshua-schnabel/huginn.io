@@ -65,9 +65,14 @@ Full testing guide (TDD workflow, coverage requirements, naming): **[docs/testin
 
 | Workflow | Trigger | What it checks |
 |---|---|---|
-| `ci.yml` | push/PR → `dev`, `main` | fmt · clippy · tests (stable+beta) · cargo-deny · coverage ≥80% · system integration |
-| `security.yml` | push/PR → `dev`, `main` | Semgrep SAST · Trivy CVE scan (blocks on fixable CRITICAL/HIGH on `main`) |
-| `docker.yml` | push → `dev`/`main` | Build + DockerHub publish |
+| `ci.yml` | every PR · push → `dev`, `main`, `v*` tags | fmt · clippy · tests (stable+beta) · cargo-deny · coverage ≥80% (workspace lines) · system integration · **then** DockerHub publish |
+| `security.yml` | every PR · push → any branch | Semgrep SAST (all) · Trivy CVE scan (every PR + push to `main`; blocks on fixable CRITICAL/HIGH) |
+
+Publish is a job inside `ci.yml`, gated by `needs` on every check above. It used
+to be a separate `docker.yml` that triggered on push in parallel with CI and
+depended on nothing, so a red build still shipped `:latest`.
+
+Full pipeline details: **[docs/ci-cd.md](docs/ci-cd.md)**
 
 ## Release Process
 
