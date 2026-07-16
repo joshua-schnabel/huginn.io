@@ -9,7 +9,7 @@ use huginn_core::event::{EventHub, ProbeEvent};
 use huginn_core::types::ProbeResult;
 use huginn_influx::writer::{run_subscriber_batched, InfluxWriter};
 use tokio::sync::broadcast;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod scheduler;
@@ -40,9 +40,13 @@ struct Args {
     )]
     config: String,
 
-    /// Output format: pretty (default) or json
-    #[arg(long, env = "HUGINN_LOG_FORMAT", default_value = "pretty")]
-    output: String,
+    /// Output format: pretty or json. Overrides `log.format` from the config file.
+    ///
+    /// Deliberately an Option with no default: with `default_value = "pretty"`
+    /// this was always set, so "not given" and "explicitly pretty" were
+    /// indistinguishable and the config could never be overridden back.
+    #[arg(long, env = "HUGINN_LOG_FORMAT")]
+    output: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -53,14 +57,20 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    // Load config (applies ENV overrides internally)
-    let cfg = AppConfig::load(&args.config)
+    // Load config (applies ENV overrides internally). Warnings are returned
+    // rather than logged: tracing isn't up yet — its log level comes from this
+    // very config — so anything logged here would be discarded.
+    let (cfg, mut warnings) = AppConfig::load_with_warnings(&args.config)
         .with_context(|| format!("Failed to load config from '{}'", args.config))?;
 
-    // Determine log format (CLI flag > ENV > config file)
-    let use_json = args.output.to_lowercase() == "json" || cfg.log.format == LogFormat::Json;
+    let use_json = resolve_output_format(args.output.as_deref(), &cfg.log.format, &mut warnings);
 
     init_tracing(use_json, &cfg.log.level);
+
+    // Now that there is somewhere for them to go.
+    for w in &warnings {
+        warn!("{w}");
+    }
 
     info!("huginn starting — config: {}", args.config);
 
@@ -74,6 +84,35 @@ async fn main() -> anyhow::Result<()> {
     });
 
     run(Arc::new(cfg), use_json, shutdown_tx).await
+}
+
+// ---------------------------------------------------------------------------
+// Output format resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the output format: `--output` (or `HUGINN_LOG_FORMAT`) wins over
+/// `log.format` from the config file — in *both* directions.
+///
+/// This was `args.output == "json" || cfg.log.format == Json`. Being an OR, a
+/// config file saying `format: json` could never be overridden back to pretty
+/// from the CLI, which contradicts the documented CLI > ENV > YAML precedence.
+fn resolve_output_format(
+    cli: Option<&str>,
+    cfg_format: &LogFormat,
+    warnings: &mut Vec<String>,
+) -> bool {
+    match cli {
+        Some(s) if s.eq_ignore_ascii_case("json") => true,
+        Some(s) if s.eq_ignore_ascii_case("pretty") => false,
+        Some(other) => {
+            warnings.push(format!(
+                "--output/HUGINN_LOG_FORMAT='{other}' is not a known format \
+                 (expected json/pretty) — falling back to the config file"
+            ));
+            *cfg_format == LogFormat::Json
+        }
+        None => *cfg_format == LogFormat::Json,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +300,68 @@ mod tests {
             log: LogConfig::default(),
             event_hub_capacity: 256,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_output_format
+    // -----------------------------------------------------------------------
+
+    /// The regression this function exists for: the old OR meant a config saying
+    /// json could never be overridden back to pretty from the CLI.
+    #[test]
+    fn cli_pretty_overrides_config_json() {
+        let mut w = Vec::new();
+        assert!(!resolve_output_format(
+            Some("pretty"),
+            &LogFormat::Json,
+            &mut w
+        ));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn cli_json_overrides_config_pretty() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(
+            Some("json"),
+            &LogFormat::Pretty,
+            &mut w
+        ));
+    }
+
+    #[test]
+    fn config_decides_when_cli_absent() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(None, &LogFormat::Json, &mut w));
+        assert!(!resolve_output_format(None, &LogFormat::Pretty, &mut w));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn cli_format_is_case_insensitive() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(
+            Some("JSON"),
+            &LogFormat::Pretty,
+            &mut w
+        ));
+        assert!(!resolve_output_format(
+            Some("Pretty"),
+            &LogFormat::Json,
+            &mut w
+        ));
+    }
+
+    /// An unknown value must warn and defer, not silently pick a format.
+    #[test]
+    fn unknown_cli_format_warns_and_falls_back_to_config() {
+        let mut w = Vec::new();
+        assert!(resolve_output_format(Some("xml"), &LogFormat::Json, &mut w));
+        assert_eq!(w.len(), 1);
+        assert!(
+            w[0].contains("xml"),
+            "warning should name the bad value: {w:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
