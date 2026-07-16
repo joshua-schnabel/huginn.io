@@ -296,6 +296,34 @@ mod tests {
     // run() integration tests
     // -----------------------------------------------------------------------
 
+    /// run() must NOT return while no shutdown signal has been sent.
+    ///
+    /// This is the guard for the keep-alive in run(). Deleting the
+    /// `shutdown_rx.recv().await` makes run() fall through to Ok(()) instantly,
+    /// main() returns, and the Tokio runtime cancels every probe before it
+    /// fires — the daemon monitors nothing. That bug shipped on this branch and
+    /// no test caught it: `run_exits_cleanly_on_shutdown` below asserts only
+    /// that run() *does* return, which a broken run() does trivially.
+    #[tokio::test]
+    async fn run_stays_alive_without_shutdown_signal() {
+        let tf = tempfile_with("mytoken");
+        let cfg = Arc::new(minimal_config(&tf));
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        let handle = tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
+
+        // Deliberately send nothing.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert!(
+            !handle.is_finished(),
+            "run() returned without a shutdown signal — probes are killed at startup"
+        );
+
+        shutdown_tx.send(()).ok();
+        let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    }
+
     /// run() starts, fires one probe, then shuts down cleanly.
     #[tokio::test]
     async fn run_exits_cleanly_on_shutdown() {
@@ -347,14 +375,22 @@ mod tests {
         let (shutdown_tx, _) = broadcast::channel(1);
         tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let resp = reqwest::get(format!("http://127.0.0.1:{port}/health"))
-            .await
-            .expect("health request failed");
-        assert_eq!(resp.status().as_u16(), 200);
+        // Poll rather than sleep a fixed 150ms: under load (a parallel cargo
+        // build, a busy CI runner) the listener isn't necessarily up yet, and a
+        // single unretried request made this test flake.
+        let url = format!("http://127.0.0.1:{port}/health");
+        let ok = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(reqwest::get(&url).await, Ok(r) if r.status().as_u16() == 200) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
 
         shutdown_tx.send(()).ok();
+        assert!(ok.is_ok(), "/health did not return 200 within 10s");
     }
 
     /// run() returns an error when InfluxWriter::new() fails (missing token file).
