@@ -4,8 +4,13 @@ use huginn_core::config::InfluxConfig;
 use huginn_core::error::{HuginError, Result};
 use huginn_core::event::{EventHub, ProbeEvent};
 use huginn_core::types::ProbeResult;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
+
+/// Upper bound on a single write to InfluxDB. Generous — a batch is a few KiB of
+/// line protocol — but finite, which is the point.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Writes probe results to InfluxDB 2.x via the HTTP line-protocol API.
 pub struct InfluxWriter {
@@ -21,11 +26,16 @@ impl InfluxWriter {
         let write_url = format!(
             "{}/api/v2/write?org={}&bucket={}&precision=ms",
             cfg.url.trim_end_matches('/'),
-            urlenccode(&cfg.org),
-            urlenccode(&cfg.bucket),
+            urlencode(&cfg.org),
+            urlencode(&cfg.bucket),
         );
         let client = reqwest::Client::builder()
             .use_rustls_tls()
+            // Without this the client waits forever. An InfluxDB that blackholes
+            // packets rather than refusing them would then hang the batch
+            // subscriber indefinitely — including the flush it performs on
+            // shutdown, which would stop the process from exiting at all.
+            .timeout(HTTP_TIMEOUT)
             .build()
             .map_err(|e| HuginError::Influx(e.to_string()))?;
         Ok(Self {
@@ -33,12 +43,6 @@ impl InfluxWriter {
             write_url,
             token,
         })
-    }
-
-    /// Convert a `ProbeResult` to InfluxDB line protocol and write it.
-    pub async fn write(&self, result: &ProbeResult) -> Result<()> {
-        let line = to_line_protocol(result);
-        self.write_lines(&line).await
     }
 
     /// Write one or more pre-formatted line-protocol lines (newline-separated).
@@ -65,34 +69,7 @@ impl InfluxWriter {
     }
 }
 
-/// Subscribe to `hub` and write every `ProbeCompleted` event to InfluxDB.
-/// Returns when the event hub is closed (all senders dropped).
-pub async fn run_subscriber(writer: Arc<InfluxWriter>, hub: Arc<EventHub>) {
-    let mut rx = hub.subscribe();
-    // Drop the Arc so this task doesn't keep the hub alive by itself.
-    drop(hub);
-    loop {
-        match rx.recv().await {
-            Ok(ProbeEvent::ProbeCompleted(result)) => {
-                let w = Arc::clone(&writer);
-                tokio::spawn(async move {
-                    if let Err(e) = w.write(&result).await {
-                        error!("InfluxDB write error: {e}");
-                    }
-                });
-            }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                error!("InfluxDB subscriber dropped {n} events (channel lagged)");
-            }
-            Err(broadcast::error::RecvError::Closed) => {
-                debug!("EventHub closed — InfluxDB subscriber exiting");
-                break;
-            }
-        }
-    }
-}
-
-/// Batched variant: buffers up to `batch_size` results or `batch_timeout_ms`
+/// Buffers up to `batch_size` results or `batch_timeout_ms`
 /// milliseconds (whichever comes first) before sending a single POST to InfluxDB.
 pub async fn run_subscriber_batched(
     writer: Arc<InfluxWriter>,
@@ -100,8 +77,6 @@ pub async fn run_subscriber_batched(
     batch_size: usize,
     batch_timeout_ms: u64,
 ) {
-    use std::time::Duration;
-
     let mut rx = hub.subscribe();
     drop(hub);
 
@@ -181,23 +156,44 @@ pub fn to_line_protocol(r: &ProbeResult) -> String {
     line
 }
 
+/// Escape a tag key/value for line protocol.
+///
+/// The backslash must go first: a value ending in one (`host\`) would otherwise
+/// escape the delimiter that follows it and swallow the next tag.
 fn escape_tag(s: &str) -> String {
-    s.replace(',', "\\,")
+    s.replace('\\', "\\\\")
+        .replace(',', "\\,")
         .replace('=', "\\=")
         .replace(' ', "\\ ")
 }
 
+/// Escape a quoted string field value for line protocol.
+///
+/// Newlines matter as much as quotes here: line protocol is newline-delimited,
+/// so a raw `\n` inside a field ends the line early and corrupts every
+/// subsequent point in the same batch POST. Probe errors are the one field
+/// carrying arbitrary text — reqwest and TLS errors do contain newlines — so
+/// they are rendered as the two-character sequence `\n` instead. Backslash is
+/// escaped first; the backslashes introduced afterwards are deliberate.
 fn escape_field_str(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
-fn urlenccode(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
-                vec![c]
+/// Percent-encode a string for use in a query parameter.
+///
+/// Encodes UTF-8 *bytes*, not `char`s: encoding code points emits Latin-1 for
+/// U+0080..U+00FF ("ä" as %E4 rather than %C3%A4) and invalid multi-byte output
+/// above U+00FF, so a non-ASCII org or bucket name produced a broken URL.
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .flat_map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![b as char]
             }
-            c => format!("%{:02X}", c as u32).chars().collect(),
+            b => format!("%{:02X}", b).chars().collect(),
         })
         .collect()
 }
@@ -260,6 +256,65 @@ mod tests {
         assert!(line.contains(r"probe_name=my\ probe\,1"));
     }
 
+    /// A newline in an error must never reach the output: line protocol is
+    /// newline-delimited, so a raw one ends the point early and every later
+    /// point in the same batch POST is parsed as garbage.
+    #[test]
+    fn line_protocol_never_emits_a_raw_newline_from_an_error() {
+        let mut r = fixed_result(false);
+        r.error = Some("connect failed:\nno route to host\r\ngiving up".into());
+
+        let line = to_line_protocol(&r);
+
+        assert!(
+            !line.contains('\n') && !line.contains('\r'),
+            "raw newline leaked into line protocol: {line:?}"
+        );
+        assert!(line.contains(r#"error="connect failed:\nno route to host\r\ngiving up""#));
+    }
+
+    /// A batch is joined with newlines, so one bad point must not change how
+    /// many lines the server sees.
+    #[test]
+    fn batch_with_newline_in_error_still_has_one_line_per_point() {
+        let mut bad = fixed_result(false);
+        bad.error = Some("line one\nline two".into());
+
+        let batch = [fixed_result(true), bad, fixed_result(true)]
+            .iter()
+            .map(to_line_protocol)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(
+            batch.lines().count(),
+            3,
+            "expected exactly 3 points, got:\n{batch}"
+        );
+    }
+
+    /// A tag ending in a backslash would otherwise escape the delimiter that
+    /// follows and swallow the next tag.
+    #[test]
+    fn line_protocol_escapes_trailing_backslash_in_tag() {
+        let mut r = fixed_result(true);
+        r.target = r"C:\path\".into();
+        let line = to_line_protocol(&r);
+
+        assert!(line.contains(r"target=C:\\path\\ "), "got: {line}");
+        // The delimiter after the tag section must survive intact.
+        assert!(line.contains(" up=1i"), "field section lost: {line}");
+    }
+
+    #[test]
+    fn urlencode_encodes_utf8_bytes_not_code_points() {
+        // "ä" is U+00E4 but C3 A4 in UTF-8. Encoding the code point would emit
+        // the Latin-1 %E4, which InfluxDB would reject or misread.
+        assert_eq!(urlencode("mät"), "m%C3%A4t");
+        assert_eq!(urlencode("a b&c"), "a%20b%26c");
+        assert_eq!(urlencode("plain-org_1.0~x"), "plain-org_1.0~x");
+    }
+
     #[tokio::test]
     async fn writer_posts_to_influx() {
         let server = MockServer::start().await;
@@ -281,7 +336,10 @@ mod tests {
         };
 
         let writer = InfluxWriter::new(&cfg).unwrap();
-        writer.write(&fixed_result(true)).await.unwrap();
+        writer
+            .write_lines(&to_line_protocol(&fixed_result(true)))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -303,117 +361,10 @@ mod tests {
         };
 
         let writer = InfluxWriter::new(&cfg).unwrap();
-        let result = writer.write(&fixed_result(true)).await;
-        assert!(result.is_err());
-    }
-
-    // --- run_subscriber -------------------------------------------------------
-
-    #[tokio::test]
-    async fn subscriber_writes_to_influx_on_probe_completed() {
-        use huginn_core::event::{EventHub, ProbeEvent};
-        use std::time::Duration;
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v2/write"))
-            .and(header_exists("Authorization"))
-            .respond_with(ResponseTemplate::new(204))
-            .expect(1)
-            .mount(&server)
+        let result = writer
+            .write_lines(&to_line_protocol(&fixed_result(true)))
             .await;
-
-        let tf = token_file("mytoken");
-        let cfg = huginn_core::config::InfluxConfig {
-            url: server.uri(),
-            org: "org".into(),
-            bucket: "bkt".into(),
-            token_file: tf.path().to_string_lossy().into_owned(),
-            batch_size: 10,
-            batch_timeout_ms: 1000,
-        };
-
-        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-        let hub = Arc::new(EventHub::new(16));
-
-        tokio::spawn(run_subscriber(Arc::clone(&writer), Arc::clone(&hub)));
-
-        // Give the subscriber task time to start and call hub.subscribe()
-        tokio::time::sleep(Duration::from_millis(20)).await;
-
-        hub.publish(ProbeEvent::ProbeCompleted(fixed_result(true)));
-
-        // Give the spawned write task time to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn subscriber_exits_cleanly_when_hub_closed() {
-        use huginn_core::event::EventHub;
-        use std::time::Duration;
-
-        let tf = token_file("mytoken");
-        let cfg = huginn_core::config::InfluxConfig {
-            url: "http://127.0.0.1:19999".into(),
-            org: "o".into(),
-            bucket: "b".into(),
-            token_file: tf.path().to_string_lossy().into_owned(),
-            batch_size: 10,
-            batch_timeout_ms: 1000,
-        };
-
-        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-        let hub = Arc::new(EventHub::new(16));
-
-        let handle = tokio::spawn(run_subscriber(Arc::clone(&writer), Arc::clone(&hub)));
-
-        drop(hub); // closing the hub must cause run_subscriber to return
-
-        tokio::time::timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("subscriber did not exit within 1s after hub was closed")
-            .expect("subscriber task panicked");
-    }
-
-    #[tokio::test]
-    async fn subscriber_handles_lagged_events() {
-        use huginn_core::event::{EventHub, ProbeEvent};
-        use std::time::Duration;
-
-        // Use a nonexistent server — writes fail but that's fine for this test.
-        let tf = token_file("mytoken");
-        let cfg = huginn_core::config::InfluxConfig {
-            url: "http://127.0.0.1:19999".into(),
-            org: "o".into(),
-            bucket: "b".into(),
-            token_file: tf.path().to_string_lossy().into_owned(),
-            batch_size: 10,
-            batch_timeout_ms: 1000,
-        };
-        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-
-        // capacity=1: any second publish before recv() is processed causes Lagged.
-        let hub = Arc::new(EventHub::new(1));
-        let handle = tokio::spawn(run_subscriber(Arc::clone(&writer), Arc::clone(&hub)));
-
-        // Let the subscriber task run until it is parked in rx.recv().await.
-        tokio::task::yield_now().await;
-
-        // Flood synchronously (no await) — with capacity=1 the receiver will see Lagged.
-        for _ in 0..5 {
-            hub.publish(ProbeEvent::ProbeCompleted(fixed_result(true)));
-        }
-
-        // Let the subscriber process the Lagged error, then close the hub.
-        tokio::task::yield_now().await;
-        drop(hub);
-
-        tokio::time::timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("subscriber did not exit within 1s")
-            .expect("subscriber task panicked");
+        assert!(result.is_err());
     }
 
     // --- batch subscriber -----------------------------------------------------
@@ -427,6 +378,71 @@ mod tests {
             batch_size: 10,
             batch_timeout_ms: 60_000,
         }
+    }
+
+    /// Closing the hub must make the subscriber return, or shutdown hangs.
+    #[tokio::test]
+    async fn batch_subscriber_exits_cleanly_when_hub_closed() {
+        use huginn_core::event::EventHub;
+        use std::time::Duration;
+
+        let tf = token_file("mytoken");
+        // Dead port: this test is about the exit path, not about writing.
+        let cfg = influx_cfg("http://127.0.0.1:19999", &tf);
+        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
+        let hub = Arc::new(EventHub::new(16));
+
+        let handle = tokio::spawn(run_subscriber_batched(
+            Arc::clone(&writer),
+            Arc::clone(&hub),
+            10,
+            60_000,
+        ));
+
+        drop(hub);
+
+        // 10s, not 2: the close path flushes the buffer, and on Windows a
+        // connect to a closed local port takes ~2s to be refused.
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("batch subscriber did not exit within 10s after the hub closed")
+            .expect("batch subscriber task panicked");
+    }
+
+    /// A lagged broadcast receiver must not take the subscriber down.
+    #[tokio::test]
+    async fn batch_subscriber_survives_lagged_events() {
+        use huginn_core::event::{EventHub, ProbeEvent};
+        use std::time::Duration;
+
+        let tf = token_file("mytoken");
+        let cfg = influx_cfg("http://127.0.0.1:19999", &tf);
+        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
+
+        // capacity=1: any second publish before recv() is processed causes Lagged.
+        let hub = Arc::new(EventHub::new(1));
+        let handle = tokio::spawn(run_subscriber_batched(
+            Arc::clone(&writer),
+            Arc::clone(&hub),
+            10,
+            60_000,
+        ));
+
+        // Let the task park in rx.recv().await.
+        tokio::task::yield_now().await;
+
+        // Flood synchronously so the receiver sees Lagged.
+        for _ in 0..5 {
+            hub.publish(ProbeEvent::ProbeCompleted(fixed_result(true)));
+        }
+
+        tokio::task::yield_now().await;
+        drop(hub);
+
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("batch subscriber did not exit within 10s")
+            .expect("batch subscriber task panicked on a lagged receiver");
     }
 
     /// 10 events → exactly 1 POST (batch flushed on count)
