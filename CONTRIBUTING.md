@@ -56,7 +56,7 @@ cp config/config.example.yaml config/config.yaml
 
 cargo run -- --config config/config.yaml          # pretty output
 cargo run -- --config config/config.yaml --output json
-cargo run -- --config config/config.yaml --ui     # debug web UI
+HUGINN_UI_ENABLED=true cargo run -- --config config/config.yaml   # debug web UI (no --ui flag; enable via ENV or ui.enabled: true)
 ```
 
 Full testing guide (TDD workflow, coverage requirements, naming): **[docs/testing.md](docs/testing.md)**

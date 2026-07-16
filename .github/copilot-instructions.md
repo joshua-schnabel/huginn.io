@@ -29,7 +29,8 @@ cargo llvm-cov --all --lcov --output-path lcov.info --fail-under-lines 80
 # Run locally
 cargo run -- --config config/config.yaml
 cargo run -- --config config/config.yaml --output json
-cargo run -- --config config/config.yaml --ui
+# The web UI has no CLI flag — enable it in YAML (ui.enabled: true) or via ENV:
+HUGINN_UI_ENABLED=true cargo run -- --config config/config.yaml
 ```
 
 ### System Integration Tests (Docker required)
@@ -48,10 +49,10 @@ This is a Cargo workspace. Each crate has a single, well-bounded responsibility:
 
 | Crate | Role |
 |---|---|
-| `huginn/` | Binary entry point — CLI, config loading, logging init, graceful shutdown, orchestration |
+| `huginn/` | Binary entry point — CLI, config loading, logging init, the probe **scheduler**, graceful shutdown, orchestration |
 | `crates/huginn-core/` | Shared types (`ProbeResult`), config structs, `HuginError`, `EventHub` |
-| `crates/huginn-probes/` | Probe scheduler + per-protocol executors (tcp, http, smtp, imap, udp, dns) |
-| `crates/huginn-influx/` | InfluxDB writer — line-protocol serialization, batching, HTTP POST |
+| `crates/huginn-probes/` | `Probe` trait + `ProbeRegistry` + per-protocol executors (tcp, http, smtp, imap, udp, dns) |
+| `crates/huginn-influx/` | InfluxDB writer — line-protocol serialization, batching, bounded retry queue, HTTP POST |
 | `crates/huginn-web/` | Optional Axum debug server — `/health`, `/metrics/latest`, `/events` (SSE) |
 
 ### Data Flow
@@ -61,7 +62,7 @@ main.rs
   └─ loads AppConfig (YAML + ENV overrides)
   └─ creates EventHub (tokio broadcast channel)
   └─ spawns tasks:
-       ├─ Scheduler (huginn-probes) ──publishes──► EventHub
+       ├─ Scheduler (huginn binary) ──publishes──► EventHub
        ├─ Console output             ◄─subscribes─┘
        ├─ InfluxDB writer            ◄─subscribes─┘
        └─ Web UI (if enabled)        ◄─subscribes─┘
@@ -97,12 +98,12 @@ main.rs
 
 ### InfluxDB Writes
 - Raw HTTP line protocol — no SDK
-- Format: `measurement,name=<n>,type=<t> response_ms=<v>,up=<bool>,status_code=<n> <timestamp_ms>`
-- Writes are batched: flush when `batch_size` results accumulate **or** `batch_timeout_ms` elapses
-- Non-200 responses are logged as warnings; the writer keeps running
+- Format: `probe_result,probe_name=<n>,probe_type=<t>,target=<t> up=<0|1>i,response_ms=<v.3>,status_code=<n>i,error="<s>" <timestamp_ms>` (`writer.rs:to_line_protocol`). `up` is an integer (`1i`/`0i`), `status_code`/`error` are optional, plus any `metrics` fields.
+- A `run_batcher` task groups results (flush on `batch_size` **or** `batch_timeout_ms`) and hands rendered line protocol to a bounded `RetryQueue`; a separate `run_writer` task drains it. The batcher never awaits I/O, so a slow InfluxDB can't stall the EventHub reader.
+- Failures are classified (`WriteError`): transport / 5xx / 429 / 408 are retried with exponential backoff; 4xx (400/401/403/404/413/422) discard the batch. Retry is unbounded in attempts, bounded by `max_buffered_bytes` (drop-oldest).
 
 ### Testing
-- **80% line coverage per file is enforced by CI** (`cargo llvm-cov --fail-under-lines 80`)
+- CI enforces **≥80% aggregate line coverage across the workspace** (`cargo llvm-cov --all --fail-under-lines 80`) — not per-file, not per-region. See `docs/testing.md`.
 - Unit tests live in inline `#[cfg(test)]` modules in the same file as the code under test
 - Test names describe behavior in plain English: `succeeds_on_220_banner`, `fails_on_timeout`
 - Use `#[tokio::test]` for async tests
@@ -118,19 +119,19 @@ main.rs
 
 | Workflow | Trigger | Steps |
 |---|---|---|
-| `ci.yml` | All PRs + pushes to dev/main | fmt check → clippy → tests (stable + beta matrix) → cargo deny → coverage (≥80%) → Docker integration test |
-| `sast.yml` | All PRs + pushes | Semgrep (`p/rust` + `p/secrets`); ERROR-level findings block merge |
-| `security.yml` | PR→main + push main | Trivy image scan; fixable CRITICAL/HIGH CVEs block merge |
-| `docker.yml` | PRs + push dev/main | PRs: build only; push dev: publish `:dev`; push main: publish `:latest` + git tag |
+| `ci.yml` | Every PR + push to dev/main + `v*` tags | fmt → clippy → tests (stable + beta) → cargo-deny → coverage (≥80% aggregate) → Docker integration test → **`publish` job** (DockerHub, push-only, gated by `needs:` on every check above) |
+| `security.yml` | All pushes + all PRs | Semgrep (`p/rust` + `p/secrets`, ERROR blocks) on every run; Trivy image scan (every PR + push to main, fixable CRITICAL/HIGH blocks) |
 
-Branch strategy: `feature/*` → PR → `dev` → PR → `main`
+There is no separate `sast.yml` or `docker.yml` — Semgrep lives in `security.yml`, and publishing is the `publish` job inside `ci.yml`.
+
+Branch strategy: `feature/*` → PR → `dev` → PR → `main`. Publishing pushes `:dev` on dev, `:latest` + `:x.y.z` + a git tag on main.
 
 ## Security Constraints
 
 - **No OpenSSL** — TLS is handled exclusively by **rustls** (pure Rust)
 - **Distroless runtime image** (`gcr.io/distroless/cc-debian12`), runs as `nonroot:nonroot`
 - Token files must have mode `0600`; config mounted read-only in Docker
-- `cargo deny` blocks known CVEs and unapproved licenses (MIT, Apache-2.0, BSD, ISC only)
+- `cargo deny` blocks known CVEs and unapproved licenses (allow-list in `deny.toml`: MIT, Apache-2.0, BSD-2/3, ISC, Zlib, Unicode, CC0-1.0, OpenSSL, MPL-2.0, CDLA-Permissive-2.0)
 - Never add `--privileged`, `--cap-add`, or secret values to ENV in Docker configs
 
 ## Commit Convention
