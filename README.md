@@ -6,8 +6,14 @@
 
 Lightweight uptime & latency monitor. Configures via YAML, writes to InfluxDB, ships as a distroless Docker image.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/huginn/ci.yml?branch=main&label=CI&logo=github)](https://github.com/joshua-schnabel/huginn/actions/workflows/ci.yml)
-[![Security](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/huginn/security.yml?branch=main&label=Security&logo=github)](https://github.com/joshua-schnabel/huginn/actions/workflows/security.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/huginn.io/ci.yml?branch=main&label=CI&logo=github&logoColor=white)](https://github.com/joshua-schnabel/huginn.io/actions/workflows/ci.yml)
+[![Security](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/huginn.io/security.yml?branch=main&label=security&logo=github&logoColor=white)](https://github.com/joshua-schnabel/huginn.io/actions/workflows/security.yml)
+[![License](https://img.shields.io/github/license/joshua-schnabel/huginn.io?logo=github&logoColor=white)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/joshua-schnabel/huginn.io?logo=github&logoColor=white)](https://github.com/joshua-schnabel/huginn.io/issues)
+[![Last commit](https://img.shields.io/github/last-commit/joshua-schnabel/huginn.io/dev?label=last%20change&logo=github&logoColor=white)](https://github.com/joshua-schnabel/huginn.io/commits/dev)  
+[![Docker image version](https://img.shields.io/docker/v/jschnabel/huginn/latest?label=image&color=yellow&logo=docker&logoColor=white)](https://hub.docker.com/r/jschnabel/huginn/tags)
+[![Docker image size](https://img.shields.io/docker/image-size/jschnabel/huginn/latest?logo=docker&logoColor=white)](https://hub.docker.com/r/jschnabel/huginn/tags)
+[![Docker pulls](https://img.shields.io/docker/pulls/jschnabel/huginn?logo=docker&logoColor=white)](https://hub.docker.com/r/jschnabel/huginn)
 
 ## Features
 

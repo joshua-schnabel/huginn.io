@@ -24,7 +24,7 @@ edition = "2021"
 rust-version = "1.88"
 authors = ["huginn.io contributors"]
 license = "MIT"
-repository = "https://github.com/joshua-schnabel/huginn"
+repository = "https://github.com/joshua-schnabel/huginn.io"
 
 [workspace.dependencies]
 # Async runtime

@@ -3,7 +3,7 @@
 ## Reporting a Vulnerability
 
 Please report security issues privately via
-[GitHub's private vulnerability reporting](https://github.com/joshua-schnabel/huginn/security/advisories/new)
+[GitHub's private vulnerability reporting](https://github.com/joshua-schnabel/huginn.io/security/advisories/new)
 rather than opening a public issue.
 
 Include what you need to make the case reproducible: affected version or commit,

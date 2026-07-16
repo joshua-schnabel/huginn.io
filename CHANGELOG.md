@@ -22,9 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed a real flake: `run_with_ui_enabled_responds_to_health_check` slept a fixed 150 ms and made one unretried request.
 
 ### Removed
-- `run_subscriber` and `InfluxWriter::write` — unreachable in production, kept alive only by their own tests, and inflating the coverage number that gates CI. Their two meaningful behaviours (clean exit on hub close, surviving a lagged receiver) are now tested against `run_subscriber_batched`, which is what actually ships.
+- `run_subscriber`, `run_subscriber_batched` and `InfluxWriter::write` — the old single-consumer writer paths. Replaced by the `run_batcher` + `run_writer` split (see below). Their meaningful behaviours (clean exit on hub close, surviving a lagged receiver) are now tested against the new tasks.
 
 ### Added
+- **InfluxDB resilience** — the writer is split into a `run_batcher` (groups results, never awaits I/O) and a `run_writer` (drains a bounded `RetryQueue`). Failed writes are retried with exponential backoff instead of discarded; `WriteError` classifies transport/5xx/429/408 as retryable and 4xx as permanent (dropped). Retry is unbounded in attempts, bounded in memory (`max_buffered_bytes`, drop-oldest). New `influx` config keys: `max_buffered_bytes`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `shutdown_drain_timeout_ms`.
+- **`Probe` trait + `ProbeRegistry`** — per-protocol probes implement a common trait; the registry owns shared state (the HTTP client) so probe loops no longer thread resources they don't use.
+- **`ProbeResult.metrics`** (`BTreeMap<String, f64>`) — a home for per-probe-type numeric readings (e.g. TLS expiry days, packet loss), emitted as additional line-protocol fields. No probe populates it yet.
+- **Config validation** — rejects duplicate probe names, `event_hub_capacity: 0`, `batch_size: 0`, and per-type malformed targets (dns needs `ip:port`, tcp/smtp/imap/udp need a port, http/https need an absolute URL) at load time.
 - **DNS probe** (`type: dns`) — resolves hostnames via configurable nameserver using `hickory-resolver`; optional `dns_expected_ip` validation
 - **InfluxDB batch writes** — configurable `batch_size` and `batch_timeout_ms`; reduces HTTP traffic from 1 request per probe to batched line-protocol writes
 - **Configurable EventHub capacity** — `event_hub_capacity` in app config (default 256)
@@ -44,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project renamed from `hugin.dec` to `huginn.io`
 - `cargo-audit` replaced by `cargo-deny` in all CI pipelines
 - Docker image registry: GHCR → DockerHub
+- `hickory-resolver` 0.24 → 0.26 (fixes RUSTSEC-2026-0119); raises the MSRV to Rust 1.88 (Dockerfile builder and `rust-version` bumped to match)
+- Config precedence is now honoured in both directions: `--output`/`HUGINN_LOG_FORMAT` overrides `log.format` from the config file (previously an OR that could not override back to `pretty`)
+- Invalid ENV overrides now warn and keep the previous value instead of being silently ignored
 
 ## [0.1.0] - 2025-03-25
 

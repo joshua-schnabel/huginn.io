@@ -17,10 +17,10 @@ huginn.io follows a four-level test pyramid: many fast unit tests at the base, f
           / E2E      \
          /─────────────\ End-to-End Tests
         /               \• Real binary as a subprocess
-       /   Integ.  ~24   \• Slow, but highest in-repo confidence
+       /   Integ.  ~26   \• Slow, but highest in-repo confidence
       /───────────────────\
      /                     \ Integration Tests
-    /      Unit   ~110      \• Multiple components together
+    /      Unit   ~135      \• Multiple components together
    /─────────────────────────\• Real sockets / mock HTTP servers
   /                           \Unit Tests
  /───────────────────────────── \• Single function / module
@@ -29,8 +29,8 @@ huginn.io follows a four-level test pyramid: many fast unit tests at the base, f
 
 | Level | Count | Location | Speed |
 |---|---:|---|---|
-| Unit | ~110 | `#[cfg(test)]` inside source modules | < 1 s total |
-| Integration + E2E | ~24 | `huginn/tests/*.rs`, `crates/*/tests/*.rs` | < 20 s total |
+| Unit | ~135 | `#[cfg(test)]` inside source modules | < 1 s total |
+| Integration + E2E | ~26 | `huginn/tests/*.rs`, `crates/*/tests/*.rs` | < 20 s total |
 | System Integration | 1 | `scripts/integration-test.sh` + Docker Compose | ~2 min (CI only) |
 
 Counts drift. `cargo test --workspace` is the authority.
@@ -134,6 +134,7 @@ huginn/tests/
 ├── common.rs                   – shared helpers (free_port, start_server)
 ├── config_integration_test.rs  – config loading + ENV overrides
 ├── debug_ui_test.rs            – full HTTP server + reqwest client
+├── influx_retry_test.rs        – no data lost while InfluxDB is briefly down (acceptance test)
 ├── multi_probe_e2e_test.rs     – EventHub → WebState → HTTP
 └── sse_test.rs                 – SSE stream delivery
 ```

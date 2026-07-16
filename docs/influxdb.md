@@ -20,6 +20,7 @@
 | `response_ms` | float | Response time in milliseconds |
 | `status_code` | integer | HTTP status code (HTTP probes only) |
 | `error` | string | Error message when down |
+| _metrics_ | float | Per-probe-type extra readings, if any — each `ProbeResult.metrics` entry becomes its own field (e.g. `tls_cert_expiry_days`, `packet_loss_pct`). None emitted yet. |
 
 ## Example Flux Queries
 

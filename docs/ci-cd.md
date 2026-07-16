@@ -38,7 +38,7 @@ feature/my-feature
 | Supply-Chain (cargo-deny) | ✅ | ✅ | ✅ | ✅ |
 | Code Coverage ≥ 80% | ✅ | ✅ | ✅ | ✅ |
 | System Integration Test | ✅ | ✅ | ✅ | ✅ |
-| **Semgrep SAST** | ✅ 🚫* | ✅ | ✅ | ✅ |
+| **Semgrep SAST** | ✅ 🚫* | ✅ | ✅ | ❌ |
 | Trivy CVE Scan (SARIF) | ✅ | ❌ | ✅ | ❌ |
 | Trivy blocking scan | ✅ 🚫 | ❌ | ✅ | ❌ |
 | Publish to DockerHub | ❌ | ✅ :dev + :0.1.0-dev | ✅ :latest + :0.1.0 | ✅ semver tags |
