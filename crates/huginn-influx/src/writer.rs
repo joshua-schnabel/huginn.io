@@ -28,7 +28,11 @@ impl InfluxWriter {
             .use_rustls_tls()
             .build()
             .map_err(|e| HuginError::Influx(e.to_string()))?;
-        Ok(Self { client, write_url, token })
+        Ok(Self {
+            client,
+            write_url,
+            token,
+        })
     }
 
     /// Convert a `ProbeResult` to InfluxDB line protocol and write it.
@@ -374,7 +378,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscriber_handles_lagged_events() {        use huginn_core::event::{EventHub, ProbeEvent};
+    async fn subscriber_handles_lagged_events() {
+        use huginn_core::event::{EventHub, ProbeEvent};
         use std::time::Duration;
 
         // Use a nonexistent server — writes fail but that's fine for this test.
@@ -447,7 +452,7 @@ mod tests {
         tokio::spawn(run_subscriber_batched(
             Arc::clone(&writer),
             Arc::clone(&hub),
-            10,    // batch_size
+            10,     // batch_size
             60_000, // 60s timeout — should never trigger in this test
         ));
         tokio::task::yield_now().await;

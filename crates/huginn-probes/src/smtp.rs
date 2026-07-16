@@ -24,7 +24,12 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     };
 
     let mut buf = [0u8; 512];
-    let read = with_probe_timeout(cfg.timeout(), "timeout reading banner", stream.read(&mut buf)).await;
+    let read = with_probe_timeout(
+        cfg.timeout(),
+        "timeout reading banner",
+        stream.read(&mut buf),
+    )
+    .await;
     let elapsed = elapsed_ms();
 
     match read {
@@ -42,7 +47,13 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
                 )
             }
         }
-        Ok(_) => ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, "empty banner".to_string()),
+        Ok(_) => ProbeResult::failure(
+            &cfg.name,
+            "smtp",
+            &cfg.target,
+            elapsed,
+            "empty banner".to_string(),
+        ),
         Err(msg) => ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, msg),
     }
 }
@@ -112,6 +123,10 @@ mod tests {
 
         let result = probe(&smtp_cfg(&addr.to_string())).await;
         assert!(!result.up);
-        assert!(result.error.as_deref().unwrap_or("").contains("empty banner"));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("empty banner"));
     }
 }

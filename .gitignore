@@ -4,3 +4,5 @@
 secrets/
 *.token
 .env
+# local integration-test scratch directory
+/temp-int/

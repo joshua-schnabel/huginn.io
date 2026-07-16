@@ -11,8 +11,6 @@
 
 # ── Advisories (RustSec vulnerability database) ──────────────────────────────
 [advisories]
-# Minimum severity to treat as an error
-severity-threshold = "medium"
 # List of advisory IDs to ignore (e.g. false positives or accepted risks)
 # Format: ignore = ["RUSTSEC-2020-0001"]
 ignore = []
@@ -34,11 +32,9 @@ allow = [
     "Unicode-3.0",
     "CC0-1.0",
     "OpenSSL",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
-# Deny unlicensed crates outright
-unlicensed = "deny"
-# Warn on copyleft licenses (GPL, LGPL, MPL) but don't fail
-copyleft = "warn"
 
 # ── Bans ─────────────────────────────────────────────────────────────────────
 [bans]

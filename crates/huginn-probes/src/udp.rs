@@ -29,7 +29,7 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
         0x00, 0x00, // ANCOUNT = 0
         0x00, 0x00, // NSCOUNT = 0
         0x00, 0x00, // ARCOUNT = 0
-        0x00,       // Root label (empty name)
+        0x00, // Root label (empty name)
         0x00, 0x01, // QTYPE = A
         0x00, 0x01, // QCLASS = IN
     ];
@@ -49,7 +49,13 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
 
     match recv {
         Ok(n) if n > 0 => ProbeResult::success(&cfg.name, "udp", &cfg.target, elapsed, None),
-        Ok(_) => ProbeResult::failure(&cfg.name, "udp", &cfg.target, elapsed, "empty response".to_string()),
+        Ok(_) => ProbeResult::failure(
+            &cfg.name,
+            "udp",
+            &cfg.target,
+            elapsed,
+            "empty response".to_string(),
+        ),
         Err(msg) => ProbeResult::failure(&cfg.name, "udp", &cfg.target, elapsed, msg),
     }
 }

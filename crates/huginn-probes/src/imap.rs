@@ -24,7 +24,12 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     };
 
     let mut buf = [0u8; 512];
-    let read = with_probe_timeout(cfg.timeout(), "timeout reading greeting", stream.read(&mut buf)).await;
+    let read = with_probe_timeout(
+        cfg.timeout(),
+        "timeout reading greeting",
+        stream.read(&mut buf),
+    )
+    .await;
     let elapsed = elapsed_ms();
 
     match read {
@@ -118,6 +123,10 @@ mod tests {
 
         let result = probe(&imap_cfg(&addr.to_string())).await;
         assert!(!result.up);
-        assert!(result.error.as_deref().unwrap_or("").contains("empty greeting"));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("empty greeting"));
     }
 }

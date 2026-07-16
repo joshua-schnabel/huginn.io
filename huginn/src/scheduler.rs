@@ -122,7 +122,11 @@ mod tests {
     async fn scheduler_emits_probe_result() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { loop { let _ = listener.accept().await; } });
+        tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
 
         let cfg = make_config(vec![tcp_probe(&addr.to_string(), 1)]);
         let hub = Arc::new(EventHub::new(256));
@@ -157,19 +161,28 @@ mod tests {
 
         let closed = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if let Err(broadcast::error::RecvError::Closed) = rx.recv().await { return true }
+                if let Err(broadcast::error::RecvError::Closed) = rx.recv().await {
+                    return true;
+                }
             }
         })
         .await;
 
-        assert!(closed.is_ok(), "Scheduler did not exit after immediate shutdown");
+        assert!(
+            closed.is_ok(),
+            "Scheduler did not exit after immediate shutdown"
+        );
     }
 
     #[tokio::test]
     async fn graceful_shutdown_completes_within_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { loop { let _ = listener.accept().await; } });
+        tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
 
         let cfg = make_config(vec![tcp_probe(&addr.to_string(), 60)]); // long interval
         let hub = Arc::new(EventHub::new(256));
@@ -184,17 +197,19 @@ mod tests {
         shutdown_tx.send(()).unwrap();
         drop(hub);
 
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(2),
-            async {
-                loop {
-                    if let Err(broadcast::error::RecvError::Closed) = rx.recv().await { return true }
+        let outcome = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Err(broadcast::error::RecvError::Closed) = rx.recv().await {
+                    return true;
                 }
-            },
-        )
+            }
+        })
         .await;
 
-        assert!(outcome.is_ok(), "probe loops did not exit after shutdown signal");
+        assert!(
+            outcome.is_ok(),
+            "probe loops did not exit after shutdown signal"
+        );
     }
 
     #[tokio::test]

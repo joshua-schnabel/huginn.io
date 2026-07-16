@@ -64,12 +64,6 @@ done
 
 # ── 4. Assert expected probe names are present ────────────────────────────────
 METRICS=$(curl -sf "$HUGINN_URL/metrics/latest")
-python3 - <<'EOF'
-import json, sys
-
-with open('/dev/stdin', 'r') as f:
-    data = json.loads(sys.stdin.read() if not f.readable() else f.read())
-EOF
 python3 -c "
 import json, sys
 data = json.loads('''$METRICS''')

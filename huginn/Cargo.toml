@@ -2,16 +2,17 @@
 name = "huginn"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "huginn"
 path = "src/main.rs"
 
 [dependencies]
-huginn-core   = { path = "../crates/huginn-core" }
-huginn-probes = { path = "../crates/huginn-probes" }
-huginn-influx = { path = "../crates/huginn-influx" }
-huginn-web    = { path = "../crates/huginn-web" }
+huginn-core   = { path = "../crates/huginn-core",   version = "0.1.0" }
+huginn-probes = { path = "../crates/huginn-probes", version = "0.1.0" }
+huginn-influx = { path = "../crates/huginn-influx", version = "0.1.0" }
+huginn-web    = { path = "../crates/huginn-web",    version = "0.1.0" }
 tokio              = { workspace = true }
 clap               = { workspace = true }
 tracing            = { workspace = true }
@@ -25,7 +26,5 @@ reqwest            = { workspace = true }
 [dev-dependencies]
 tempfile  = { workspace = true }
 reqwest   = { workspace = true }
-wiremock  = "0.6"
-huginn-core = { path = "../crates/huginn-core" }
-huginn-web  = { path = "../crates/huginn-web" }
+wiremock  = { workspace = true }
 
