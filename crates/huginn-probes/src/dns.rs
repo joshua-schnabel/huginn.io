@@ -9,8 +9,23 @@ use hickory_resolver::{Resolver, TokioResolver};
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 
-use crate::with_probe_timeout;
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
 
+/// DNS resolution check.
+///
+/// Stateless: the resolver is per-probe because it is pinned to the nameserver
+/// in `target`, which differs per configured probe.
+pub struct DnsProbe;
+
+#[async_trait]
+impl Probe for DnsProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
+
+/// Resolve `dns_query` via the nameserver in `target` and measure the lookup.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let query = cfg.dns_query.as_deref().unwrap_or("example.com");
     let nameserver: SocketAddr = match cfg.target.parse() {

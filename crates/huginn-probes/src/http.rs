@@ -4,7 +4,39 @@ use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use reqwest::Client;
 
-use crate::with_probe_timeout;
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// HTTP/HTTPS status check.
+///
+/// Owns the `reqwest::Client` — the one piece of genuinely shared probe state.
+/// It carries the connection pool, so it is built once here rather than per
+/// tick, and it no longer has to be threaded through probe loops that don't
+/// speak HTTP.
+pub struct HttpProbe {
+    client: Client,
+}
+
+impl HttpProbe {
+    pub fn new() -> Self {
+        Self {
+            client: build_client(),
+        }
+    }
+}
+
+impl Default for HttpProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Probe for HttpProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg, &self.client).await
+    }
+}
 
 /// Perform an HTTP/HTTPS GET request and measure response time.
 pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {

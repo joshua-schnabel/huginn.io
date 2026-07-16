@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use huginn_core::config::{AppConfig, ProbeConfig, ProbeType};
+use huginn_core::config::{AppConfig, ProbeConfig};
 use huginn_core::event::{EventHub, ProbeEvent};
 use huginn_core::types::ProbeResult;
 use tokio::sync::broadcast;
 use tokio::time::interval;
 use tracing::{error, info};
 
-use huginn_probes::{dns, http, imap, smtp, tcp, udp};
+use huginn_probes::ProbeRegistry;
 
 use crate::Shutdown;
 
@@ -15,22 +15,24 @@ use crate::Shutdown;
 /// Results are published to the given `EventHub` as `ProbeEvent::ProbeCompleted`.
 /// Each probe loop listens on its own shutdown receiver and exits cleanly.
 pub async fn run(cfg: Arc<AppConfig>, hub: Arc<EventHub>, shutdown_tx: Shutdown) {
-    let http_client = Arc::new(http::build_client());
+    // One registry for every loop. It owns the shared HTTP client (and whatever
+    // future probes need), so loops that don't speak HTTP no longer carry one.
+    let registry = Arc::new(ProbeRegistry::new());
 
     for probe_cfg in &cfg.probes {
         let probe_cfg = probe_cfg.clone();
         let hub = Arc::clone(&hub);
-        let http_client = Arc::clone(&http_client);
+        let registry = Arc::clone(&registry);
         let shutdown_rx = shutdown_tx.subscribe();
 
-        tokio::spawn(run_probe_loop(probe_cfg, hub, http_client, shutdown_rx));
+        tokio::spawn(run_probe_loop(probe_cfg, hub, registry, shutdown_rx));
     }
 }
 
 async fn run_probe_loop(
     cfg: ProbeConfig,
     hub: Arc<EventHub>,
-    http_client: Arc<reqwest::Client>,
+    registry: Arc<ProbeRegistry>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
     let mut ticker = interval(cfg.interval());
@@ -39,7 +41,7 @@ async fn run_probe_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                let result = execute_probe(&cfg, &http_client).await;
+                let result = execute_probe(&cfg, &registry).await;
                 hub.publish(ProbeEvent::ProbeCompleted(result));
             }
             _ = shutdown_rx.recv() => {
@@ -50,15 +52,10 @@ async fn run_probe_loop(
     }
 }
 
-async fn execute_probe(cfg: &ProbeConfig, http_client: &reqwest::Client) -> ProbeResult {
-    let result = match cfg.probe_type {
-        ProbeType::Tcp => tcp::probe(cfg).await,
-        ProbeType::Http | ProbeType::Https => http::probe(cfg, http_client).await,
-        ProbeType::Smtp => smtp::probe(cfg).await,
-        ProbeType::Imap => imap::probe(cfg).await,
-        ProbeType::Udp => udp::probe(cfg).await,
-        ProbeType::Dns => dns::probe(cfg).await,
-    };
+/// Run one probe and log the outcome. Dispatch lives in the registry, in the
+/// crate that owns the probes.
+async fn execute_probe(cfg: &ProbeConfig, registry: &ProbeRegistry) -> ProbeResult {
+    let result = registry.get(&cfg.probe_type).probe(cfg).await;
 
     if result.up {
         info!(

@@ -4,7 +4,18 @@ use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use tokio::net::UdpSocket;
 
-use crate::with_probe_timeout;
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// UDP liveness check. Stateless.
+pub struct UdpProbe;
+
+#[async_trait]
+impl Probe for UdpProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
 
 /// Send a minimal DNS query payload to the target and wait for any response.
 /// A non-empty response indicates the service is alive.

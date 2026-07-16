@@ -52,6 +52,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 anyhow = "1"
 thiserror = "1"
 
+# Object-safe async traits.
+# Native `async fn` in traits is stable since 1.75, but AFIT traits are not
+# dyn-compatible, and `&dyn Probe` is the whole point. Proc-macro only, and
+# already in the tree via axum — zero new runtime dependencies.
+async-trait = "0.1"
+
 # Colored output
 colored = "2"
 

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 huginn-core = { path = "../huginn-core", version = "0.1.0" }
 tokio = { workspace = true }
+async-trait = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

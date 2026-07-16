@@ -5,7 +5,18 @@ use huginn_core::types::ProbeResult;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
-use crate::with_probe_timeout;
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// SMTP banner check. Stateless.
+pub struct SmtpProbe;
+
+#[async_trait]
+impl Probe for SmtpProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
 
 /// Connect to an SMTP port, read the 220 banner line and measure response time.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {

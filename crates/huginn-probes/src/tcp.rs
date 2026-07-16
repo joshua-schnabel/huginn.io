@@ -4,7 +4,18 @@ use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use tokio::net::TcpStream;
 
-use crate::with_probe_timeout;
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// TCP connect check. Stateless.
+pub struct TcpProbe;
+
+#[async_trait]
+impl Probe for TcpProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
 
 /// Connect to a TCP host:port and measure the handshake time.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {

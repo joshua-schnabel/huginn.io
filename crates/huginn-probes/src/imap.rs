@@ -5,7 +5,18 @@ use huginn_core::types::ProbeResult;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
-use crate::with_probe_timeout;
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// IMAP greeting check. Stateless.
+pub struct ImapProbe;
+
+#[async_trait]
+impl Probe for ImapProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
 
 /// Connect to an IMAP port and verify the server greeting starts with `* OK`.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
