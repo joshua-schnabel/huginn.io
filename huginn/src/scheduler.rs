@@ -294,6 +294,18 @@ mod tests {
         drop(shutdown_tx);
     }
 
+    /// Question section only — see `huginn_probes::dns` tests: the resolver
+    /// appends an EDNS(0) OPT record, and copying it into a response that
+    /// declares ARCOUNT=0 misplaces the answer.
+    fn question_section(query: &[u8]) -> &[u8] {
+        let mut i = 12;
+        while i < query.len() && query[i] != 0 {
+            i += 1 + query[i] as usize;
+        }
+        i += 1 + 4;
+        &query[12..i.min(query.len())]
+    }
+
     fn build_dns_a_response(query: &[u8], ip: [u8; 4]) -> Vec<u8> {
         let mut r = Vec::new();
         r.extend_from_slice(&query[0..2]);
@@ -301,7 +313,7 @@ mod tests {
         r.extend_from_slice(&[0x00, 0x01]);
         r.extend_from_slice(&[0x00, 0x01]);
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-        r.extend_from_slice(&query[12..]);
+        r.extend_from_slice(question_section(query));
         r.extend_from_slice(&[0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01]);
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C, 0x00, 0x04]);
         r.extend_from_slice(&ip);

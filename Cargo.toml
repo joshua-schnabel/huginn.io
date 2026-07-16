@@ -58,7 +58,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # tokio-cron-scheduler = "0.11"
 
 # DNS resolver
-hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+# 0.26 required: 0.24 pulls hickory-proto <0.26.1 (RUSTSEC-2026-0119, O(n²) name compression)
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
 
 # Test helpers (available workspace-wide)
 tempfile = "3"
