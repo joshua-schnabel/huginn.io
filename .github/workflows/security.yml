@@ -89,7 +89,7 @@ jobs:
 
       # Pass 1: Full scan → SARIF (all severities, always uploaded)
       - name: Trivy – full scan (SARIF)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: huginn:security-scan
           format: sarif
@@ -106,7 +106,7 @@ jobs:
 
       # Pass 2: Blocking scan — fixable CRITICAL/HIGH only
       - name: Trivy – blocking scan (fixable CRITICAL/HIGH only)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: huginn:security-scan
           format: table
