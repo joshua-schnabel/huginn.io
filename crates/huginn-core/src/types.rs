@@ -1,5 +1,21 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// Well-known keys for [`ProbeResult::metrics`].
+///
+/// Constants rather than bare strings so a typo is a compile error on one side
+/// of the producer/consumer pair at least, and so the set is discoverable.
+pub mod metric_keys {
+    /// Days until the TLS certificate expires. Negative once expired.
+    pub const TLS_CERT_EXPIRY_DAYS: &str = "tls_cert_expiry_days";
+    /// Percentage of ICMP echo requests that got no reply (0.0–100.0).
+    pub const PACKET_LOSS_PCT: &str = "packet_loss_pct";
+    /// Fastest round-trip of an ICMP probe, in milliseconds.
+    pub const ICMP_RTT_MIN_MS: &str = "icmp_rtt_min_ms";
+    /// Slowest round-trip of an ICMP probe, in milliseconds.
+    pub const ICMP_RTT_MAX_MS: &str = "icmp_rtt_max_ms";
+}
 
 /// Result of a single probe execution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -12,6 +28,23 @@ pub struct ProbeResult {
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub timestamp: DateTime<Utc>,
+    /// Extra numeric readings that only some probe types produce — TLS days to
+    /// expiry, ICMP packet loss, and whatever comes next.
+    ///
+    /// A map rather than named `Option` fields, which is what `status_code`
+    /// above did and what the obvious next step would be. The reason is the
+    /// Prometheus exporter: over named fields it needs one hand-written block
+    /// per field, forever; over a map it is one loop, and a new probe type needs
+    /// no exporter change at all. See `metric_keys` for the known keys.
+    ///
+    /// `BTreeMap`, not `HashMap`: iteration order feeds InfluxDB line protocol,
+    /// and random field order would make output irreproducible.
+    ///
+    /// `skip_serializing_if` keeps existing JSON byte-identical for every probe
+    /// type that produces no metrics — the SSE payload and `/metrics/latest`
+    /// contract are unchanged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metrics: BTreeMap<String, f64>,
 }
 
 impl ProbeResult {
@@ -31,6 +64,7 @@ impl ProbeResult {
             status_code,
             error: None,
             timestamp: Utc::now(),
+            metrics: BTreeMap::new(),
         }
     }
 
@@ -50,7 +84,18 @@ impl ProbeResult {
             status_code: None,
             error: Some(error.into()),
             timestamp: Utc::now(),
+            metrics: BTreeMap::new(),
         }
+    }
+
+    /// Attach a metric, builder-style: `ProbeResult::success(..).with_metric(k, v)`.
+    ///
+    /// A builder rather than more constructor parameters — `success`/`failure`
+    /// have 36 call sites, and none of them need to change for this.
+    #[must_use]
+    pub fn with_metric(mut self, key: impl Into<String>, value: f64) -> Self {
+        self.metrics.insert(key.into(), value);
+        self
     }
 }
 
@@ -79,5 +124,60 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let decoded: ProbeResult = serde_json::from_str(&json).unwrap();
         assert_eq!(r, decoded);
+    }
+
+    /// The property that makes adding `metrics` safe: probe types that produce
+    /// none serialise exactly as before, so the SSE payload and the
+    /// /metrics/latest contract are untouched.
+    #[test]
+    fn empty_metrics_are_absent_from_json() {
+        let r = ProbeResult::success("p1", "tcp", "host:80", 1.0, None);
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("metrics"),
+            "empty metrics must not appear in JSON: {json}"
+        );
+    }
+
+    #[test]
+    fn metrics_roundtrip_when_present() {
+        let r = ProbeResult::success("p1", "tls", "example.com:443", 12.0, None)
+            .with_metric(metric_keys::TLS_CERT_EXPIRY_DAYS, 47.0);
+
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("tls_cert_expiry_days"));
+
+        let decoded: ProbeResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, decoded);
+        assert_eq!(decoded.metrics["tls_cert_expiry_days"], 47.0);
+    }
+
+    /// Old payloads without the field must still deserialise.
+    #[test]
+    fn json_without_metrics_field_deserialises() {
+        let json = r#"{"probe_name":"p","probe_type":"tcp","target":"h:80","up":true,
+            "response_ms":1.0,"status_code":null,"error":null,
+            "timestamp":"2024-01-15T10:00:00Z"}"#;
+        let decoded: ProbeResult = serde_json::from_str(json).unwrap();
+        assert!(decoded.metrics.is_empty());
+    }
+
+    #[test]
+    fn with_metric_is_chainable() {
+        let r = ProbeResult::success("p", "icmp", "1.1.1.1", 5.0, None)
+            .with_metric(metric_keys::PACKET_LOSS_PCT, 33.3)
+            .with_metric(metric_keys::ICMP_RTT_MIN_MS, 4.0);
+        assert_eq!(r.metrics.len(), 2);
+        assert_eq!(r.metrics["packet_loss_pct"], 33.3);
+    }
+
+    /// Expired certificates are the case worth reporting, so the value has to
+    /// carry a sign.
+    #[test]
+    fn metric_values_may_be_negative() {
+        let r = ProbeResult::failure("p", "tls", "example.com:443", 5.0, "expired")
+            .with_metric(metric_keys::TLS_CERT_EXPIRY_DAYS, -4.0);
+        assert_eq!(r.metrics["tls_cert_expiry_days"], -4.0);
+        assert!(!r.up);
     }
 }

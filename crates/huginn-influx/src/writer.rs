@@ -151,6 +151,11 @@ pub fn to_line_protocol(r: &ProbeResult) -> String {
     if let Some(err) = &r.error {
         line.push_str(&format!(",error=\"{}\"", escape_field_str(err)));
     }
+    // Probe-type-specific readings (TLS expiry, ICMP loss, …). InfluxDB is
+    // schemaless, so new keys need no migration. BTreeMap ⇒ deterministic order.
+    for (key, value) in &r.metrics {
+        line.push_str(&format!(",{}={}", escape_tag(key), value));
+    }
 
     line.push_str(&format!(" {}", ts_ms));
     line
@@ -217,6 +222,7 @@ mod tests {
             status_code: if up { Some(200) } else { None },
             error: if up { None } else { Some("timeout".into()) },
             timestamp: chrono::Utc.with_ymd_and_hms(2024, 1, 15, 10, 0, 0).unwrap(),
+            metrics: Default::default(),
         }
     }
 
@@ -304,6 +310,34 @@ mod tests {
         assert!(line.contains(r"target=C:\\path\\ "), "got: {line}");
         // The delimiter after the tag section must survive intact.
         assert!(line.contains(" up=1i"), "field section lost: {line}");
+    }
+
+    #[test]
+    fn line_protocol_includes_metrics() {
+        let r = fixed_result(true).with_metric("tls_cert_expiry_days", 47.0);
+        let line = to_line_protocol(&r);
+        assert!(line.contains(",tls_cert_expiry_days=47"), "got: {line}");
+    }
+
+    /// BTreeMap ordering is the reason the field order is reproducible; a
+    /// HashMap here would emit a different line on every call.
+    #[test]
+    fn line_protocol_metric_order_is_deterministic() {
+        let r = fixed_result(true)
+            .with_metric("zzz_last", 2.0)
+            .with_metric("aaa_first", 1.0);
+        let line = to_line_protocol(&r);
+        let first = line.find("aaa_first").expect("aaa_first missing");
+        let last = line.find("zzz_last").expect("zzz_last missing");
+        assert!(first < last, "metrics not sorted: {line}");
+    }
+
+    /// A probe with no metrics must produce exactly the line it always did.
+    #[test]
+    fn line_protocol_unchanged_without_metrics() {
+        let line = to_line_protocol(&fixed_result(true));
+        assert!(!line.contains(",tls_"), "unexpected metric fields: {line}");
+        assert!(line.ends_with(" 1705312800000"), "timestamp moved: {line}");
     }
 
     #[test]
