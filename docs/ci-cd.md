@@ -62,9 +62,10 @@ Runs on every pull request, on pushes to `dev`/`main`, and on `v*.*.*` tags.
 - **check**: `cargo fmt --check` + `cargo clippy -D warnings`
 - **test**: `cargo test --all` on Rust stable *and* beta (`fail-fast: false`)
 - **supply-chain**: `cargo deny check` — advisory CVEs + licenses + banned crates + registry sources
-- **coverage**: `cargo llvm-cov --fail-under-lines 80` — **workspace-aggregate line** coverage. Not per-file, not regions; see `docs/testing.md`.
+- **coverage**: `cargo llvm-cov --fail-under-lines 80` — **workspace-aggregate line** coverage. Not per-file, not regions; see `docs/testing.md`. The `cargo-llvm-cov` binary is compiled once and cached (pinned version); `cargo-deny` is deliberately left on the latest release so it keeps detecting new advisory classes.
 - **system-integration**: Docker Compose test (InfluxDB + huginn, curl assertions)
-- **publish**: DockerHub push. `needs` every job above, and `if: github.event_name == 'push'` — so it never runs on a PR and never sees credentials there.
+- **build-image** (matrix): builds one image per architecture on its **native** runner — amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm` — and pushes each by digest. Native runners replace QEMU emulation, which had turned the arm64 build into the pipeline's dominant cost.
+- **publish**: downloads the per-arch digests, assembles the multi-arch manifest with `docker buildx imagetools create`, tags it, and creates the release git tag on main. `needs: [build-image]` (which needs every gate above), and `if: github.event_name == 'push'` — so it never runs on a PR and never sees credentials there.
 
 **Publish lives in `ci.yml` on purpose.** As its own `docker.yml` workflow it
 triggered on `push` in parallel with CI and depended on nothing, so a commit
