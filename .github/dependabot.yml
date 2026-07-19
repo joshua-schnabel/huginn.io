@@ -1,24 +1,31 @@
 version: 2
 
-# Continuous dependency updates. Dependabot opens its own PRs against the
-# default branch (dev); they run through the normal CI + security gates like
-# any other PR. Minor/patch bumps are grouped into one PR each to cut noise;
-# majors come as individual PRs so breaking changes are reviewed on their own.
+# Continuous dependency updates, consolidated. Each ecosystem gets ONE grouped
+# PR that Dependabot keeps maintained (rebased, deps added/removed as they
+# change) instead of a PR per dependency. Dependabot cannot group across
+# ecosystems, so this is one PR for Rust crates + one for GitHub Actions.
 #
-# Note: Dependabot uses `dependabot/*` branch names, which auto-pr.yml is
-# configured to leave alone (see its branches-ignore).
+# The group includes major bumps too, so the PR really is "everything in one".
+# Interaction with dependabot-auto-merge.yml: that workflow only auto-merges
+# patch/minor, so a group PR that happens to include a major waits for manual
+# review — you review exactly when a breaking bump is present.
+#
+# Security updates (advisory-driven) are intentionally NOT grouped — Dependabot
+# still opens those as their own PRs so an urgent CVE fix isn't held back.
+#
+# Note: Dependabot uses `dependabot/*` branch names, which auto-pr.yml leaves
+# alone (see its branches-ignore).
 updates:
   # ── Rust crates (workspace root Cargo.toml / Cargo.lock) ──────────────────
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
     commit-message:
       prefix: chore
     groups:
-      cargo-minor-patch:
-        update-types: ["minor", "patch"]
+      cargo:
+        patterns: ["*"]
 
   # ── GitHub Actions pinned in .github/workflows ────────────────────────────
   - package-ecosystem: github-actions
@@ -28,5 +35,5 @@ updates:
     commit-message:
       prefix: chore
     groups:
-      actions-minor-patch:
-        update-types: ["minor", "patch"]
+      github-actions:
+        patterns: ["*"]
