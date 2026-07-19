@@ -4,15 +4,10 @@ on:
   push:
     branches: ["main", "dev"]
     tags: ["v*.*.*"]
-  # Every PR, whatever it targets. Previously limited to main/dev, which left
-  # feature branches with no gate at all — that is how feature/refactoring and
-  # dev diverged into two different "CI fixes", one of which silently dropped
-  # the keep-alive in run().
+  # Every PR, whatever its target branch — so every change is gated before merge.
   pull_request:
 
-# Cancel stale runs for the same ref (e.g. rapid pushes to a feature branch).
-# Never cancel a push run: this workflow publishes to DockerHub, and killing
-# that mid-flight is not something to do for a superseded commit.
+# Cancel superseded PR runs. Never cancel a push run — it may be mid-publish.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -39,10 +34,10 @@ env:
 #                                         ▼
 #              publish → multi-arch manifest, staging cleanup, release tag
 #
-# One responsibility per job. The image is built exactly ONCE per architecture;
-# that single tarball is the artifact every later job consumes, so the bytes
-# scanned, tested and published are byte-for-byte identical — nothing unscanned
-# can reach the registry (publish needs scan AND integration).
+# One job, one responsibility. The image is built ONCE per arch into a tarball;
+# every later job consumes that same artifact, so the bytes scanned, tested and
+# published are identical. publish needs scan AND integration, so nothing
+# unscanned can ship.
 
 jobs:
   # ── Gate 1: Format & Lint ──────────────────────────────────────────────────
@@ -71,9 +66,8 @@ jobs:
       fail-fast: false   # report both matrix legs even if one fails
       matrix:
         rust: [stable, beta]
-    # beta is the next compiler (~6 weeks from stable): an early warning that an
-    # upcoming toolchain change will break the build. It is a canary, so it must
-    # never block a merge — its failure is tolerated and downstream jobs proceed.
+    # beta = next Rust compiler. A canary: non-blocking (continue-on-error) so an
+    # upcoming-toolchain break warns without blocking the merge.
     continue-on-error: ${{ matrix.rust == 'beta' }}
     steps:
       - uses: actions/checkout@v5
@@ -113,11 +107,9 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      # Cache the compiled cargo-llvm-cov binary, keyed on a pinned version, so
-      # it is built from source once and restored on later runs. NOT a prebuilt
-      # download — the tool is still compiled with --locked; the cache just skips
-      # recompiling it. cargo-deny is deliberately NOT cached/pinned (security
-      # tool, stays latest to keep detecting new advisory classes).
+      # Cache the cargo-llvm-cov binary (pinned) so it is compiled from source
+      # once, not every run. (cargo-deny is intentionally left uncached/latest —
+      # a security tool should keep picking up new advisory classes.)
       - name: Cache cargo-llvm-cov
         id: cache-llvm-cov
         uses: actions/cache@v5
@@ -236,9 +228,8 @@ jobs:
           exit-code: "0"
 
       - name: Upload SARIF to GitHub Security tab
-        # Fork PRs get a read-only token and cannot upload SARIF; the blocking
-        # pass below still gates them. Per-arch category so the two matrix legs
-        # do not overwrite each other in the Security tab.
+        # Fork PRs have a read-only token and can't upload SARIF; the blocking
+        # pass still gates them. Per-arch category so the legs don't overwrite.
         if: always() && github.event.pull_request.head.repo.fork != true
         uses: github/codeql-action/upload-sarif@v4
         with:
