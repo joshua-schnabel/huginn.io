@@ -1,0 +1,32 @@
+version: 2
+
+# Continuous dependency updates. Dependabot opens its own PRs against the
+# default branch (dev); they run through the normal CI + security gates like
+# any other PR. Minor/patch bumps are grouped into one PR each to cut noise;
+# majors come as individual PRs so breaking changes are reviewed on their own.
+#
+# Note: Dependabot uses `dependabot/*` branch names, which auto-pr.yml is
+# configured to leave alone (see its branches-ignore).
+updates:
+  # ── Rust crates (workspace root Cargo.toml / Cargo.lock) ──────────────────
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # ── GitHub Actions pinned in .github/workflows ────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]
