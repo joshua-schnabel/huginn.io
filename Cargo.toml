@@ -39,7 +39,7 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Web framework (debug UI)
-axum = "0.7"
+axum = "0.8"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -50,7 +50,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 
 # Object-safe async traits.
 # Native `async fn` in traits is stable since 1.75, but AFIT traits are not
