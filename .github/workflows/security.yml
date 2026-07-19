@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     container: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Pass 1: full scan → SARIF, uploaded to the Security tab (never blocks).
       - name: Semgrep – full scan (SARIF)
