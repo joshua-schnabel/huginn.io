@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run_subscriber`, `run_subscriber_batched` and `InfluxWriter::write` — the old single-consumer writer paths. Replaced by the `run_batcher` + `run_writer` split (see below). Their meaningful behaviours (clean exit on hub close, surviving a lagged receiver) are now tested against the new tasks.
 
 ### Added
+- **Release automation** — `release.yml` fires on the `vX.Y.Z` tag that `publish` creates: it opens the GitHub Release (notes pulled from this file's matching section, `0.x`/`-rc` flagged as pre-release) and opens an auto-merging PR into `dev` that reopens a fresh `## [Unreleased]`, fixes the compare links, and bumps `Cargo.toml`. The bot never pushes to `main`/`dev`.
+- **CI version gate** — a release PR (`dev → main`) is blocked unless the top `CHANGELOG.md` version is valid SemVer and strictly greater than the latest `v*` tag; also re-checked before anything ships.
+- **GitHub Container Registry mirror** — every published image is mirrored from DockerHub to `ghcr.io` with `skopeo copy --all`, byte-identical (same digests) to the scanned/tested image; no second build.
 - **InfluxDB resilience** — the writer is split into a `run_batcher` (groups results, never awaits I/O) and a `run_writer` (drains a bounded `RetryQueue`). Failed writes are retried with exponential backoff instead of discarded; `WriteError` classifies transport/5xx/429/408 as retryable and 4xx as permanent (dropped). Retry is unbounded in attempts, bounded in memory (`max_buffered_bytes`, drop-oldest). New `influx` config keys: `max_buffered_bytes`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `shutdown_drain_timeout_ms`.
 - **`Probe` trait + `ProbeRegistry`** — per-protocol probes implement a common trait; the registry owns shared state (the HTTP client) so probe loops no longer thread resources they don't use.
 - **`ProbeResult.metrics`** (`BTreeMap<String, f64>`) — a home for per-probe-type numeric readings (e.g. TLS expiry days, packet loss), emitted as additional line-protocol fields. No probe populates it yet.
@@ -70,5 +73,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: `README.md`, `docs/getting-started.md`, `docs/configuration.md`, `docs/influxdb.md`, `docs/security.md`, `docs/troubleshooting.md`
 - `CONTRIBUTING.md` with branching workflow, PR process, Conventional Commits, release process
 
-[Unreleased]: https://github.com/OWNER/huginn/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/huginn/releases/tag/v0.1.0
+[Unreleased]: https://github.com/joshua-schnabel/huginn.io/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.1.0

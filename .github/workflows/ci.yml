@@ -24,7 +24,8 @@ env:
 #
 #   check ─┬ test (stable + beta·canary) ─┐
 #          ├ supply-chain ────────────────┤
-#          └ coverage (needs test) ───────┤
+#          ├ coverage (needs test) ───────┤
+#          └ version-gate (SemVer + successor, main only) ┤
 #                                         ▼
 #              build (per arch, native) → image.tar artifact
 #                 ├ scan  (Trivy on the artifact)
@@ -32,7 +33,9 @@ env:
 #                                         ▼
 #              push (per arch, push only) → skopeo by digest → digest artifact
 #                                         ▼
-#              publish → multi-arch manifest, staging cleanup, release tag
+#              publish → DockerHub manifest, mirror to ghcr, staging cleanup, tag
+#                                         ▼            (tag push → release.yml:
+#                                                       GitHub Release + dev PR)
 #
 # One job, one responsibility. The image is built ONCE per arch into a tarball;
 # every later job consumes that same artifact, so the bytes scanned, tested and
@@ -134,6 +137,67 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
 
+  # ── Release version gate (SemVer + must exceed the last tag) ───────────────
+  # Enforces only for a release context: a PR whose base is main, or a push to
+  # main. On every other event it is a deliberate no-op pass — a *skipped* job
+  # in `needs` would skip `build` too, so this job must always run and decide
+  # internally whether to enforce.
+  version-gate:
+    name: Version gate
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # need the tag history to find the last release
+      - name: Validate SemVer and successor
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+          REF: ${{ github.ref }}
+        run: |
+          # Only a release cut is gated: PR into main, or a push to main.
+          if [ "$EVENT" = "pull_request" ] && [ "$BASE" = "main" ]; then :
+          elif [ "$EVENT" = "push" ] && [ "$REF" = "refs/heads/main" ]; then :
+          else
+            echo "Not a release event (base is not main) — version gate is a no-op."
+            exit 0
+          fi
+
+          NEW=$(grep -m1 '^## \[[0-9]' CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/')
+          if [ -z "$NEW" ]; then
+            echo "::error::No versioned entry (## [x.y.z]) found in CHANGELOG.md"
+            exit 1
+          fi
+          echo "CHANGELOG version: $NEW"
+
+          # SemVer 2.0.0: x.y.z with optional -prerelease and +build metadata.
+          if ! echo "$NEW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$NEW' is not a valid SemVer version"
+            exit 1
+          fi
+
+          LAST=$(git tag -l 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
+          if [ -z "$LAST" ]; then
+            echo "No existing v* tag — treating $NEW as the first release."
+            exit 0
+          fi
+          echo "Last released version: $LAST"
+
+          if [ "$NEW" = "$LAST" ]; then
+            echo "::error::Version $NEW equals the last release — bump it before releasing"
+            exit 1
+          fi
+          # sort -V is not full SemVer pre-release precedence, but is correct for
+          # x.y.z and adequate for the 0.x / -rc versions used here.
+          HIGHEST=$(printf '%s\n%s\n' "$LAST" "$NEW" | sort -V | tail -1)
+          if [ "$HIGHEST" != "$NEW" ]; then
+            echo "::error::Version $NEW is not greater than the last release $LAST"
+            exit 1
+          fi
+          echo "OK: $NEW is a valid successor to $LAST"
+
   # ── Build ONCE per arch → image.tar artifact ──────────────────────────────
   # One build per architecture on its own native runner (amd64 on ubuntu-latest,
   # arm64 on ubuntu-24.04-arm — no QEMU). The tarball is uploaded as an artifact
@@ -141,7 +205,7 @@ jobs:
   build:
     name: Build image ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
-    needs: [check, test, supply-chain, coverage]
+    needs: [check, test, supply-chain, coverage, version-gate]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -371,9 +435,12 @@ jobs:
     if: github.event_name == 'push'
     timeout-minutes: 15
     permissions:
-      # Needed by the "Create git tag" step. Inheriting `contents: read` made
-      # `git push origin vX.Y.Z` 403.
+      # contents: write — the "Create git tag" step. Inheriting `contents: read`
+      #   made `git push origin vX.Y.Z` 403.
+      # packages: write — the "Mirror image to ghcr.io" step pushes to GHCR with
+      #   the built-in GITHUB_TOKEN.
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -451,6 +518,31 @@ jobs:
 
       - name: Inspect manifest
         run: docker buildx imagetools inspect ${{ vars.DOCKERHUB_USERNAME }}/huginn:${{ steps.meta.outputs.version }}
+
+      # ── Mirror the finished image to GitHub Container Registry ─────────────
+      # `skopeo copy --all` copies the manifest list and every arch blob, so the
+      # ghcr image ends up byte-identical (same digests) to the DockerHub image
+      # that was scanned and integration-tested — no second build, no ghcr
+      # staging tag. Runs for every user-facing tag metadata-action emitted.
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Mirror image to ghcr.io
+        env:
+          DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
+          DH_CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_REPO: ghcr.io/${{ github.repository_owner }}/huginn
+          GHCR_CREDS: ${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$DOCKER_METADATA_OUTPUT_JSON" | jq -r '.tags[]' | while read -r ref; do
+            tag="${ref##*:}"
+            echo "Mirroring ${DH_REPO}:${tag} -> ${GHCR_REPO}:${tag}"
+            skopeo copy --all \
+              --src-creds "$DH_CREDS" \
+              --dest-creds "$GHCR_CREDS" \
+              "docker://${DH_REPO}:${tag}" \
+              "docker://${GHCR_REPO}:${tag}"
+          done
 
       # ── Delete the staging tags now the manifest references the digests ───
       # The per-arch manifests survive: the multi-arch manifest list points at
