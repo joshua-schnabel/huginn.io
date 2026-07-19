@@ -59,7 +59,7 @@ thiserror = "2"
 async-trait = "0.1"
 
 # Colored output
-colored = "2"
+colored = "3"
 
 # InfluxDB client — unused workspace dep removed; writer uses raw reqwest line protocol
 # influxdb2 = "0.5"          # removed: not used
