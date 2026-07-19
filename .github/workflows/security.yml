@@ -1,15 +1,12 @@
 name: Security
 
-# Semgrep SAST (source code) + Trivy CVE scan (Docker image).
-# Semgrep: all pushes and PRs — early developer feedback on every branch.
-# Trivy:   every PR and pushes to main — blocks on fixable CRITICAL/HIGH CVEs.
+# Source-code SAST (Semgrep). Runs on every branch push and every PR: it needs
+# no build, so security feedback happens everywhere, early. Image CVE scanning
+# (Trivy) lives in ci.yml, next to the build that produces the exact image.
 
 on:
-  push:   # all branches
-  # Every PR, including dev → main. Previously ["dev"], which meant the release
-  # PR — the one that actually ships to users — triggered no security scan at
-  # all, and CVEs were only noticed after they had already landed on main.
-  pull_request:
+  push:          # every branch — SAST feedback before a PR even exists
+  pull_request:  # every PR, including the dev → main release PR
 
 concurrency:
   group: security-${{ github.ref }}
@@ -28,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Pass 1: Full scan → SARIF (all findings, always uploaded)
+      # Pass 1: full scan → SARIF, uploaded to the Security tab (never blocks).
       - name: Semgrep – full scan (SARIF)
         run: |
           semgrep scan \
@@ -46,7 +43,7 @@ jobs:
         with:
           sarif_file: semgrep.sarif
 
-      # Pass 2: Blocking scan — ERROR-severity rules only
+      # Pass 2: blocking scan — ERROR-severity findings fail the run (gate).
       - name: Semgrep – blocking scan (ERROR severity)
         run: |
           semgrep scan \
