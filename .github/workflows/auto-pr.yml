@@ -20,7 +20,7 @@ jobs:
     name: Open Draft PR or Delete Invalid Branch
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Enforce branch naming and create PR
         env:
