@@ -11,7 +11,7 @@ on:
   pull_request:
 
 # Cancel stale runs for the same ref (e.g. rapid pushes to a feature branch).
-# Never cancel a push run: this workflow now publishes to DockerHub, and killing
+# Never cancel a push run: this workflow publishes to DockerHub, and killing
 # that mid-flight is not something to do for a superseded commit.
 concurrency:
   group: ci-${{ github.ref }}
@@ -25,11 +25,31 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# ── Pipeline shape ─────────────────────────────────────────────────────────
+#
+#   check ─┬ test (stable + beta·canary) ─┐
+#          ├ supply-chain ────────────────┤
+#          └ coverage (needs test) ───────┤
+#                                         ▼
+#              build (per arch, native) → image.tar artifact
+#                 ├ scan  (Trivy on the artifact)
+#                 └ integration (load + compose on the artifact)
+#                                         ▼
+#              push (per arch, push only) → skopeo by digest → digest artifact
+#                                         ▼
+#              publish → multi-arch manifest, staging cleanup, release tag
+#
+# One responsibility per job. The image is built exactly ONCE per architecture;
+# that single tarball is the artifact every later job consumes, so the bytes
+# scanned, tested and published are byte-for-byte identical — nothing unscanned
+# can reach the registry (publish needs scan AND integration).
+
 jobs:
   # ── Gate 1: Format & Lint ──────────────────────────────────────────────────
   check:
     name: Format & Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -46,10 +66,15 @@ jobs:
     name: Tests (${{ matrix.rust }})
     runs-on: ubuntu-latest
     needs: check
+    timeout-minutes: 20
     strategy:
       fail-fast: false   # report both matrix legs even if one fails
       matrix:
         rust: [stable, beta]
+    # beta is the next compiler (~6 weeks from stable): an early warning that an
+    # upcoming toolchain change will break the build. It is a canary, so it must
+    # never block a merge — its failure is tolerated and downstream jobs proceed.
+    continue-on-error: ${{ matrix.rust == 'beta' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -60,12 +85,13 @@ jobs:
         run: cargo test --all --locked
 
   # ── Gate 3: Supply-chain security (cargo-deny) ────────────────────────────
-  # cargo-deny is a superset of cargo-audit: checks advisories, licenses,
-  # banned crates, and registry sources in one pass.
+  # cargo-deny is a superset of cargo-audit: advisories, licenses, banned
+  # crates and registry sources in one pass.
   supply-chain:
     name: Supply-Chain Security
     runs-on: ubuntu-latest
     needs: check
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -75,11 +101,12 @@ jobs:
       - name: cargo deny check
         run: cargo deny check
 
-  # ── Gate 4a: Code coverage ≥ 80 % ────────────────────────────────────────
+  # ── Gate 4: Code coverage ≥ 80 % ──────────────────────────────────────────
   coverage:
     name: Code Coverage (≥ 80%)
     runs-on: ubuntu-latest
     needs: test
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -87,14 +114,10 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       # Cache the compiled cargo-llvm-cov binary, keyed on a pinned version, so
-      # it is built from source once and restored on later runs. This is NOT a
-      # prebuilt-binary download — the tool is still compiled with --locked; the
-      # cache just skips recompiling it. Pinned so the cache key is stable; bump
-      # it when a new cargo-llvm-cov is worth picking up (coverage tooling does
-      # not need to be bleeding-edge).
-      # Note: cargo-deny is deliberately NOT cached/pinned — it is a security
-      # tool and stays on the latest release so it keeps detecting new advisory
-      # classes (see the supply-chain job).
+      # it is built from source once and restored on later runs. NOT a prebuilt
+      # download — the tool is still compiled with --locked; the cache just skips
+      # recompiling it. cargo-deny is deliberately NOT cached/pinned (security
+      # tool, stays latest to keep detecting new advisory classes).
       - name: Cache cargo-llvm-cov
         id: cache-llvm-cov
         uses: actions/cache@v5
@@ -119,81 +142,15 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
 
-  # ── Gate 4b: System Integration Test (Docker Compose) ────────────────────
-  system-integration:
-    name: System Integration Test
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # Hardcoded test-only token — NOT a production secret
-      - name: Create test token file
-        run: echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
-
-      # Reuse the Docker layer cache from the publish job below
-      - name: Build huginn image (cached)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: false
-          load: true
-          tags: huginn:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and start services
-        run: docker compose -f docker-compose.integration.yml up -d --no-build
-
-      - name: Wait for InfluxDB to be healthy
-        run: |
-          for i in $(seq 1 24); do
-            if docker compose -f docker-compose.integration.yml exec -T influxdb influx ping > /dev/null 2>&1; then
-              echo "InfluxDB is healthy"; break
-            fi
-            [ "$i" -eq 24 ] && echo "InfluxDB did not become healthy" && exit 1
-            sleep 5
-          done
-
-      - name: Run system integration tests
-        run: bash scripts/integration-test.sh
-
-      - name: Show container logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.integration.yml logs
-
-      - name: Tear down services
-        if: always()
-        run: docker compose -f docker-compose.integration.yml down -v
-
-  # ── Publish to DockerHub ──────────────────────────────────────────────────
-  #
-  # Lives here, not in its own workflow, and this is the point: as a separate
-  # workflow it triggered on `push` in parallel with CI and depended on nothing,
-  # so a commit with failing tests, clippy or cargo-deny still shipped :latest.
-  # Every gate was bypassable on the one path that reaches users.
-  #
-  # As a job it simply waits for the same run's gates via `needs`. Folding it in
-  # also avoids the `workflow_run` trap, where `github.ref` resolves to the
-  # default branch and every `github.ref == 'refs/heads/dev'` check below would
-  # silently read false.
-  # ── Build & push one image per architecture, by digest ────────────────────
-  #
-  # Each architecture builds on its OWN native runner — amd64 on ubuntu-latest,
-  # arm64 on ubuntu-24.04-arm — instead of emulating arm64 under QEMU on an
-  # amd64 runner, which turned a few-minute build into tens of minutes. Neither
-  # job applies tags; each pushes a digest-only image, and the `merge` job below
-  # assembles the multi-arch manifest and tags it.
-  build-image:
-    name: Build ${{ matrix.platform }}
+  # ── Build ONCE per arch → image.tar artifact ──────────────────────────────
+  # One build per architecture on its own native runner (amd64 on ubuntu-latest,
+  # arm64 on ubuntu-24.04-arm — no QEMU). The tarball is uploaded as an artifact
+  # and is the single source of truth for scan, integration and publish.
+  build:
+    name: Build image ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
-    needs: [check, test, supply-chain, coverage, system-integration]
-    # Push events only — never on pull_request, so DockerHub credentials are
-    # never reachable from a PR build.
-    if: github.event_name == 'push'
+    needs: [check, test, supply-chain, coverage]
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -222,28 +179,189 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to DockerHub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push by digest
-        id: build
+      - name: Build image to a local tarball
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
+          tags: huginn:ci
           labels: ${{ steps.meta.outputs.labels }}
-          # Per-platform cache scope so amd64 and arm64 don't clobber each other.
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
-          outputs: type=image,name=${{ vars.DOCKERHUB_USERNAME }}/huginn,push-by-digest=true,name-canonical=true,push=true
 
-      - name: Export digest
+      - name: Upload image tarball
+        uses: actions/upload-artifact@v6
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Scan the built artifact (never rebuilds it) ───────────────────────────
+  # Runs on ubuntu-latest for both arches: Trivy reads the tarball's layers, so
+  # the host architecture is irrelevant.
+  scan:
+    name: Trivy scan ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write   # Trivy SARIF upload
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Download image tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}
+
+      - name: Trivy - full scan (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          input: ${{ runner.temp }}/image.tar
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Upload SARIF to GitHub Security tab
+        # Fork PRs get a read-only token and cannot upload SARIF; the blocking
+        # pass below still gates them. Per-arch category so the two matrix legs
+        # do not overwrite each other in the Security tab.
+        if: always() && github.event.pull_request.head.repo.fork != true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ env.PLATFORM_PAIR }}
+
+      - name: Trivy - blocking scan (fixable CRITICAL/HIGH only)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          input: ${{ runner.temp }}/image.tar
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  # ── Integration-test the built artifact (loaded, never rebuilt) ───────────
+  # Native runner per arch: the loaded container must run on matching hardware.
+  integration:
+    name: Integration test ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    needs: build
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Download image tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}
+
+      - name: Load image
+        run: docker load -i "${{ runner.temp }}/image.tar"
+
+      # Hardcoded test-only token — NOT a production secret
+      - name: Create test token file
+        run: echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
+
+      - name: Start services
+        run: docker compose -f docker-compose.integration.yml up -d --no-build
+
+      - name: Wait for InfluxDB to be healthy
+        run: |
+          for i in $(seq 1 24); do
+            if docker compose -f docker-compose.integration.yml exec -T influxdb influx ping > /dev/null 2>&1; then
+              echo "InfluxDB is healthy"; break
+            fi
+            [ "$i" -eq 24 ] && echo "InfluxDB did not become healthy" && exit 1
+            sleep 5
+          done
+
+      - name: Run system integration tests
+        run: bash scripts/integration-test.sh
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.integration.yml logs
+
+      - name: Tear down services
+        if: always()
+        run: docker compose -f docker-compose.integration.yml down -v
+
+  # ── Push the scanned+tested bytes by digest (push events only) ────────────
+  # Skopeo copies straight from the artifact tarball — the exact bytes that scan
+  # and integration validated. Skipped on pull_request, so DockerHub credentials
+  # are never reachable from a PR (fork-safe).
+  push:
+    name: Push image ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    needs: [scan, integration]
+    if: github.event_name == 'push'
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Download image tarball
+        uses: actions/download-artifact@v7
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Push scanned image and record its digest
+        env:
+          REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
+          CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           mkdir -p "${{ runner.temp }}/digests"
-          digest="${{ steps.build.outputs.digest }}"
+          # Staging tag is only a push target; the user-facing multi-arch tag is
+          # created by the `publish` job from the digest recorded here, and the
+          # staging tags are deleted again once the manifest exists.
+          skopeo copy --dest-creds "$CREDS" \
+            "docker-archive:${{ runner.temp }}/image.tar" \
+            "docker://${REPO}:staging-${PLATFORM_PAIR}" \
+            --digestfile "${{ runner.temp }}/digest.txt"
+          digest="$(cat "${{ runner.temp }}/digest.txt")"
+          echo "Pushed ${PLATFORM_PAIR} as ${REPO}@${digest}"
           touch "${{ runner.temp }}/digests/${digest#sha256:}"
 
       - name: Upload digest
@@ -258,8 +376,9 @@ jobs:
   publish:
     name: Publish to DockerHub
     runs-on: ubuntu-latest
-    needs: [build-image]
+    needs: [push]
     if: github.event_name == 'push'
+    timeout-minutes: 15
     permissions:
       # Needed by the "Create git tag" step. Inheriting `contents: read` made
       # `git push origin vX.Y.Z` 403.
@@ -342,6 +461,31 @@ jobs:
       - name: Inspect manifest
         run: docker buildx imagetools inspect ${{ vars.DOCKERHUB_USERNAME }}/huginn:${{ steps.meta.outputs.version }}
 
+      # ── Delete the staging tags now the manifest references the digests ───
+      # The per-arch manifests survive: the multi-arch manifest list points at
+      # them by digest, so removing the tag only drops the pointer. Best-effort;
+      # a failure here must not fail a release.
+      - name: Remove staging tags
+        continue-on-error: true
+        env:
+          REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          jwt="$(curl -s -H 'Content-Type: application/json' \
+            -d "{\"username\":\"${DHUSER}\",\"password\":\"${TOKEN}\"}" \
+            https://hub.docker.com/v2/users/login/ | jq -r .token)"
+          if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
+            echo "Could not obtain a DockerHub token; leaving staging tags in place"
+            exit 0
+          fi
+          for tag in staging-linux-amd64 staging-linux-arm64; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: JWT ${jwt}" \
+              "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
+            echo "delete ${tag}: HTTP ${code}"
+          done
+
       # ── Create git tag on main (if new version) ───────────────────────────
       - name: Create git tag
         if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
@@ -350,4 +494,3 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
           git push origin "${{ steps.version.outputs.tag }}"
-

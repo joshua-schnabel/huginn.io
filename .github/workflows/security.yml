@@ -5,8 +5,7 @@ name: Security
 # Trivy:   every PR and pushes to main — blocks on fixable CRITICAL/HIGH CVEs.
 
 on:
-  push:
-    branches-ignore: []   # all branches
+  push:   # all branches
   # Every PR, including dev → main. Previously ["dev"], which meant the release
   # PR — the one that actually ships to users — triggered no security scan at
   # all, and CVEs were only noticed after they had already landed on main.
@@ -56,57 +55,3 @@ jobs:
             --error \
             --exclude target \
             .
-
-  # ── Trivy CVE scan (Docker image) — every PR, plus pushes to main ───────────
-  #
-  # Building the image on every branch push would be a lot of CI for little
-  # signal, so this stays PR-gated — but it must cover *every* PR, including
-  # dev → main. It previously read `base_ref == 'dev'`, which skipped exactly
-  # the release PR.
-  trivy:
-    name: Trivy CVE Scan
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # Reuse Docker layer cache from docker.yml to avoid rebuilding from scratch
-      - name: Build Docker image for scanning
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: false
-          load: true
-          tags: huginn:security-scan
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Pass 1: Full scan → SARIF (all severities, always uploaded)
-      - name: Trivy – full scan (SARIF)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: huginn:security-scan
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH,MEDIUM
-          ignore-unfixed: false
-          exit-code: "0"
-
-      - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-results.sarif
-
-      # Pass 2: Blocking scan — fixable CRITICAL/HIGH only
-      - name: Trivy – blocking scan (fixable CRITICAL/HIGH only)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: huginn:security-scan
-          format: table
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
