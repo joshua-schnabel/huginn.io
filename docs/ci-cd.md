@@ -128,13 +128,6 @@ image pipeline on purpose.
   `main` or `dev` directly — only to a `release/*` branch (which `auto-pr.yml`
   ignores) that then flows through normal CI.
 
-> **`prepare-dev` needs a `RELEASE_PAT` secret** — a PAT or fine-grained token
-> with `contents: write` + `pull-requests: write` on this repo. A PR opened with
-> the built-in `GITHUB_TOKEN` does **not** trigger `ci.yml`, so its required
-> checks never run and auto-merge hangs forever. With `RELEASE_PAT` the PR is
-> attributed to a real identity, CI runs, and auto-merge completes. Without it
-> the PR is still opened, but you have to run CI / merge it by hand.
-
 ---
 
 ## Security Tools Overview
@@ -213,7 +206,6 @@ edit `main` or a tag by hand; no bot ever pushes to `main` or `dev`.
 > validates the changelog version, and the `release.yml` housekeeping PR bumps
 > `Cargo.toml` to match — so they stay in step without manual effort.
 
-> **One-time setup:** add the `RELEASE_PAT` secret (see `release.yml` above) so
-> the housekeeping PR triggers CI and auto-merges. After the first publish, set
-> the `huginn` package in GitHub → Packages to **Public** (it defaults to
-> private), otherwise `docker pull ghcr.io/…` needs auth.
+> **One-time setup:** after the first publish, set the `huginn` package in
+> GitHub → Packages to **Public** (it defaults to private), otherwise
+> `docker pull ghcr.io/…` needs auth.

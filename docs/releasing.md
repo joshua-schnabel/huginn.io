@@ -109,8 +109,7 @@ release.yml
   integration-tested — it is never rebuilt for publishing.
 - `0.x` versions and any pre-release (`-rc.1`, `-beta`, …) are flagged as a
   **pre-release** on GitHub.
-- The dev housekeeping PR **auto-merges** if a `RELEASE_PAT` secret is configured
-  (see [ci-cd.md](ci-cd.md)); otherwise it stays open for you to merge with one click.
+- The dev housekeeping PR **auto-merges** once its checks pass.
 
 ---
 
