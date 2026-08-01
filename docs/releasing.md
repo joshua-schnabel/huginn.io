@@ -6,9 +6,35 @@ and reopening the changelog for the next cycle — is automated.
 
 You never edit `main` or a tag by hand, and no bot ever pushes to `main` or `dev`.
 
+There are two ways to cut a release — a **one-click action** (recommended) and
+the **manual PR flow**. Both end up in the same place.
+
 ---
 
-## TL;DR
+## One-click release (recommended)
+
+Run the **Release (dispatch)** workflow and pick the bump type — that's it.
+
+1. GitHub → **Actions** → **Release (dispatch)** → **Run workflow**.
+2. Choose **`bump`**: `patch`, `minor`, or `major`. Run it on `dev`.
+
+The workflow (owner-only) then:
+- computes the next version from the last release (`patch` `0.1.0 → 0.1.1`,
+  `minor` `→ 0.2.0`, `major` `→ 1.0.0`),
+- stamps `## [Unreleased]` in `CHANGELOG.md` as `## [X.Y.Z] - <today>`, updates
+  the links, and bumps `Cargo.toml`,
+- opens an **auto-merging PR into `main`**.
+
+Once the PR's checks pass it merges, and the rest is identical to the manual
+flow below (image → tag → GitHub Release → dev reopened). You don't touch the
+version number at all.
+
+> It refuses to run if `## [Unreleased]` is empty (nothing to release) or if the
+> computed tag already exists. Only the **repository owner** can run it.
+
+---
+
+## Manual release (dev → main)
 
 ```
 1. On dev:  ## [Unreleased]   →   ## [X.Y.Z] - YYYY-MM-DD   (in CHANGELOG.md)
@@ -18,7 +44,7 @@ You never edit `main` or a tag by hand, and no bot ever pushes to `main` or `dev
 
 ---
 
-## Step by step
+## Step by step (manual flow)
 
 ### 1. Pick the version and update the changelog (on `dev`)
 
@@ -84,7 +110,7 @@ release.yml
 - `0.x` versions and any pre-release (`-rc.1`, `-beta`, …) are flagged as a
   **pre-release** on GitHub.
 - The dev housekeeping PR **auto-merges** if a `RELEASE_PAT` secret is configured
-  (see below); otherwise it stays open for you to merge with one click.
+  (see [ci-cd.md](ci-cd.md)); otherwise it stays open for you to merge with one click.
 
 ---
 

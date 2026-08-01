@@ -89,15 +89,29 @@ jobs:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           V="${GITHUB_REF_NAME#v}"
+          DATE=$(date +%F)
           BR="release/prepare-after-v${V}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git switch -c "$BR"
 
-          # 1) Reopen a fresh ## [Unreleased] above the top version heading.
-          if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
-            awk 'BEGIN{done=0}
-                 done==0 && substr($0,1,4)=="## [" { print "## [Unreleased]"; print ""; done=1 }
+          # 1) Ensure dev ends with a released ## [X.Y.Z] section and a fresh
+          #    ## [Unreleased] on top. Reconciles both release paths:
+          #    - manual PR flow: dev already carries ## [X.Y.Z] → just reopen a
+          #      fresh ## [Unreleased] above it.
+          #    - dispatch flow (release-dispatch.yml only touched the release
+          #      branch): dev still holds the entries under ## [Unreleased] →
+          #      stamp that as ## [X.Y.Z] and open a fresh ## [Unreleased].
+          if grep -q "^## \[${V}\]" CHANGELOG.md; then
+            if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+              awk 'BEGIN{done=0}
+                   done==0 && substr($0,1,4)=="## [" { print "## [Unreleased]"; print ""; done=1 }
+                   { print }' CHANGELOG.md > CHANGELOG.new
+              mv CHANGELOG.new CHANGELOG.md
+            fi
+          else
+            awk -v head="## [${V}] - ${DATE}" 'BEGIN{done=0}
+                 done==0 && $0=="## [Unreleased]" { print "## [Unreleased]"; print ""; print head; done=1; next }
                  { print }' CHANGELOG.md > CHANGELOG.new
             mv CHANGELOG.new CHANGELOG.md
           fi
