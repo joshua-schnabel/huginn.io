@@ -1,4 +1,7 @@
-# Security
+# Hardening & Security Practices
+
+How huginn.io is secured: secrets handling, container hardening, and the scanning
+pipeline. To **report a vulnerability**, see [`SECURITY.md`](SECURITY.md).
 
 ## Secrets Management
 

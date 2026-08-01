@@ -209,7 +209,7 @@ permissions must be reasoned about explicitly and flagged in the PR.
 - Least-privilege workflow `permissions:` — grant the minimum a job needs.
 - Gates: **cargo-deny** (CVEs + license allow-list in `deny.toml`), **Semgrep**
   (`p/rust` + `p/secrets`, ERROR blocks), **Trivy** (image CVEs, fixable
-  CRITICAL/HIGH block). More: [`docs/security-model.md`](docs/security-model.md)
+  CRITICAL/HIGH block). More: [`docs/hardening.md`](docs/hardening.md)
   (practices) and [`docs/SECURITY.md`](docs/SECURITY.md) (reporting policy).
 
 ---
@@ -223,7 +223,8 @@ permissions must be reasoned about explicitly and flagged in the PR.
 | Every workflow explained (humans + AI) | [`docs/workflows.md`](docs/workflows.md) |
 | Release runbook (one-click + manual) | [`docs/releasing.md`](docs/releasing.md) |
 | Testing pyramid, TDD, coverage, no-sleep rule | [`docs/testing.md`](docs/testing.md) |
-| Security practices + reporting policy | [`docs/security-model.md`](docs/security-model.md) · [`docs/SECURITY.md`](docs/SECURITY.md) |
+| Security practices (hardening) | [`docs/hardening.md`](docs/hardening.md) |
+| Reporting a vulnerability (policy) | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Config reference (YAML + ENV) | [`docs/configuration.md`](docs/configuration.md) |
 | InfluxDB setup & data model | [`docs/influxdb.md`](docs/influxdb.md) |
 | Troubleshooting | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
