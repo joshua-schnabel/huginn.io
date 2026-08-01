@@ -56,6 +56,7 @@ cargo build --release --locked                     # production binary
 - [Testing Guide](docs/testing.md)
 - [Security](docs/security.md)
 - [CI/CD](docs/ci-cd.md)
+- [Releasing](docs/releasing.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## License
