@@ -11,7 +11,12 @@ use common::{free_port, start_server};
 async fn sse_endpoint_delivers_probe_event_as_data_message() {
     let port = free_port();
     let hub = start_server(port).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll for readiness instead of a fixed sleep: connecting before the listener
+    // is bound made `.expect` below panic under load.
+    assert!(
+        common::wait_for_ready(port).await,
+        "web server never became ready"
+    );
 
     // Open the SSE stream — use reqwest in streaming mode
     let client = reqwest::Client::new();

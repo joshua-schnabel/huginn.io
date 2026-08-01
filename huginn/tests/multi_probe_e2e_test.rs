@@ -14,7 +14,13 @@ use common::{free_port, start_server};
 async fn multiple_probes_all_appear_in_metrics() {
     let port = free_port();
     let hub = start_server(port).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait until the server is up *and* subscribed to the hub before publishing —
+    // run_server subscribes before it binds, so a 200 from /health proves no
+    // published event will be missed. A fixed sleep raced that subscription.
+    assert!(
+        common::wait_for_ready(port).await,
+        "web server never became ready"
+    );
 
     // Inject results for three different probe types
     for (name, kind, target) in [
@@ -27,16 +33,20 @@ async fn multiple_probes_all_appear_in_metrics() {
         )));
     }
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll until all three results are visible instead of sleeping a fixed 100ms.
+    let url = format!("http://127.0.0.1:{port}/metrics/latest");
+    assert!(
+        common::wait_until(Duration::from_secs(10), || {
+            let url = url.clone();
+            async move { metrics_len(&url).await == Some(3) }
+        })
+        .await,
+        "expected 3 results to appear in /metrics/latest"
+    );
 
-    let resp = reqwest::get(format!("http://127.0.0.1:{port}/metrics/latest"))
-        .await
-        .expect("request failed");
-
-    assert_eq!(resp.status().as_u16(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
+    // Fetch once more for the detailed assertions.
+    let body: serde_json::Value = reqwest::get(&url).await.unwrap().json().await.unwrap();
     let arr = body.as_array().expect("expected JSON array");
-
     assert_eq!(
         arr.len(),
         3,
@@ -62,7 +72,10 @@ async fn multiple_probes_all_appear_in_metrics() {
 async fn all_probes_report_correct_probe_type_field() {
     let port = free_port();
     let hub = start_server(port).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        common::wait_for_ready(port).await,
+        "web server never became ready"
+    );
 
     hub.publish(ProbeEvent::ProbeCompleted(ProbeResult::success(
         "smtp-mon",
@@ -86,15 +99,17 @@ async fn all_probes_report_correct_probe_type_field() {
         None,
     )));
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let url = format!("http://127.0.0.1:{port}/metrics/latest");
+    assert!(
+        common::wait_until(Duration::from_secs(10), || {
+            let url = url.clone();
+            async move { metrics_len(&url).await == Some(3) }
+        })
+        .await,
+        "expected 3 results to appear in /metrics/latest"
+    );
 
-    let body: serde_json::Value = reqwest::get(format!("http://127.0.0.1:{port}/metrics/latest"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
+    let body: serde_json::Value = reqwest::get(&url).await.unwrap().json().await.unwrap();
     let arr = body.as_array().unwrap();
     assert_eq!(arr.len(), 3);
 
@@ -112,3 +127,9 @@ async fn all_probes_report_correct_probe_type_field() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The number of results currently in `/metrics/latest`, or `None` on any error.
+async fn metrics_len(url: &str) -> Option<usize> {
+    let body: serde_json::Value = reqwest::get(url).await.ok()?.json().await.ok()?;
+    body.as_array().map(|a| a.len())
+}

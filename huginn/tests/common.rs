@@ -42,3 +42,18 @@ where
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// Poll `/health` until it returns 200. The server is then listening and —
+/// because `run_server` subscribes to the hub *before* it binds — already
+/// subscribed, so any event published afterwards is guaranteed to be delivered.
+/// Use this instead of a fixed sleep before publishing to (or reading from) a
+/// freshly started server. Returns `true` if it came up within 10s.
+#[allow(dead_code)]
+pub async fn wait_for_ready(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/health");
+    wait_until(Duration::from_secs(10), move || {
+        let url = url.clone();
+        async move { matches!(reqwest::get(&url).await, Ok(r) if r.status().as_u16() == 200) }
+    })
+    .await
+}
