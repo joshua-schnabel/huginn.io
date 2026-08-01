@@ -32,6 +32,7 @@ In scope:
 Out of scope:
 
 - **The debug UI being unauthenticated.** This is known and deliberate. It is
-  off by default (`ui.enabled: false`) and exposes probe results only. Do not
-  expose it to an untrusted network.
+  off by default (`ui.enabled: false`), binds `127.0.0.1` by default
+  (`ui.bind`), and exposes probe results only. Reaching a wider network takes
+  an explicit `ui.bind: "0.0.0.0"` — do not expose it to an untrusted network.
 - Probe targets you configure yourself — huginn will connect wherever you point it.

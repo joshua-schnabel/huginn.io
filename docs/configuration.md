@@ -55,7 +55,22 @@ If you see `single InfluxDB batch exceeds max_buffered_bytes`, lower
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | bool | `false` | Enable debug web UI |
+| `bind` | string | `127.0.0.1` | Listening address (IP, not a hostname) |
 | `port` | int | `9116` | Listening port |
+
+The UI has **no authentication** and serves every probe target and error string
+to anyone who can reach it, so it binds loopback only. Widening that is a
+deliberate act:
+
+- **In a container you must set `0.0.0.0`.** A published port (`-p 9116:9116`)
+  reaches the container's bridge IP, never its loopback — with the default the
+  port is open on the host but nothing answers. The shipped
+  `docker-compose.yml` sets `HUGINN_UI_BIND=0.0.0.0` for exactly this reason.
+- To publish it but keep it off the network, bind the *host* side instead:
+  `ports: ["127.0.0.1:9116:9116"]`.
+
+`bind` must be an IP address (`0.0.0.0`, `127.0.0.1`, `::1`, `::`); a hostname
+is rejected at load.
 
 ## `log` section
 
@@ -119,6 +134,7 @@ All values can be overridden without editing the YAML file:
 | `HUGINN_CONFIG` | Config file path |
 | `HUGINN_LOG_FORMAT` | `log.format` |
 | `HUGINN_LOG_LEVEL` | `log.level` |
+| `HUGINN_UI_BIND` | `ui.bind` |
 | `HUGINN_UI_ENABLED` | `ui.enabled` |
 | `HUGINN_UI_PORT` | `ui.port` |
 | `INFLUX_URL` | `influx.url` |
@@ -133,9 +149,11 @@ overriding a config file that says `json` back to `pretty`. (It previously
 could not: the check was an OR.)
 
 An ENV variable that is set but unusable is **warned about, not silently
-ignored**: `HUGINN_UI_PORT=abc`, `HUGINN_LOG_FORMAT=xml` and
-`HUGINN_UI_ENABLED=yes` each log a warning and leave the previous value in
-place. `HUGINN_UI_ENABLED` accepts `true`/`false`/`1`/`0`.
+ignored**: `HUGINN_UI_PORT=abc`, `HUGINN_UI_BIND=0.0.0.0.0`,
+`HUGINN_LOG_FORMAT=xml` and `HUGINN_UI_ENABLED=yes` each log a warning and leave
+the previous value in place. `HUGINN_UI_ENABLED` accepts `true`/`false`/`1`/`0`.
+A typo in `HUGINN_UI_BIND` therefore keeps the narrower address rather than
+falling back to something wider.
 
 These warnings appear *after* the tracing subscriber starts — the log level to
 start it with comes from the very config being read — so they arrive a few lines
