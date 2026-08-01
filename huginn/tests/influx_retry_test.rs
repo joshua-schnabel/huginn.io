@@ -85,7 +85,7 @@ async fn no_results_are_lost_while_influxdb_is_briefly_down() {
     let hub = Arc::new(EventHub::new(16));
 
     tokio::spawn(run_batcher(
-        Arc::clone(&hub),
+        hub.subscribe(),
         Arc::clone(&queue),
         cfg.batch_size,
         cfg.batch_timeout_ms,

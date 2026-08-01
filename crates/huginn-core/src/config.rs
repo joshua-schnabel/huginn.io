@@ -387,6 +387,24 @@ impl AppConfig {
                 "influx.batch_size must be > 0 (0 would flush a POST per probe result)".into(),
             ));
         }
+        // A zero timeout makes the batcher's flush timer `sleep(Duration::ZERO)`,
+        // which resolves immediately every loop — the select! spins that arm at
+        // 100% CPU forever.
+        if self.influx.batch_timeout_ms == 0 {
+            return Err(HuginError::Config(
+                "influx.batch_timeout_ms must be > 0 (0 spins the batcher's flush timer at 100% CPU)"
+                    .into(),
+            ));
+        }
+        // 0 makes the retry queue evict on every push, so it holds at most one
+        // batch and drops essentially everything during an outage — the exact
+        // opposite of what the buffer is for.
+        if self.influx.max_buffered_bytes == 0 {
+            return Err(HuginError::Config(
+                "influx.max_buffered_bytes must be > 0 (0 makes the retry queue drop every batch during an outage)"
+                    .into(),
+            ));
+        }
         // tokio::sync::broadcast::channel panics on a capacity of 0, so without
         // this the process dies at startup with no hint about which key is wrong.
         if self.event_hub_capacity == 0 {
@@ -689,6 +707,20 @@ probes:
     fn validation_rejects_zero_batch_size() {
         let mut cfg = cfg_with_probes("  []\n");
         cfg.influx.batch_size = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validation_rejects_zero_batch_timeout() {
+        let mut cfg = cfg_with_probes("  []\n");
+        cfg.influx.batch_timeout_ms = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validation_rejects_zero_max_buffered_bytes() {
+        let mut cfg = cfg_with_probes("  []\n");
+        cfg.influx.max_buffered_bytes = 0;
         assert!(cfg.validate().is_err());
     }
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use huginn_core::config::InfluxConfig;
 use huginn_core::error::{HuginError, Result};
-use huginn_core::event::{EventHub, ProbeEvent};
+use huginn_core::event::ProbeEvent;
 use huginn_core::types::ProbeResult;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -147,24 +147,26 @@ impl InfluxWriter {
     }
 }
 
-/// Subscribe to `hub`, group results into batches, and hand them to `queue`.
+/// Group results from `rx` into batches and hand them to `queue`.
 ///
 /// This task never awaits I/O. That is the point: it is the only thing reading
 /// the broadcast channel, and if it stalled — as it did when the flush was
 /// inline — the channel would fill and `Lagged` would discard results before
 /// they were ever buffered.
 ///
+/// The receiver is subscribed by the caller *before* this task is spawned, so no
+/// result published between spawn and first poll is missed (a receiver only sees
+/// events sent after it subscribed). It takes a `Receiver`, not the hub, for
+/// exactly that reason.
+///
 /// Flushes on `batch_size` results or after `batch_timeout_ms`, whichever comes
 /// first. Renders line protocol exactly once, here.
 pub async fn run_batcher(
-    hub: Arc<EventHub>,
+    mut rx: broadcast::Receiver<ProbeEvent>,
     queue: Arc<RetryQueue>,
     batch_size: usize,
     batch_timeout_ms: u64,
 ) {
-    let mut rx = hub.subscribe();
-    drop(hub);
-
     let mut buffer: Vec<ProbeResult> = Vec::with_capacity(batch_size);
     let timeout_dur = Duration::from_millis(batch_timeout_ms);
     let mut flush_deadline = Box::pin(tokio::time::sleep(timeout_dur));
@@ -248,13 +250,13 @@ pub async fn run_writer(
         loop {
             match writer.write_lines(&batch).await {
                 Ok(()) => {
-                    queue.pop();
+                    queue.pop_if_front(&batch);
                     break;
                 }
                 Err(e) if !e.is_retryable() => {
                     // Permanent. Dropping it is what keeps the head moving.
                     error!(error = %e, "discarding InfluxDB batch — not retryable");
-                    queue.pop();
+                    queue.pop_if_front(&batch);
                     break;
                 }
                 Err(e) => {
@@ -604,12 +606,7 @@ mod tests {
         let hub = Arc::new(EventHub::new(16));
         let queue = Arc::new(RetryQueue::new(1024 * 1024));
 
-        let handle = tokio::spawn(run_batcher(
-            Arc::clone(&hub),
-            Arc::clone(&queue),
-            10,
-            60_000,
-        ));
+        let handle = tokio::spawn(run_batcher(hub.subscribe(), Arc::clone(&queue), 10, 60_000));
 
         drop(hub);
 
@@ -634,12 +631,7 @@ mod tests {
         // capacity=1: any second publish before recv() is processed causes Lagged.
         let hub = Arc::new(EventHub::new(1));
         let queue = Arc::new(RetryQueue::new(1024 * 1024));
-        let handle = tokio::spawn(run_batcher(
-            Arc::clone(&hub),
-            Arc::clone(&queue),
-            10,
-            60_000,
-        ));
+        let handle = tokio::spawn(run_batcher(hub.subscribe(), Arc::clone(&queue), 10, 60_000));
 
         // Let the task park in rx.recv().await.
         tokio::task::yield_now().await;
@@ -669,12 +661,7 @@ mod tests {
         let queue = Arc::new(RetryQueue::new(1024 * 1024));
         // batch_size 10 and a long timeout: 3 results would otherwise sit in the
         // buffer forever.
-        let handle = tokio::spawn(run_batcher(
-            Arc::clone(&hub),
-            Arc::clone(&queue),
-            10,
-            60_000,
-        ));
+        let handle = tokio::spawn(run_batcher(hub.subscribe(), Arc::clone(&queue), 10, 60_000));
         tokio::task::yield_now().await;
 
         for _ in 0..3 {
@@ -710,7 +697,7 @@ mod tests {
         let (shutdown_tx, _) = broadcast::channel(1);
 
         tokio::spawn(run_batcher(
-            Arc::clone(hub),
+            hub.subscribe(),
             Arc::clone(&queue),
             batch_size,
             batch_timeout_ms,
