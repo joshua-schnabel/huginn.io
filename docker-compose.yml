@@ -5,6 +5,12 @@ services:
     environment:
       HUGINN_CONFIG: /etc/huginn/config.yaml
       HUGINN_UI_ENABLED: "true"
+      # Required in a container: the default is 127.0.0.1, which the published
+      # port below cannot reach. Set here rather than in config.yaml because that
+      # file is your own copy of config.example.yaml and won't be updated for you.
+      # The UI is unauthenticated — keep the published port on a trusted network,
+      # or bind it to the host's loopback: "127.0.0.1:9116:9116".
+      HUGINN_UI_BIND: "0.0.0.0"
       INFLUX_URL: http://influxdb:8086
       INFLUX_ORG: myorg
       INFLUX_BUCKET: monitoring

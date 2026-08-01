@@ -1,5 +1,7 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::extract::State;
 use axum::response::Html;
 use axum::routing::get;
@@ -16,11 +18,18 @@ const INDEX_HTML: &str = include_str!("../assets/index.html");
 const STYLE_CSS: &str = include_str!("../assets/style.css");
 const APP_JS: &str = include_str!("../assets/app.js");
 
-/// Start the web UI server.
+/// Start the web UI server on `bind`:`port`.
 ///
 /// Subscribes to `hub` to keep the latest probe results in sync and push
 /// updates to connected browsers via Server-Sent Events.
-pub async fn run_server(port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
+///
+/// `bind` must parse as an [`IpAddr`]; `AppConfig::validate` rejects anything
+/// else before startup, so reaching the error here means the caller bypassed it.
+pub async fn run_server(bind: &str, port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
+    let addr: IpAddr = bind
+        .parse()
+        .with_context(|| format!("ui.bind '{bind}' is not a valid IP address"))?;
+
     let state = Arc::new(WebState::new());
     Arc::clone(&state).start_event_loop(Arc::clone(&hub));
     // Drop our Arc: `axum::serve` below never returns, so holding it would keep
@@ -37,8 +46,8 @@ pub async fn run_server(port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
         .route("/assets/app.js", get(handle_js))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    info!("Web UI listening on http://0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind((addr, port)).await?;
+    info!("Web UI listening on http://{addr}:{port}");
     axum::serve(listener, app).await?;
     Ok(())
 }

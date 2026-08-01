@@ -21,9 +21,15 @@ jobs:
   semgrep:
     name: Semgrep SAST
     runs-on: ubuntu-latest
-    container: semgrep/semgrep
+    # Pinned by digest — `semgrep/semgrep` without a tag is `:latest`, i.e. a
+    # moving image that runs on every push and PR. Dependabot does NOT update
+    # `container:` references (dependabot-core#5819), so this needs a manual
+    # bump; that is acceptable because the *rules* are fetched at scan time from
+    # the Semgrep registry (`--config p/rust`, `p/secrets`), not baked into the
+    # image — a pinned image still scans with current rules.
+    container: semgrep/semgrep:1.172.0@sha256:65dcd4408adda7c183a6b4550cb1e9b19f7f627a6fbb7e0559bd466bedc44d7b
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pass 1: full scan → SARIF, uploaded to the Security tab (never blocks).
       - name: Semgrep – full scan (SARIF)
@@ -38,7 +44,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         if: always()
         with:
           sarif_file: semgrep.sarif

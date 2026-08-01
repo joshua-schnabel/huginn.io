@@ -24,6 +24,12 @@
 ## Debug UI not showing
 - Ensure `ui.enabled: true` in config (or `HUGINN_UI_ENABLED=true`)
 - Port 9116 must be published: `ports: ["9116:9116"]` in compose
+- **In a container, set `ui.bind: "0.0.0.0"` (or `HUGINN_UI_BIND=0.0.0.0`).**
+  The default is `127.0.0.1`, and a published port reaches the container's
+  bridge IP, not its loopback — so the port looks open on the host but the
+  connection is refused or reset. The log line `Web UI listening on
+  http://127.0.0.1:9116` inside the container confirms this is the cause.
+  `docker-compose.yml` and `config/config.integration.yaml` already set it.
 
 ## Enable verbose logging
 ```bash

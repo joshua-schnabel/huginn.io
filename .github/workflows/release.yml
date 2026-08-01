@@ -32,7 +32,21 @@ jobs:
     permissions:
       contents: write   # gh release create
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # needed to prove the tag is on main
+
+      # Nothing protects `refs/tags/v*` server-side, so a hand-pushed tag would
+      # otherwise create a GitHub Release — and trigger prepare-dev below — for a
+      # commit that never passed a release gate.
+      - name: Refuse tags that are not on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::tag $GITHUB_REF_NAME does not point at a commit on main"
+            exit 1
+          fi
+          echo "OK: $GITHUB_REF_NAME is on main"
 
       - name: Create GitHub Release
         env:
@@ -76,7 +90,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: dev
           fetch-depth: 0

@@ -103,6 +103,8 @@ cargo build --release --locked                               # production binary
 
 Run locally: `cargo run -- --config config/config.yaml [--output json]`. The web
 UI has **no CLI flag** — enable via `HUGINN_UI_ENABLED=true` or `ui.enabled: true`.
+It binds `127.0.0.1` by default (`ui.bind` / `HUGINN_UI_BIND`); **in a container
+it needs `0.0.0.0`**, or the published port reaches nothing.
 System integration test (Docker): `docker compose -f docker-compose.integration.yml up -d --build`
 then `bash scripts/integration-test.sh`. Copy `config/config.example.yaml` →
 `config/config.yaml` first.

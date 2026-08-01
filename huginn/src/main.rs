@@ -194,10 +194,11 @@ pub(crate) async fn run(
 
     // Web UI subscriber (if enabled)
     if cfg.ui.enabled {
+        let bind = cfg.ui.bind.clone();
         let port = cfg.ui.port;
         let web_hub = Arc::clone(&hub);
         tokio::spawn(async move {
-            if let Err(e) = huginn_web::server::run_server(port, web_hub).await {
+            if let Err(e) = huginn_web::server::run_server(&bind, port, web_hub).await {
                 error!("Web UI error: {e}");
             }
         });
@@ -339,6 +340,7 @@ mod tests {
             }],
             ui: UiConfig {
                 enabled: false,
+                bind: "127.0.0.1".into(),
                 port: 9900,
             },
             log: LogConfig::default(),
