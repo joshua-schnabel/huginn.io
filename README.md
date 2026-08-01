@@ -53,11 +53,13 @@ cargo build --release --locked                     # production binary
 ## Documentation
 
 - [AI agent context](AGENTS.md) — start here if you're an AI tool or a new contributor
+- [Contributing](docs/CONTRIBUTING.md)
 - [Configuration Reference](docs/configuration.md)
 - [Testing Guide](docs/testing.md)
-- [Security](docs/security.md)
-- [CI/CD](docs/ci-cd.md)
-- [Releasing](docs/releasing.md)
+- [CI/CD Pipeline](docs/ci-cd.md)
+- [Workflows Reference](docs/workflows.md)
+- [Security Model](docs/security-model.md) · [Security Policy](docs/SECURITY.md)
+- [InfluxDB](docs/influxdb.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## License

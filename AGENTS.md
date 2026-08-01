@@ -30,6 +30,11 @@ workspace of five crates (see §4).
 - **Verify before changing:** confirm versions, API shapes, and facts against the
   actual source / official docs before editing. Guessing has caused real
   breakage here — when unsure, check, don't assume.
+- **Security is a first-class priority.** huginn handles credentials and ships a
+  container, so weigh **every** change through a security lens (secrets never in
+  ENV or logs, least privilege, no new attack surface) and explicitly call out
+  anything with a security dimension. When in doubt, choose the safer option and
+  flag it. See §9 — it is not optional polish.
 - **Don't duplicate:** prefer reusing existing helpers/patterns; when documenting,
   link to the canonical doc rather than copying it.
 
@@ -106,6 +111,25 @@ then `bash scripts/integration-test.sh`. Copy `config/config.example.yaml` →
 
 ## 6. Conventions
 
+### Coding style
+- **Match the surrounding code** — its naming, module layout, comment density and
+  idioms. Consistency beats personal preference.
+- `snake_case` for items/modules, `CamelCase` for types; descriptive names
+  (`response_ms`, not `r`). Test names describe behaviour in plain English
+  (`fails_on_timeout`).
+- **No `unwrap()` / `expect()` / `panic!` in non-test code** — return a `Result`
+  and propagate with `?`. Panics are for tests and genuinely-unreachable
+  invariants only (with a comment saying why).
+- Keep functions small and single-purpose; keep each crate's public surface tight
+  (`pub` only what other crates need).
+- Doc-comment (`///`) public items; write comments about the *why*, not the *what*.
+- `cargo fmt` defaults apply (there is no `rustfmt.toml`), and
+  `clippy -D warnings` must be clean — **fix** clippy rather than `#[allow]`-ing it
+  away; if an allow is truly needed, add a one-line reason.
+- Prefer the standard library or already-present crates; **adding a dependency
+  needs approval** (§3). Avoid `unsafe`.
+
+### Project idioms
 - **Errors:** custom `HuginError` (`thiserror`) in `huginn-core::error`, with
   `type Result<T> = std::result::Result<T, HuginError>`; `anyhow` only at the
   binary boundary. Probe failures return `ProbeResult::failure()` and are logged
@@ -145,7 +169,7 @@ then `bash scripts/integration-test.sh`. Copy `config/config.example.yaml` →
   direct pushes to `dev`/`main` (see §3).
 - **Conventional Commits:** `feat · fix · chore · docs · test · refactor · perf ·
   style`. End commit bodies with the required `Co-Authored-By` trailer.
-- Full contributor guide: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- Full contributor guide: [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
 
 ---
 
@@ -156,7 +180,8 @@ once per arch** into a tarball; `scan` (Trivy), `integration` (compose), `push`
 (skopeo by digest) and `publish` all consume *that same artifact*, so the bytes
 scanned, tested and published are byte-identical. `publish` assembles the
 multi-arch DockerHub manifest, **mirrors it to `ghcr.io`**, and tags `vX.Y.Z`.
-`security.yml` is **Semgrep-only**; `cargo-deny` gates the supply chain.
+`security.yml` is **Semgrep-only**; `cargo-deny` gates the supply chain. Every
+workflow is described one-by-one in [`docs/workflows.md`](docs/workflows.md).
 
 **Releasing** (details in [`docs/releasing.md`](docs/releasing.md) and
 [`docs/ci-cd.md`](docs/ci-cd.md)):
@@ -172,16 +197,20 @@ multi-arch DockerHub manifest, **mirrors it to `ghcr.io`**, and tags `vX.Y.Z`.
 
 ---
 
-## 9. Security posture
+## 9. Security posture — high priority
+
+Security is a first-class concern here (see §2), not an afterthought. Any change
+that touches secrets, the container, network exposure, dependencies, or workflow
+permissions must be reasoned about explicitly and flagged in the PR.
 
 - Secrets **file-only, never in ENV**; never commit secret values or add them to
-  Docker/compose ENV. Don't add `--privileged`, `--cap-add`.
-- Distroless + nonroot runtime; config mounted read-only.
+  Docker/compose ENV, and never log them. Don't add `--privileged`, `--cap-add`.
+- Distroless + nonroot runtime; config mounted read-only; TLS is **rustls** only.
 - Least-privilege workflow `permissions:` — grant the minimum a job needs.
 - Gates: **cargo-deny** (CVEs + license allow-list in `deny.toml`), **Semgrep**
   (`p/rust` + `p/secrets`, ERROR blocks), **Trivy** (image CVEs, fixable
-  CRITICAL/HIGH block). More: [`docs/security.md`](docs/security.md),
-  [`.github/SECURITY.md`](.github/SECURITY.md).
+  CRITICAL/HIGH block). More: [`docs/security-model.md`](docs/security-model.md)
+  (practices) and [`docs/SECURITY.md`](docs/SECURITY.md) (reporting policy).
 
 ---
 
@@ -189,11 +218,12 @@ multi-arch DockerHub manifest, **mirrors it to `ghcr.io`**, and tags `vX.Y.Z`.
 
 | Topic | Read |
 |---|---|
-| Contributor workflow, branching, commits | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Contributor workflow, branching, commits | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | CI/CD pipeline, repo configuration | [`docs/ci-cd.md`](docs/ci-cd.md) |
+| Every workflow explained (humans + AI) | [`docs/workflows.md`](docs/workflows.md) |
 | Release runbook (one-click + manual) | [`docs/releasing.md`](docs/releasing.md) |
 | Testing pyramid, TDD, coverage, no-sleep rule | [`docs/testing.md`](docs/testing.md) |
-| Security model, secrets handling | [`docs/security.md`](docs/security.md) · [`.github/SECURITY.md`](.github/SECURITY.md) |
+| Security practices + reporting policy | [`docs/security-model.md`](docs/security-model.md) · [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Config reference (YAML + ENV) | [`docs/configuration.md`](docs/configuration.md) |
 | InfluxDB setup & data model | [`docs/influxdb.md`](docs/influxdb.md) |
 | Troubleshooting | [`docs/troubleshooting.md`](docs/troubleshooting.md) |

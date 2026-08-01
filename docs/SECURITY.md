@@ -13,7 +13,7 @@ within a few days.
 This file lives at a path GitHub recognises, which is what makes the
 "Report a vulnerability" button appear. The security *practices* — secret
 handling, container hardening, the scanning pipeline — are documented in
-[`docs/security.md`](../docs/security.md).
+[`security-model.md`](security-model.md).
 
 ## Supported Versions
 
