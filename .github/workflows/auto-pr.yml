@@ -2,14 +2,16 @@ name: Auto PR
 
 # Opens a draft PR against dev for branches with a valid prefix.
 # Deletes branches that don't follow the naming convention.
-# Dependabot manages its own branches and PRs, so they are ignored here —
-# otherwise the naming rule below would delete them on sight.
+# Dependabot manages its own branches and PRs, and release.yml manages its own
+# release/* housekeeping branch + PR — both are ignored here, otherwise the
+# naming rule below would delete them on sight.
 on:
   push:
     branches-ignore:
       - "main"
       - "dev"
       - "dependabot/**"
+      - "release/**"
 
 permissions:
   contents: write

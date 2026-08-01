@@ -37,15 +37,20 @@ feature/my-feature
 | Tests (beta, canary — non-blocking) | ✅ | ✅ | ✅ | ✅ |
 | Supply-Chain (cargo-deny) | ✅ | ✅ | ✅ | ✅ |
 | Code Coverage ≥ 80% | ✅ | ✅ | ✅ | ✅ |
+| Version gate (SemVer + successor) | ✅ 🚫† | ➖ | ✅ 🚫 | ➖ |
 | **Semgrep SAST** | ✅ 🚫* | ✅ | ✅ | ❌ |
 | Build image (per arch, native) | ✅ | ✅ | ✅ | ✅ |
 | Trivy CVE Scan (SARIF) | ✅ | ✅ | ✅ | ✅ |
 | Trivy blocking scan | ✅ 🚫 | ✅ 🚫 | ✅ 🚫 | ✅ 🚫 |
 | System Integration Test | ✅ | ✅ | ✅ | ✅ |
-| Publish to DockerHub | ❌ | ✅ :dev + :0.1.0-dev | ✅ :latest + :0.1.0 | ✅ semver tags |
+| Publish → DockerHub **+ ghcr.io** | ❌ | ✅ :dev + :0.1.0-dev | ✅ :latest + :0.1.0 | ✅ semver tags |
+| GitHub Release (`release.yml`) | ❌ | ❌ | ❌ | ✅ |
+| Dev housekeeping PR (`release.yml`) | ❌ | ❌ | ❌ | ✅ |
 
 🚫 = Blocks the PR  
-🚫* = Blocks only on ERROR-severity findings (hardcoded secrets, critical code patterns)
+🚫* = Blocks only on ERROR-severity findings (hardcoded secrets, critical code patterns)  
+🚫† = Only enforced on PRs whose base is `main` (the release PR); a no-op pass elsewhere  
+➖ = Runs but is a deliberate no-op (so it can gate `build` without skipping it)
 
 CI runs on **every** pull request, not only those targeting `main`/`dev`. It was
 previously scoped to those two, so feature branches had no gate — which is how
@@ -73,11 +78,12 @@ Runs on every pull request, on pushes to `dev`/`main`, and on `v*.*.*` tags.
 - **test**: `cargo test --all` on Rust stable *and* beta (`fail-fast: false`). Beta is a canary for the next compiler and is **non-blocking** (`continue-on-error`): it warns of an upcoming toolchain break without gating a merge.
 - **supply-chain**: `cargo deny check` — advisory CVEs + licenses + banned crates + registry sources
 - **coverage**: `cargo llvm-cov --fail-under-lines 80` — **workspace-aggregate line** coverage. Not per-file, not regions; see `docs/testing.md`. The `cargo-llvm-cov` binary is compiled once and cached (pinned version); `cargo-deny` is deliberately left on the latest release so it keeps detecting new advisory classes.
+- **version-gate**: reads the top version from `CHANGELOG.md` and enforces that it is valid SemVer **and** strictly greater than the latest `v*` git tag. It only enforces for a release context — a PR whose base is `main`, or a push to `main` — and is a no-op pass on every other event. `build` lists it in `needs`, so an invalid release version fails **before** the expensive image build. (It must always run rather than be job-level skipped: a skipped `needs` job would skip `build` too.)
 - **build** (matrix, one per architecture on its **native** runner — amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`, no QEMU): builds the image **exactly once** into a local tarball (`outputs: type=docker,dest=image.tar`) and uploads it as the `image-<arch>` artifact. Native runners replace QEMU emulation, which had turned the arm64 build into the pipeline's dominant cost.
 - **scan** (matrix): downloads the artifact and runs Trivy against it — a full SARIF pass (all CRITICAL/HIGH/MEDIUM → Security tab) and a blocking pass (fixable CRITICAL/HIGH → fails the job). Never rebuilds the image.
 - **integration** (matrix, native runner): downloads the artifact, `docker load` + `docker compose --no-build`, and runs the system integration test against the loaded image.
 - **push** (matrix, `if: push`): `needs: [scan, integration]`; `skopeo` copies the *scanned+tested* tarball straight to the registry by digest and records the digest. Skipped on PRs, so credentials are never reachable there.
-- **publish** (`if: push`): `needs: [push]`; downloads the per-arch digests, assembles the multi-arch manifest with `docker buildx imagetools create`, deletes the staging tags, and creates the release git tag on main. It publishes **no new bytes** — only tags the digests `push` uploaded.
+- **publish** (`if: push`): `needs: [push]`; downloads the per-arch digests, assembles the multi-arch DockerHub manifest with `docker buildx imagetools create`, then **mirrors that finished manifest to `ghcr.io` with `skopeo copy --all`** (manifest list + all arch blobs → identical digests, so the ghcr image is byte-identical to the scanned/tested one — no second build), deletes the DockerHub staging tags, and creates the release git tag on main. It publishes **no new bytes** — only tags the digests `push` uploaded, on both registries.
 
 **Publish lives in `ci.yml` on purpose.** As its own `docker.yml` workflow it
 triggered on `push` in parallel with CI and depended on nothing, so a commit
@@ -105,6 +111,29 @@ Rulesets: `p/rust` (Rust-specific security patterns) and `p/secrets` (hardcoded 
 > image was never the one that shipped. It now runs inside `ci.yml`'s `scan`
 > job against the exact tarball that gets published (see above), on every PR and
 > every push. `security.yml` is Semgrep-only as a result.
+
+### `release.yml` — GitHub Release + next-cycle prep
+
+Triggered **only by the release tag push** (`v*.*.*`) that `ci.yml`'s `publish`
+job creates — so it runs *after* the image is out, and is kept separate from the
+image pipeline on purpose.
+
+- **github-release**: extracts the notes for the tagged version from its
+  `CHANGELOG.md` section and creates the GitHub Release. `0.x` and any
+  `-prerelease` version is flagged as a pre-release. Idempotent (skips if the
+  release already exists).
+- **prepare-dev**: opens an **auto-merging PR into `dev`** that reopens a fresh
+  `## [Unreleased]` block, repoints the compare links at the new tag, and bumps
+  `Cargo.toml`'s workspace version to the released version. It never pushes to
+  `main` or `dev` directly — only to a `release/*` branch (which `auto-pr.yml`
+  ignores) that then flows through normal CI.
+
+> **`prepare-dev` needs a `RELEASE_PAT` secret** — a PAT or fine-grained token
+> with `contents: write` + `pull-requests: write` on this repo. A PR opened with
+> the built-in `GITHUB_TOKEN` does **not** trigger `ci.yml`, so its required
+> checks never run and auto-merge hangs forever. With `RELEASE_PAT` the PR is
+> attributed to a real identity, CI runs, and auto-merge completes. Without it
+> the PR is still opened, but you have to run CI / merge it by hand.
 
 ---
 
@@ -157,9 +186,31 @@ deny = [
 
 ## Adding a New Release
 
-1. Update the version in `CHANGELOG.md` (top entry: `## [x.y.z] - YYYY-MM-DD`)
-2. Merge the release PR into `main`
-3. The `publish` job in `ci.yml` reads the version, creates the git tag `vx.y.z`, and assembles the multi-arch manifest from the already-built, already-scanned per-arch images — but only after fmt, clippy, tests, cargo-deny, coverage, the Trivy scan and the system integration test have all passed. It publishes no new bytes; it only tags the digests the `push` job uploaded.
+The **only manual step is choosing the version number.** Everything downstream —
+tag, image, GitHub Release, and reopening the changelog — is automated. You never
+edit `main` or a tag by hand; no bot ever pushes to `main` or `dev`.
 
-> The version lives in both `Cargo.toml` and `CHANGELOG.md`, and only the latter
-> drives the tag. They can silently disagree; the CHANGELOG wins.
+1. **On `dev`**, rename the `## [Unreleased]` heading in `CHANGELOG.md` to
+   `## [X.Y.Z] - YYYY-MM-DD` (the accumulated entries stay under it). Pick `X.Y.Z`
+   per SemVer.
+2. **Open the release PR `dev → main`.** The **version gate** validates `X.Y.Z`
+   *before* the merge is allowed: it must be valid SemVer and strictly greater
+   than the latest `v*` tag. A typo or a non-increasing version fails the PR here.
+3. **Merge into `main`.** `ci.yml` then — only after fmt, clippy, tests,
+   cargo-deny, coverage, the Trivy scan and the integration test have all passed —
+   publishes the multi-arch image to **DockerHub** (`:latest` + `:X.Y.Z`),
+   **mirrors it to `ghcr.io`**, and creates the git tag `vX.Y.Z`. No new bytes are
+   built; it only tags the already-scanned digests.
+4. **`release.yml` fires on that tag push** and: creates the **GitHub Release**
+   (notes from the `CHANGELOG.md` section, `0.x`/`-rc` flagged as pre-release),
+   and opens an **auto-merging PR into `dev`** that reopens a fresh
+   `## [Unreleased]`, fixes the compare links, and bumps `Cargo.toml` to `X.Y.Z`.
+
+> `Cargo.toml` and `CHANGELOG.md` used to drift silently. Now the version gate
+> validates the changelog version, and the `release.yml` housekeeping PR bumps
+> `Cargo.toml` to match — so they stay in step without manual effort.
+
+> **One-time setup:** add the `RELEASE_PAT` secret (see `release.yml` above) so
+> the housekeeping PR triggers CI and auto-merges. After the first publish, set
+> the `huginn` package in GitHub → Packages to **Public** (it defaults to
+> private), otherwise `docker pull ghcr.io/…` needs auth.
