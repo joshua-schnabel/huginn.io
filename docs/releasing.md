@@ -105,22 +105,6 @@ gh pr list --base dev --search "prepare next cycle"
 
 ---
 
-## One-time setup
-
-These only need to be done once, not per release.
-
-1. **`RELEASE_PAT` secret** (optional but recommended) — a fine-grained PAT with
-   **Contents: write** + **Pull requests: write** on this repo, stored as the
-   repository secret `RELEASE_PAT`. Without it, the dev housekeeping PR is opened
-   with the built-in `GITHUB_TOKEN`, which does **not** trigger CI, so it can't
-   auto-merge — you'd merge it manually. See the security note in
-   [ci-cd.md](ci-cd.md).
-2. **Make the ghcr package public** — after the first release, set the `huginn`
-   package under GitHub → Packages to **Public** (ghcr packages default to
-   private), otherwise `docker pull ghcr.io/joshua-schnabel/huginn` needs auth.
-
----
-
 ## Rules & gotchas
 
 - **Don't hand-push `v*` tags.** Tags are created only by the pipeline after
