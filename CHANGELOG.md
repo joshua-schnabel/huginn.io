@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The UDP probe could never reach an IPv6 target.** The local socket was always bound to the IPv4 wildcard `0.0.0.0:0`, which cannot connect to an IPv6 peer, so a target that `validate()` had accepted reported DOWN forever. The target is now resolved first (under the probe timeout, so a stalling resolver can no longer exceed `timeout_secs`) and the socket is bound in the matching address family. A bind failure now also reports the elapsed time instead of a hardcoded `0.0`.
 - **The daemon exited immediately at startup, having run no probes.** `run()` spawned the probe loops and returned; `main()` then exited and the Tokio runtime cancelled every task before the first tick. The fix (keep-alive on the shutdown channel) existed on `dev` but was lost when `feature/refactoring` branched from a parallel CI fix.
 - **Tests could not observe that bug.** They all spawned `run()` into the test's own runtime, which outlives it — production has no such runtime. Added `huginn/tests/binary_lifecycle_test.rs`, which runs the real binary as a subprocess, and a negative shutdown test asserting `run()` does *not* return without a signal.
 - **DockerHub publish ran in parallel with CI and depended on nothing** — a commit with failing tests, clippy or cargo-deny still shipped `:latest`. Publish is now a job in `ci.yml` gated by `needs` on every check, with `contents: write` so the release tag push no longer 403s.
@@ -48,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/testing.md`** — four-level test pyramid, TDD workflow, coverage requirements
 
 ### Changed
+- **The HTTP/HTTPS probe no longer follows redirects.** reqwest follows up to 10 hops by default, which meant `expected_status: 200` silently passed for a 301→200 chain and the measured `response_ms` included the extra round-trips. An uptime check has to judge the URL it was given, so a redirect is now reported with its own status — a 301 against `expected_status: 200` is DOWN. If you were relying on the old behaviour, point the probe at the redirect target instead.
 - Project renamed from `hugin.dec` to `huginn.io`
 - `cargo-audit` replaced by `cargo-deny` in all CI pipelines
 - Docker image registry: GHCR → DockerHub

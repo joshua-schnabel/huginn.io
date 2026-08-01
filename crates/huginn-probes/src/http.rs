@@ -71,10 +71,15 @@ pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
     }
 }
 
-/// Build a shared reqwest client with a default timeout.
+/// Build a shared reqwest client.
 pub fn build_client() -> Client {
     Client::builder()
         .use_rustls_tls()
+        // Don't follow redirects: an uptime check must judge the URL it was
+        // given. Following (reqwest's default, up to 10 hops) would let
+        // `expected_status: 200` silently pass for a 301→200 chain and fold the
+        // extra round-trips into the measured response time.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -185,6 +190,28 @@ mod tests {
         let result = probe(&cfg, &client).await;
         assert!(!result.up);
         assert!(result.error.as_deref().unwrap_or("").contains("500"));
+    }
+
+    /// A redirect must not be followed: the probe judges the URL it was given,
+    /// so a 301 with `expected_status: 200` is DOWN, not a silent pass.
+    #[tokio::test]
+    async fn does_not_follow_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(301).insert_header("Location", "/elsewhere"))
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let cfg = http_cfg(&server.uri(), Some(200));
+        let result = probe(&cfg, &client).await;
+
+        assert!(!result.up, "a 301 must not be followed to a 200");
+        assert!(
+            result.error.as_deref().unwrap_or("").contains("301"),
+            "error should report the redirect status: {:?}",
+            result.error
+        );
     }
 
     #[tokio::test]
