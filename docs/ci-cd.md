@@ -186,6 +186,9 @@ deny = [
 
 ## Adding a New Release
 
+> A standalone step-by-step lives in **[releasing.md](releasing.md)**. The short
+> version:
+
 The **only manual step is choosing the version number.** Everything downstream —
 tag, image, GitHub Release, and reopening the changelog — is automated. You never
 edit `main` or a tag by hand; no bot ever pushes to `main` or `dev`.
