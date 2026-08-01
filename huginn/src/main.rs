@@ -76,16 +76,45 @@ async fn main() -> anyhow::Result<()> {
 
     info!("huginn starting — config: {}", args.config);
 
-    // Shutdown channel — Ctrl+C sends the signal
+    // Shutdown channel — an OS stop signal fires it.
     let (shutdown_tx, _): (Shutdown, _) = broadcast::channel(1);
-    let shutdown_ctrl = shutdown_tx.clone();
+    let shutdown_sig = shutdown_tx.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
+        wait_for_shutdown_signal().await;
         info!("Shutdown signal received");
-        let _ = shutdown_ctrl.send(());
+        let _ = shutdown_sig.send(());
     });
 
     run(Arc::new(cfg), use_json, shutdown_tx).await
+}
+
+/// Resolve when the OS asks the process to stop.
+///
+/// Ctrl+C (SIGINT) on every platform, plus **SIGTERM** on Unix — the signal
+/// systemd and `docker stop` actually send. Catching only SIGINT meant the whole
+/// shutdown drain never ran under those supervisors, so every buffered-but-
+/// unwritten InfluxDB result was lost on each restart/deploy.
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                warn!("could not install SIGTERM handler ({e}) — Ctrl+C only");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -149,17 +178,15 @@ pub(crate) async fn run(
     // Central event hub — all components subscribe here
     let hub = Arc::new(EventHub::new(cfg.event_hub_capacity));
 
-    // Console output subscriber
-    let console_hub = Arc::clone(&hub);
+    // Console output subscriber. Subscribe *before* spawning: a broadcast
+    // receiver only sees events sent after it subscribed, so subscribing inside
+    // the task could miss the first probe tick if the task isn't polled in time.
+    // A Receiver doesn't keep the hub's Sender alive, so it still gets Closed at
+    // shutdown (when run() drops `hub`).
+    let mut console_rx = hub.subscribe();
     tokio::spawn(async move {
-        let mut rx = console_hub.subscribe();
-        // Drop the Arc once subscribed. Holding it keeps the hub's Sender alive,
-        // so this task would keep the channel open and then wait forever for the
-        // Closed that only its own exit could produce. run_batcher and
-        // WebState::start_event_loop do the same, for the same reason.
-        drop(console_hub);
         loop {
-            match rx.recv().await {
+            match console_rx.recv().await {
                 Ok(ProbeEvent::ProbeCompleted(result)) => print_result(&result, use_json),
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     error!("Console subscriber dropped {n} events");
@@ -176,9 +203,11 @@ pub(crate) async fn run(
         Arc::new(InfluxWriter::new(&cfg.influx).context("Failed to initialise InfluxDB writer")?);
     let queue = Arc::new(RetryQueue::new(cfg.influx.max_buffered_bytes));
 
-    let influx_hub = Arc::clone(&hub);
+    // Subscribe before spawning (see the console subscriber above) so no early
+    // probe result is lost to InfluxDB at startup.
+    let batcher_rx = hub.subscribe();
     tokio::spawn(run_batcher(
-        influx_hub,
+        batcher_rx,
         Arc::clone(&queue),
         cfg.influx.batch_size,
         cfg.influx.batch_timeout_ms,

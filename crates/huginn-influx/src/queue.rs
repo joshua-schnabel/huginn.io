@@ -99,12 +99,26 @@ impl RetryQueue {
         inner.batches.front().cloned()
     }
 
-    /// Remove the oldest batch. Call after a successful write, or to discard a
-    /// permanently-rejected one.
-    pub fn pop(&self) {
+    /// Remove the front batch, but only if it is still `written` (by identity).
+    /// Returns whether it was removed. Call after a successful write, or to
+    /// discard a permanently-rejected batch.
+    ///
+    /// The writer holds a peeked batch across a possibly-long retry. Meanwhile a
+    /// `push` can evict that exact batch (drop-oldest) if the queue fills during
+    /// the outage. An unconditional pop would then discard a *different*,
+    /// unwritten batch that has since moved to the front — silent data loss in
+    /// precisely the overflow scenario this queue exists to handle. Matching on
+    /// `Arc::ptr_eq` makes the removal exactly "the batch I just wrote, if it is
+    /// still here"; if it was already evicted, there is nothing to do.
+    pub fn pop_if_front(&self, written: &Batch) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(b) = inner.batches.pop_front() {
-            inner.bytes -= b.len();
+        match inner.batches.front() {
+            Some(front) if std::sync::Arc::ptr_eq(front, written) => {
+                let b = inner.batches.pop_front().expect("front was just checked");
+                inner.bytes -= b.len();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -180,11 +194,29 @@ mod tests {
         q.push(batch("first"));
         q.push(batch("second"));
 
-        assert_eq!(&*q.peek().unwrap(), "first");
-        q.pop();
-        assert_eq!(&*q.peek().unwrap(), "second");
-        q.pop();
+        let first = q.peek().unwrap();
+        assert_eq!(&*first, "first");
+        assert!(q.pop_if_front(&first));
+        let second = q.peek().unwrap();
+        assert_eq!(&*second, "second");
+        assert!(q.pop_if_front(&second));
         assert!(q.peek().is_none());
+    }
+
+    /// The peek-then-pop invariant under overflow: if the batch the writer held
+    /// was evicted (drop-oldest) and a different batch is now at the front,
+    /// popping must NOT remove that unwritten front.
+    #[test]
+    fn pop_if_front_ignores_a_batch_that_is_no_longer_front() {
+        let q = RetryQueue::new(12); // fits two 5-byte batches
+        q.push(batch("aaaaa"));
+        let held = q.peek().unwrap(); // writer peeks "aaaaa"
+        q.push(batch("bbbbb"));
+        q.push(batch("ccccc")); // evicts the held "aaaaa"
+
+        assert!(!q.pop_if_front(&held), "must not pop an evicted batch");
+        assert_eq!(&*q.peek().unwrap(), "bbbbb", "unwritten front must survive");
+        assert_eq!(q.len(), 2);
     }
 
     #[test]
@@ -206,12 +238,9 @@ mod tests {
         q.push(batch("ccccc")); // must evict "aaaaa"
 
         assert_eq!(q.len(), 2);
-        assert_eq!(
-            &*q.peek().unwrap(),
-            "bbbbb",
-            "oldest should have been dropped"
-        );
-        q.pop();
+        let front = q.peek().unwrap();
+        assert_eq!(&*front, "bbbbb", "oldest should have been dropped");
+        assert!(q.pop_if_front(&front));
         assert_eq!(&*q.peek().unwrap(), "ccccc");
         assert_eq!(q.dropped_batches(), 1);
         assert_eq!(q.dropped_bytes(), 5);
@@ -225,7 +254,8 @@ mod tests {
         assert_eq!(q.bytes(), 5);
         q.push(batch("123"));
         assert_eq!(q.bytes(), 8);
-        q.pop();
+        let front = q.peek().unwrap();
+        assert!(q.pop_if_front(&front));
         assert_eq!(q.bytes(), 3);
     }
 
@@ -253,8 +283,9 @@ mod tests {
         q.push(batch("pending"));
         q.close();
 
-        assert_eq!(&*q.wait_for_batch().await.unwrap(), "pending");
-        q.pop();
+        let b = q.wait_for_batch().await.unwrap();
+        assert_eq!(&*b, "pending");
+        assert!(q.pop_if_front(&b));
         assert!(q.wait_for_batch().await.is_none());
     }
 
