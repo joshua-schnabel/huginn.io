@@ -11,10 +11,13 @@ b-timings    = "build --workspace --timings"
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 # cargo dev                 Starten mit Beispiel-Config (Pretty-Output)
-# cargo dev-ui              + eingebettete Debug-Web-UI auf Port 9116
 # cargo dev-json            + JSON-Log-Ausgabe
+#
+# Debug-Web-UI: es gibt kein CLI-Flag dafür, und ein cargo-Alias kann keine ENV
+# setzen — daher vor `cargo dev` selbst exportieren. Sie lauscht per Default nur
+# auf 127.0.0.1:9116:
+#   HUGINN_UI_ENABLED=true cargo dev      # → http://127.0.0.1:9116
 dev          = "run -- --config config/config.example.yaml"
-dev-ui       = "run -- --config config/config.example.yaml --ui"
 dev-json     = "run -- --config config/config.example.yaml --output json"
 
 # ── Test ─────────────────────────────────────────────────────────────────────

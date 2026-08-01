@@ -9,6 +9,10 @@ influx:
 
 ui:
   enabled: true
+  # 0.0.0.0, not the 127.0.0.1 default: scripts/integration-test.sh drives the UI
+  # from outside the container through the published port, which never reaches
+  # the container's loopback.
+  bind: "0.0.0.0"
   port: 9116
 
 log:

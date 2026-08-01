@@ -137,6 +137,12 @@ impl InfluxConfig {
 pub struct UiConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// Address the UI listens on. Defaults to loopback: the UI has no
+    /// authentication and publishes every probe target, so reaching a wider
+    /// network has to be a deliberate act. Containers need `0.0.0.0` — Docker
+    /// port publishing targets the container's bridge IP, not its loopback.
+    #[serde(default = "default_ui_bind")]
+    pub bind: String,
     #[serde(default = "default_ui_port")]
     pub port: u16,
 }
@@ -145,9 +151,14 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            bind: default_ui_bind(),
             port: default_ui_port(),
         }
     }
+}
+
+fn default_ui_bind() -> String {
+    "127.0.0.1".to_string()
 }
 
 fn default_ui_port() -> u16 {
@@ -342,6 +353,15 @@ impl AppConfig {
                 )),
             }
         }
+        if let Ok(v) = std::env::var("HUGINN_UI_BIND") {
+            match v.parse::<std::net::IpAddr>() {
+                Ok(_) => self.ui.bind = v,
+                Err(_) => warnings.push(format!(
+                    "HUGINN_UI_BIND='{v}' is not a valid IP address — keeping ui.bind={}",
+                    self.ui.bind
+                )),
+            }
+        }
         if let Ok(v) = std::env::var("HUGINN_UI_PORT") {
             match v.parse::<u16>() {
                 Ok(p) => self.ui.port = p,
@@ -409,6 +429,15 @@ impl AppConfig {
         // this the process dies at startup with no hint about which key is wrong.
         if self.event_hub_capacity == 0 {
             return Err(HuginError::Config("event_hub_capacity must be > 0".into()));
+        }
+        // Caught here rather than at bind time: the UI is spawned into its own
+        // task, so a parse failure there would only surface as a logged error
+        // while the daemon keeps running without a UI.
+        if self.ui.bind.parse::<std::net::IpAddr>().is_err() {
+            return Err(HuginError::Config(format!(
+                "ui.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
+                self.ui.bind
+            )));
         }
 
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -613,6 +642,20 @@ probes:
         let cfg = parse(MINIMAL_YAML);
         assert!(!cfg.ui.enabled);
         assert_eq!(cfg.ui.port, 9116);
+        // Loopback by default — exposing an unauthenticated UI must be an
+        // explicit act, never something an omitted key does for you.
+        assert_eq!(cfg.ui.bind, "127.0.0.1");
+    }
+
+    /// `UiConfig::default()` must agree with the serde defaults, or a config
+    /// without a `ui:` block would behave differently from one with an empty one.
+    #[test]
+    fn ui_default_impl_matches_serde_default() {
+        let from_serde = parse(MINIMAL_YAML).ui;
+        let from_default = UiConfig::default();
+        assert_eq!(from_serde.enabled, from_default.enabled);
+        assert_eq!(from_serde.bind, from_default.bind);
+        assert_eq!(from_serde.port, from_default.port);
     }
 
     #[test]
@@ -662,6 +705,25 @@ probes:
 "#;
         let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.validate().is_err());
+    }
+
+    /// A bad `ui.bind` must fail the load, not the spawned UI task — there it
+    /// would only be a log line while the daemon runs on without a UI.
+    #[test]
+    fn validation_rejects_invalid_ui_bind() {
+        let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+        cfg.ui.bind = "localhost".into(); // a hostname is not an IP address
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("ui.bind"), "got: {err}");
+    }
+
+    #[test]
+    fn validation_accepts_wildcard_and_ipv6_ui_bind() {
+        for addr in ["0.0.0.0", "::1", "::"] {
+            let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+            cfg.ui.bind = addr.into();
+            assert!(cfg.validate().is_ok(), "{addr} should be accepted");
+        }
     }
 
     /// Build a config from probe stanzas, with valid influx defaults.
@@ -857,6 +919,28 @@ probes:
             assert_eq!(cfg.ui.port, 9116, "should keep the previous value");
             assert_eq!(w.len(), 1);
             assert!(w[0].contains("HUGINN_UI_PORT"), "got: {w:?}");
+        });
+    }
+
+    #[test]
+    fn env_override_ui_bind() {
+        with_env(&[("HUGINN_UI_BIND", "0.0.0.0")], || {
+            let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+            let w = cfg.apply_env_overrides();
+            assert_eq!(cfg.ui.bind, "0.0.0.0");
+            assert!(w.is_empty(), "valid address should not warn: {w:?}");
+        });
+    }
+
+    /// A typo must not silently widen the bind address — nor silently narrow it.
+    #[test]
+    fn env_invalid_ui_bind_warns_and_keeps_previous() {
+        with_env(&[("HUGINN_UI_BIND", "0.0.0.0.0")], || {
+            let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+            let w = cfg.apply_env_overrides();
+            assert_eq!(cfg.ui.bind, "127.0.0.1", "should keep the previous value");
+            assert_eq!(w.len(), 1);
+            assert!(w[0].contains("HUGINN_UI_BIND"), "got: {w:?}");
         });
     }
 

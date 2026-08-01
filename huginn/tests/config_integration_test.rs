@@ -82,4 +82,5 @@ fn ui_disabled_by_default() {
     let cfg = AppConfig::load(f.path()).unwrap();
     assert!(!cfg.ui.enabled);
     assert_eq!(cfg.ui.port, 9116);
+    assert_eq!(cfg.ui.bind, "127.0.0.1");
 }

@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hickory-resolver` 0.24 → 0.26 (fixes RUSTSEC-2026-0119); raises the MSRV to Rust 1.88 (Dockerfile builder and `rust-version` bumped to match)
 - Config precedence is now honoured in both directions: `--output`/`HUGINN_LOG_FORMAT` overrides `log.format` from the config file (previously an OR that could not override back to `pretty`)
 - Invalid ENV overrides now warn and keep the previous value instead of being silently ignored
+- **BREAKING — the debug UI now binds `127.0.0.1` instead of `0.0.0.0`.** The address is the new `ui.bind` key (`HUGINN_UI_BIND`), validated as an IP address at load. It has no authentication and publishes every probe target, so reaching a wider network is now an explicit act. **Containers must set `0.0.0.0`** — a published port reaches the container's bridge IP, never its loopback; `docker-compose.yml` and `config/config.integration.yaml` do this already. Only setups that enable the UI (`ui.enabled` defaults to `false`) are affected.
+
+### Security
+- **Closed a shell-injection path from `CHANGELOG.md` into the `publish` job.** The version was extracted with `sed` and then interpolated as `${{ }}` straight into `run:` blocks, in the one job holding `contents: write`, `packages: write` and the DockerHub credentials — a crafted `## [...]` heading merged to `dev` reached a shell. Extraction and SemVer validation now live in `scripts/changelog-version.sh`, shared with the version gate, and every consumer takes the value through `env:`. The gate alone did not cover this: it is a deliberate no-op outside a release context, while `publish` runs on every push.
+- **Every GitHub Action is pinned to a full commit SHA**, and the Semgrep container to a digest. Tags and branches are movable, so a compromised upstream reached CI without a Dependabot PR — including the actions that consume the registry credentials. `dtolnay/rust-toolchain` moved from the `@stable`/`@master` branches to the `v1` SHA with an explicit `toolchain:` input; the toolchain channel itself still floats.
+- **A `v*` tag can no longer publish from a commit that is not on `main`.** Tags are not covered by the branch ruleset and the version gate is a no-op on a tag push, so a hand-pushed tag would have published an image and cut a release. `ci.yml` `publish` and `release.yml` now verify the tagged commit is an ancestor of `main`.
+- **Dependabot now waits 3 days before proposing a new version** (`cooldown`), so a freshly published malicious release is not auto-merged within the hour. Security updates are exempt by design and are never delayed.
 
 ## [0.1.0] - 2025-03-25
 

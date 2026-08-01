@@ -7,7 +7,9 @@ pub async fn start_server(port: u16) -> Arc<EventHub> {
     let hub = Arc::new(EventHub::new(256));
     let hub_clone = Arc::clone(&hub);
     tokio::spawn(async move {
-        huginn_web::server::run_server(port, hub_clone).await.ok();
+        huginn_web::server::run_server("127.0.0.1", port, hub_clone)
+            .await
+            .ok();
     });
     hub
 }
