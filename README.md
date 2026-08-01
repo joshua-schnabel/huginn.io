@@ -52,6 +52,7 @@ cargo build --release --locked                     # production binary
 
 ## Documentation
 
+- [AI agent context](AGENTS.md) — start here if you're an AI tool or a new contributor
 - [Configuration Reference](docs/configuration.md)
 - [Testing Guide](docs/testing.md)
 - [Security](docs/security.md)

@@ -2,6 +2,8 @@
 
 Thanks for your interest! Here's the short path from idea to merged PR.
 
+> **AI agents/tools:** read [`AGENTS.md`](AGENTS.md) first — it's the canonical context (architecture, conventions, workflow, and the hard rules) for working in this repo.
+
 ## Quick Start
 
 ```bash
