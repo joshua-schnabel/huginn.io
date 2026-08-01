@@ -52,12 +52,28 @@ cargo build --release --locked                     # production binary
 
 ## Documentation
 
-- [Configuration Reference](docs/configuration.md)
-- [Testing Guide](docs/testing.md)
-- [Security](docs/security.md)
-- [CI/CD](docs/ci-cd.md)
-- [Releasing](docs/releasing.md)
-- [Troubleshooting](docs/troubleshooting.md)
+All docs live in [`docs/`](docs/); only this README and [`AGENTS.md`](AGENTS.md) sit at the root.
+
+**Start here**
+- [`AGENTS.md`](AGENTS.md) — canonical context for AI tools and new contributors: architecture, conventions, workflow, and the rules
+- [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) — how to contribute: branching, commits, where tests live, local dev
+
+**Using huginn**
+- [`docs/configuration.md`](docs/configuration.md) — every config key (YAML + `HUGINN_*` ENV) with types and defaults
+- [`docs/influxdb.md`](docs/influxdb.md) — InfluxDB setup and the measurement/field schema huginn writes
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — common failure symptoms and their fixes
+
+**Development & release**
+- [`docs/testing.md`](docs/testing.md) — the test pyramid, TDD workflow, coverage rules, no-sleep rule
+- [`docs/ci-cd.md`](docs/ci-cd.md) — branch model, pipeline design, and required GitHub repo configuration
+- [`docs/workflows.md`](docs/workflows.md) — every GitHub Actions workflow explained: triggers, jobs, gotchas
+- [`docs/releasing.md`](docs/releasing.md) — how to cut a release (one-click or manual)
+
+**Security**
+- [`docs/SECURITY.md`](docs/SECURITY.md) — how to report a vulnerability (the policy)
+- [`docs/hardening.md`](docs/hardening.md) — how huginn is secured: secrets, distroless/nonroot, scanning
+
+> **Naming:** `CONTRIBUTING.md` and `SECURITY.md` keep GitHub's standard ALL-CAPS names so GitHub surfaces them (the Contributing hint and the "Report a vulnerability" button); every other guide is lowercase.
 
 ## License
 

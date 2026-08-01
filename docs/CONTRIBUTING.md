@@ -2,6 +2,8 @@
 
 Thanks for your interest! Here's the short path from idea to merged PR.
 
+> **AI agents/tools:** read [`AGENTS.md`](../AGENTS.md) first — it's the canonical context (architecture, conventions, workflow, and the hard rules) for working in this repo.
+
 ## Quick Start
 
 ```bash
@@ -59,7 +61,7 @@ cargo run -- --config config/config.yaml --output json
 HUGINN_UI_ENABLED=true cargo run -- --config config/config.yaml   # debug web UI (no --ui flag; enable via ENV or ui.enabled: true)
 ```
 
-Full testing guide (TDD workflow, coverage requirements, naming): **[docs/testing.md](docs/testing.md)**
+Full testing guide (TDD workflow, coverage requirements, naming): **[testing.md](testing.md)**
 
 ## CI Workflows
 
@@ -72,7 +74,7 @@ Publish is a job inside `ci.yml`, gated by `needs` on every check above. It used
 to be a separate `docker.yml` that triggered on push in parallel with CI and
 depended on nothing, so a red build still shipped `:latest`.
 
-Full pipeline details: **[docs/ci-cd.md](docs/ci-cd.md)**
+Full pipeline details: **[ci-cd.md](ci-cd.md)**
 
 ## Release Process
 
