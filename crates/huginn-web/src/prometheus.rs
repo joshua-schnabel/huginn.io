@@ -53,6 +53,7 @@ pub async fn run_metrics_server(
     let authed = api_key.is_some();
     let app = Router::new()
         .route("/metrics", get(handle_prometheus))
+        .layer(axum::middleware::from_fn(crate::headers::security_headers))
         .with_state(MetricsState {
             web: state,
             api_key: api_key.map(Arc::from),
