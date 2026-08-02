@@ -1,5 +1,11 @@
 target/
 temp-int/
 .git/
+.github/
+.vscode/
+.claude/
 docs/
+scripts/
+secrets/
+docker-compose*.yml
 *.md

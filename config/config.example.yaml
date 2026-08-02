@@ -83,3 +83,14 @@ probes:
     target: "8.8.8.8:53"
     interval_secs: 30
     timeout_secs: 2
+
+  # ── TLS certificate expiry ────────────────────────────────────────────────
+  # Handshakes with an HTTPS endpoint and reports days until the certificate
+  # expires as the `tls_cert_expiry_days` metric (negative once expired). Target
+  # is host:port and must speak HTTPS; verification is skipped, so self-signed
+  # and already-expired certificates are still read.
+  - name: "cert-example-com"
+    type: tls
+    target: "example.com:443"
+    interval_secs: 3600
+    timeout_secs: 5

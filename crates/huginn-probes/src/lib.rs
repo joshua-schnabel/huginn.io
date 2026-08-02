@@ -4,6 +4,7 @@ pub mod imap;
 pub mod registry;
 pub mod smtp;
 pub mod tcp;
+pub mod tls;
 pub mod udp;
 
 pub use registry::ProbeRegistry;
