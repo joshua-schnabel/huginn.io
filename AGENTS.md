@@ -226,6 +226,7 @@ permissions must be reasoned about explicitly and flagged in the PR.
 | Release runbook (one-click + manual) | [`docs/releasing.md`](docs/releasing.md) |
 | Testing pyramid, TDD, coverage, no-sleep rule | [`docs/testing.md`](docs/testing.md) |
 | Security practices (hardening) | [`docs/hardening.md`](docs/hardening.md) |
+| Security audit report (2026-08-02) | [`docs/security-audit.md`](docs/security-audit.md) |
 | Reporting a vulnerability (policy) | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Config reference (YAML + ENV) | [`docs/configuration.md`](docs/configuration.md) |
 | SemVer policy, stable surface, upgrade notes | [`docs/versioning.md`](docs/versioning.md) |
