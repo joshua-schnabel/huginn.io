@@ -121,13 +121,27 @@ impl Default for InfluxConfig {
 
 impl InfluxConfig {
     /// Read the token from the file specified by `token_file`.
+    ///
+    /// An empty (or whitespace-only) file is an error, not an empty token.
+    /// Without this the process starts happily, sends `Authorization: Token `
+    /// with no value, and InfluxDB answers 401 — a 4xx, which the writer
+    /// classifies as permanent and drops the batch. The result is a monitor
+    /// that looks healthy while discarding every measurement it takes. Same
+    /// fail-closed rule as [`MetricsConfig::read_api_key`].
     pub fn read_token(&self) -> Result<String> {
-        std::fs::read_to_string(&self.token_file)
+        let token = std::fs::read_to_string(&self.token_file)
             .map(|s| s.trim().to_string())
             .map_err(|e| HuginError::Secret {
                 path: self.token_file.clone(),
                 message: e.to_string(),
-            })
+            })?;
+        if token.is_empty() {
+            return Err(HuginError::Secret {
+                path: self.token_file.clone(),
+                message: "InfluxDB token file is empty".into(),
+            });
+        }
+        Ok(token)
     }
 }
 
@@ -1354,6 +1368,29 @@ probes:
         cfg.influx.token_file = path;
         let token = cfg.influx.read_token().unwrap();
         assert_eq!(token, "mytoken");
+    }
+
+    /// Audit F-05: an empty token file used to start the process, which then
+    /// discarded every batch on InfluxDB's 401 — a monitor that looks healthy
+    /// while silently losing all of its data. Fail closed instead.
+    #[test]
+    fn read_token_rejects_an_empty_file() {
+        for content in ["", "   \n\t "] {
+            use std::io::Write;
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            write!(tmp, "{content}").unwrap();
+            let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+            cfg.influx.token_file = tmp.path().to_string_lossy().into_owned();
+
+            let err = cfg
+                .influx
+                .read_token()
+                .expect_err("an empty token file must not yield an empty token");
+            assert!(
+                err.to_string().contains("empty"),
+                "the error must name the cause: {err}"
+            );
+        }
     }
 
     #[test]
