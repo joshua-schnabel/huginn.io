@@ -15,6 +15,12 @@ ui:
   bind: "0.0.0.0"
   port: 9116
 
+metrics:
+  enabled: true
+  # Same reasoning as ui.bind: the test scrapes through the published port.
+  bind: "0.0.0.0"
+  port: 9464
+
 log:
   format: json
   level: info

@@ -34,6 +34,16 @@ ui:
   bind: "127.0.0.1"
   port: 9116  # http://localhost:9116
 
+# Prometheus metrics endpoint (optional, independent of the debug UI).
+# Serves GET /metrics in Prometheus text format: huginn_probe_success,
+# huginn_probe_duration_seconds, huginn_probe_tls_cert_expiry_days, ...
+# Like the UI it has no authentication — bind loopback unless the network is
+# trusted; in a container use 0.0.0.0 (published ports never reach loopback).
+metrics:
+  enabled: false
+  bind: "127.0.0.1"
+  port: 9464
+
 # Logging
 log:
   format: pretty  # "pretty" (coloured) or "json"

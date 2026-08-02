@@ -24,6 +24,7 @@ Lightweight uptime & latency monitor. Configures via YAML, writes to InfluxDB, s
 | **Config** | YAML + ENV overrides |
 | **Output** | Coloured CLI or `--output json` |
 | **Debug UI** | Live push updates via SSE at `:9116` (optional) |
+| **Prometheus** | `/metrics` exporter at `:9464` (optional, independent of the UI) |
 | **Security** | Distroless · nonroot · [Semgrep SAST](https://semgrep.dev) · Trivy CVE scan · cargo-deny |
 | **CI/CD** | GitHub Actions · DockerHub + ghcr.io (multi-arch: amd64/arm64) |
 
@@ -76,6 +77,22 @@ unauthenticated debug UI on `ui.bind:ui.port` (default `127.0.0.1:9116`):
 | `/health` | Liveness check, returns `OK` |
 | `/metrics/latest` | Latest result per probe as JSON |
 | `/events` | Server-Sent-Events stream of every probe result |
+
+### Prometheus metrics
+
+Independently of the debug UI, huginn can expose a Prometheus endpoint
+(`metrics.enabled: true` / `HUGINN_METRICS_ENABLED=true`, default
+`127.0.0.1:9464`) serving gauges like `huginn_probe_success`,
+`huginn_probe_duration_seconds` and `huginn_probe_tls_cert_expiry_days` —
+metric reference in [`docs/configuration.md`](docs/configuration.md). Scrape
+config:
+
+```yaml
+scrape_configs:
+  - job_name: huginn
+    static_configs:
+      - targets: ["huginn-host:9464"]
+```
 
 ## Development
 

@@ -69,7 +69,7 @@ Cargo workspace; each crate has one bounded responsibility:
 | `crates/huginn-core/` | Shared types (`ProbeResult`), config structs, `HuginError`, the `EventHub` (`config.rs`, `error.rs`, `event.rs`, `types.rs`) |
 | `crates/huginn-probes/` | `Probe` trait + `ProbeRegistry` + per-protocol executors (`tcp/http/smtp/imap/udp/dns/tls.rs`, `registry.rs`) |
 | `crates/huginn-influx/` | InfluxDB line-protocol writer — batching, bounded retry queue, HTTP POST (`writer.rs`, `queue.rs`) |
-| `crates/huginn-web/` | Optional Axum debug server — `/health`, `/metrics/latest`, `/events` SSE (`server.rs`, `sse.rs`, `state.rs`) |
+| `crates/huginn-web/` | Optional Axum debug server — `/health`, `/metrics/latest`, `/events` SSE — plus the separately-gated Prometheus `/metrics` listener (`server.rs`, `sse.rs`, `state.rs`, `prometheus.rs`) |
 
 **Data flow — `EventHub` is the sole pub/sub bus** (a tokio `broadcast` channel):
 

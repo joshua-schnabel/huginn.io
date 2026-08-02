@@ -13,6 +13,7 @@ if you know which surfaces it protects.
 | **InfluxDB schema** | The `probe_result` measurement: tag names, field names/types, timestamp precision (`ms`) as documented in [`influxdb.md`](influxdb.md). New *optional* fields (e.g. a new probe's metric) may appear in a minor release — InfluxDB is schemaless, so additions break nothing. |
 | **Container contract** | Image config path `/etc/huginn/config.yaml`, token path `/run/secrets/influx_token`, nonroot runtime, port `9116`. |
 | **Probe semantics** | What UP/DOWN means per probe type, as documented in `configuration.md`. A change that flips existing results (like a stricter default) is breaking. |
+| **Prometheus metrics** | The `/metrics` endpoint's metric names, label names (`probe`, `type`, `target`) and units as documented in `configuration.md`. New metric families may appear in a minor release; renaming or removing one is breaking. |
 
 ## Explicitly unstable (may change in any release)
 

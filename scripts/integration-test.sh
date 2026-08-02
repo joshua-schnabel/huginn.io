@@ -10,7 +10,8 @@
 #   3. Expected probe names (tcp, http, dns, udp, tls probes) are present
 #   4. All probes are up: true
 #   5. The TLS probe reports a positive tls_cert_expiry_days metric
-#   6. InfluxDB contains probe_result measurements (Flux query)
+#   6. The Prometheus endpoint on :9464 serves huginn_probe_* gauges
+#   7. InfluxDB contains probe_result measurements (Flux query)
 
 set -euo pipefail
 
@@ -103,11 +104,21 @@ if days <= 0:
 print('tls_cert_expiry_days =', days)
 " && pass "TLS probe reports positive tls_cert_expiry_days" || fail "TLS expiry metric missing or non-positive"
 
-# ── 7. Wait for InfluxDB write (batch_size=1 so it flushes immediately) ───────
+# ── 7. Assert the Prometheus endpoint serves huginn_probe_* gauges ────────────
+PROM=$(curl -sf "http://localhost:9464/metrics") || fail "Prometheus endpoint on :9464 not reachable"
+echo "$PROM" | grep -q '^# TYPE huginn_probe_success gauge$' \
+  || fail "Prometheus output lacks the huginn_probe_success family"
+echo "$PROM" | grep -q 'huginn_probe_success{probe="tls-cert",type="tls",target="tls-endpoint:443"} 1' \
+  || fail "Prometheus output lacks the tls-cert success sample"
+echo "$PROM" | grep -q 'huginn_probe_tls_cert_expiry_days{probe="tls-cert"' \
+  || fail "Prometheus output lacks the tls_cert_expiry_days gauge"
+pass "Prometheus endpoint serves huginn_probe_* gauges"
+
+# ── 8. Wait for InfluxDB write (batch_size=1 so it flushes immediately) ───────
 info "Waiting for InfluxDB write (up to 15s)..."
 sleep 5
 
-# ── 8. Query InfluxDB for probe_result measurements ───────────────────────────
+# ── 9. Query InfluxDB for probe_result measurements ───────────────────────────
 FLUX_RESULT=$(curl -sf \
   -X POST "$INFLUX_URL/api/v2/query?org=$INFLUX_ORG" \
   -H "Authorization: Token $INFLUX_TOKEN" \
