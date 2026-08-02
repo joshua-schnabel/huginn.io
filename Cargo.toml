@@ -27,8 +27,19 @@ license = "MIT"
 repository = "https://github.com/joshua-schnabel/huginn.io"
 
 [workspace.dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime. Explicit feature set rather than "full": only these subsystems
+# are used (net, timers, broadcast/RwLock, OS signals, AsyncRead for the
+# SMTP/IMAP banners). "process" is test-only (binary_lifecycle_test) and lives in
+# huginn's dev-dependencies, so it isn't compiled into the release binary.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "sync",
+    "signal",
+    "io-util",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -82,3 +93,13 @@ hickory-resolver = { version = "0.26", default-features = false, features = ["to
 tempfile = "3"
 wiremock = "0.6"
 tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Release profile — the binary that ships in the distroless image.
+# strip: drop symbols (a large fraction of an unstripped Rust binary's size).
+# lto=thin + codegen-units=1: cross-crate inlining and a single codegen unit for
+# a smaller, faster artefact. `panic` is left at "unwind" (abort is a behaviour
+# change, deliberately out of scope).
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
