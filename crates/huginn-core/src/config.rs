@@ -871,14 +871,13 @@ probes:
 
     #[test]
     fn metrics_api_key_is_read_and_trimmed_from_the_file() {
-        let path = std::env::temp_dir().join("huginn-test-metrics-key-read");
-        std::fs::write(&path, "  sekrit-key \n").unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "  sekrit-key \n").unwrap();
         let cfg = MetricsConfig {
-            api_key_file: Some(path.to_string_lossy().into_owned()),
+            api_key_file: Some(file.path().to_string_lossy().into_owned()),
             ..Default::default()
         };
         assert_eq!(cfg.read_api_key().unwrap(), Some("sekrit-key".to_string()));
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -892,14 +891,13 @@ probes:
 
     #[test]
     fn metrics_api_key_empty_file_is_an_error_not_open_access() {
-        let path = std::env::temp_dir().join("huginn-test-metrics-key-empty");
-        std::fs::write(&path, "  \n").unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "  \n").unwrap();
         let cfg = MetricsConfig {
-            api_key_file: Some(path.to_string_lossy().into_owned()),
+            api_key_file: Some(file.path().to_string_lossy().into_owned()),
             ..Default::default()
         };
         assert!(cfg.read_api_key().is_err());
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
