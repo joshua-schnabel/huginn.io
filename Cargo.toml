@@ -92,7 +92,7 @@ hickory-resolver = { version = "0.26", default-features = false, features = ["to
 # X.509 parsing — reads a certificate's notAfter for the TLS-expiry probe. The
 # TLS handshake itself uses rustls/tokio-rustls (already in the tree via reqwest);
 # only the certificate introspection needs this.
-x509-parser = "0.16"
+x509-parser = "0.18"
 
 # Test helpers (available workspace-wide)
 tempfile = "3"
