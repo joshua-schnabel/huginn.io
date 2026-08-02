@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 hickory-resolver = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6"

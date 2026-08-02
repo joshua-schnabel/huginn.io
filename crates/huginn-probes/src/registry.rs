@@ -24,6 +24,7 @@ use crate::http::HttpProbe;
 use crate::imap::ImapProbe;
 use crate::smtp::SmtpProbe;
 use crate::tcp::TcpProbe;
+use crate::tls::TlsProbe;
 use crate::udp::UdpProbe;
 use crate::Probe;
 
@@ -35,6 +36,7 @@ pub struct ProbeRegistry {
     imap: ImapProbe,
     udp: UdpProbe,
     dns: DnsProbe,
+    tls: TlsProbe,
 }
 
 impl ProbeRegistry {
@@ -49,6 +51,7 @@ impl ProbeRegistry {
             imap: ImapProbe,
             udp: UdpProbe,
             dns: DnsProbe,
+            tls: TlsProbe::new(),
         }
     }
 
@@ -66,6 +69,7 @@ impl ProbeRegistry {
             ProbeType::Imap => &self.imap,
             ProbeType::Udp => &self.udp,
             ProbeType::Dns => &self.dns,
+            ProbeType::Tls => &self.tls,
         }
     }
 }
@@ -100,6 +104,7 @@ mod tests {
             (ProbeType::Imap, "127.0.0.1:1", "imap"),
             (ProbeType::Udp, "127.0.0.1:1", "udp"),
             (ProbeType::Dns, "127.0.0.1:1", "dns"),
+            (ProbeType::Tls, "127.0.0.1:1", "tls"),
         ];
 
         for (probe_type, target, expected) in cases {

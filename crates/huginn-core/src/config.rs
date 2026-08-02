@@ -212,6 +212,7 @@ pub enum ProbeType {
     Imap,
     Udp,
     Dns,
+    Tls,
 }
 
 impl std::fmt::Display for ProbeType {
@@ -224,6 +225,7 @@ impl std::fmt::Display for ProbeType {
             ProbeType::Imap => "imap",
             ProbeType::Udp => "udp",
             ProbeType::Dns => "dns",
+            ProbeType::Tls => "tls",
         };
         write!(f, "{s}")
     }
@@ -500,8 +502,13 @@ impl ProbeConfig {
                     ));
                 }
             }
-            // Handed to TcpStream/UdpSocket connect, which needs host:port.
-            ProbeType::Tcp | ProbeType::Smtp | ProbeType::Imap | ProbeType::Udp => {
+            // Handed to TcpStream/UdpSocket connect, or (TLS) to reqwest as
+            // https://host:port — all need host:port.
+            ProbeType::Tcp
+            | ProbeType::Smtp
+            | ProbeType::Imap
+            | ProbeType::Udp
+            | ProbeType::Tls => {
                 if !has_port_suffix(&self.target) {
                     return err(format!(
                         "{} target '{}' must include a port, e.g. '{}:{}'",
@@ -546,6 +553,7 @@ fn default_port_hint(probe_type: &ProbeType) -> u16 {
         ProbeType::Smtp => 25,
         ProbeType::Imap => 143,
         ProbeType::Udp => 53,
+        ProbeType::Tls => 443,
         _ => 80,
     }
 }
