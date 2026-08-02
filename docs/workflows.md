@@ -59,7 +59,11 @@ the *same* tarball, so what ships is provably what was scanned and tested.
 **Runs on** every PR and every push.
 
 - **Full scan → SARIF**: all findings uploaded to the GitHub Security tab (never
-  fails the run).
+  fails the run). Findings suppressed by a reviewed in-code `// nosemgrep:
+  <rule>` comment are stripped before upload — GitHub ignores the SARIF
+  `suppressions` property, so they would otherwise stay open forever. The
+  in-code comment (with its rationale) is the authoritative acceptance record;
+  see `docs/hardening.md`.
 - **Blocking scan** (`--error`): only ERROR-severity findings fail the run and
   block the PR.
 - Rulesets: `p/rust` + `p/secrets`.
