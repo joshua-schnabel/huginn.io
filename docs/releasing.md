@@ -98,7 +98,11 @@ ci.yml (main push)                          → DockerHub  :latest  :0.2.0
                                                  │
                                                  ▼ (tag push)
 release.yml
-      ├─ GitHub Release v0.2.0  (notes taken from the CHANGELOG.md section)
+      ├─ GitHub Release v0.2.0
+      │    • notes: CHANGELOG section + container-image pull commands and
+      │      manifest digest + test summary
+      │    • re-runs the full test suite with coverage on the tagged commit
+      │      and attaches test-report.md as a release asset
       └─ opens a PR into dev that:
            • reopens a fresh ## [Unreleased]
            • fixes the compare links
@@ -110,6 +114,11 @@ release.yml
 - `0.x` versions and any pre-release (`-rc.1`, `-beta`, …) are flagged as a
   **pre-release** on GitHub.
 - The dev housekeeping PR **auto-merges** once its checks pass.
+- The Release ships with proof of what was tested: `test-report.md`
+  (per-suite results + coverage, built by `scripts/test-report.sh`) is attached
+  as an asset, and the notes carry a compact test summary plus the image
+  digests. A registry hiccup while resolving the digest only omits that line —
+  it never blocks the release.
 
 ---
 
@@ -120,9 +129,12 @@ release.yml
 docker buildx imagetools inspect docker.io/jschnabel/huginn:0.2.0
 docker buildx imagetools inspect ghcr.io/joshua-schnabel/huginn:0.2.0
 
-# Tag and GitHub Release exist:
+# Tag and GitHub Release exist (notes include images + test summary):
 git ls-remote --tags origin v0.2.0
 gh release view v0.2.0
+
+# The test report is attached:
+gh release download v0.2.0 --pattern test-report.md --output -
 
 # dev was reopened for the next cycle (fresh Unreleased + Cargo bump):
 gh pr list --base dev --search "prepare next cycle"

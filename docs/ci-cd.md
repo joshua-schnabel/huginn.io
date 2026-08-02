@@ -118,10 +118,13 @@ Triggered **only by the release tag push** (`v*.*.*`) that `ci.yml`'s `publish`
 job creates — so it runs *after* the image is out, and is kept separate from the
 image pipeline on purpose.
 
-- **github-release**: extracts the notes for the tagged version from its
-  `CHANGELOG.md` section and creates the GitHub Release. `0.x` and any
-  `-prerelease` version is flagged as a pre-release. Idempotent (skips if the
-  release already exists).
+- **github-release**: re-runs the full test suite with coverage on the tagged
+  commit, then creates the GitHub Release — notes are the tagged version's
+  `CHANGELOG.md` section, enriched with container pull commands + the DockerHub
+  manifest digest and a test summary; the full `test-report.md` is attached as
+  a release asset. `0.x` and any `-prerelease` version is flagged as a
+  pre-release. Idempotent (skips creation if the release already exists;
+  re-uploads the asset with `--clobber`).
 - **prepare-dev**: opens an **auto-merging PR into `dev`** that reopens a fresh
   `## [Unreleased]` block, repoints the compare links at the new tag, and bumps
   `Cargo.toml`'s workspace version to the released version. It never pushes to
