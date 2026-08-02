@@ -17,7 +17,10 @@ handling, container hardening, the scanning pipeline — are documented in
 
 ## Supported Versions
 
-huginn.io is pre-1.0. Only the latest release on `main` receives fixes.
+Only the **latest release** receives security fixes. There are no maintenance
+branches for older versions — upgrade to the newest release before reporting,
+if possible. (What upgrading may entail is documented in
+[`versioning.md`](versioning.md).)
 
 ## Scope
 

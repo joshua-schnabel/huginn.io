@@ -51,7 +51,7 @@ As a rule of thumb: if your test needs `tokio::spawn`, a TCP port, or a `WireMoc
 
 ## Local Development
 
-**Prerequisites:** Rust stable, Docker + Compose, `cargo-deny`, optionally `cargo-llvm-cov`.
+**Prerequisites:** Rust stable (MSRV **1.88**, see `rust-version` in `Cargo.toml` and [`versioning.md`](versioning.md)), Docker + Compose, `cargo-deny`, optionally `cargo-llvm-cov`.
 
 ```bash
 cp config/config.example.yaml config/config.yaml

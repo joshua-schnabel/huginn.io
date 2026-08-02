@@ -10,9 +10,9 @@ linked at the bottom — this file summarises and points, it does not duplicate.
 ## 1. What this project is
 
 huginn.io is a lightweight **uptime & latency monitor** written in Rust. It runs
-configurable probes (TCP · HTTP/HTTPS · SMTP · IMAP · UDP · DNS) on a schedule,
-measures up/down + response time, and writes results to **InfluxDB** via batched
-line-protocol HTTP. An optional Axum **debug UI** streams live results over SSE.
+configurable probes (TCP · HTTP/HTTPS · SMTP · IMAP · UDP · DNS · TLS cert
+expiry) on a schedule, measures up/down + response time, and writes results to
+**InfluxDB** via batched line-protocol HTTP. An optional Axum **debug UI** streams live results over SSE.
 It ships as a **distroless, nonroot** multi-arch Docker image. It's a Cargo
 workspace of five crates (see §4).
 
@@ -67,7 +67,7 @@ Cargo workspace; each crate has one bounded responsibility:
 |---|---|
 | `huginn/` | Binary entry point — CLI, config load, logging init, the probe **scheduler**, graceful shutdown, orchestration (`main.rs`, `scheduler.rs`) |
 | `crates/huginn-core/` | Shared types (`ProbeResult`), config structs, `HuginError`, the `EventHub` (`config.rs`, `error.rs`, `event.rs`, `types.rs`) |
-| `crates/huginn-probes/` | `Probe` trait + `ProbeRegistry` + per-protocol executors (`tcp/http/smtp/imap/udp/dns.rs`, `registry.rs`) |
+| `crates/huginn-probes/` | `Probe` trait + `ProbeRegistry` + per-protocol executors (`tcp/http/smtp/imap/udp/dns/tls.rs`, `registry.rs`) |
 | `crates/huginn-influx/` | InfluxDB line-protocol writer — batching, bounded retry queue, HTTP POST (`writer.rs`, `queue.rs`) |
 | `crates/huginn-web/` | Optional Axum debug server — `/health`, `/metrics/latest`, `/events` SSE (`server.rs`, `sse.rs`, `state.rs`) |
 
@@ -228,6 +228,7 @@ permissions must be reasoned about explicitly and flagged in the PR.
 | Security practices (hardening) | [`docs/hardening.md`](docs/hardening.md) |
 | Reporting a vulnerability (policy) | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Config reference (YAML + ENV) | [`docs/configuration.md`](docs/configuration.md) |
+| SemVer policy, stable surface, upgrade notes | [`docs/versioning.md`](docs/versioning.md) |
 | InfluxDB setup & data model | [`docs/influxdb.md`](docs/influxdb.md) |
 | Troubleshooting | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
 | Supply-chain policy | [`deny.toml`](deny.toml) |
