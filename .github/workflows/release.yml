@@ -3,8 +3,11 @@ name: Release
 # Fires when ci.yml's publish job pushes the release tag `vX.Y.Z`. It does the
 # two things that belong *after* the image is out, kept out of the image
 # pipeline on purpose:
-#   1. github-release — create the GitHub Release, notes taken from the matching
-#      CHANGELOG.md section.
+#   1. github-release — create the GitHub Release: notes from the matching
+#      CHANGELOG.md section, enriched with the published container images
+#      (pull commands + manifest digest) and a test summary; the full suite is
+#      re-run with coverage on the tagged commit and attached as
+#      test-report.md (scripts/test-report.sh).
 #   2. prepare-dev    — open an auto-merging PR into dev that reopens a fresh
 #      ## [Unreleased] block, fixes the compare links, and bumps Cargo.toml to
 #      the released version. It never pushes to main or dev directly.
@@ -28,9 +31,9 @@ jobs:
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25   # includes a full test+coverage run for the report
     permissions:
-      contents: write   # gh release create
+      contents: write   # gh release create + asset upload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,9 +51,37 @@ jobs:
           fi
           echo "OK: $GITHUB_REF_NAME is on main"
 
+      # ── Test report: re-run the full suite on the exact released commit ─────
+      # CI already gated these tests, so a failure here means the tag points at
+      # something CI never saw — fail loudly rather than release silently.
+      # Toolchain/cache steps mirror ci.yml's coverage job (same pins).
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Cache cargo-llvm-cov
+        id: cache-llvm-cov
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-${{ runner.os }}-0.8.7
+      - name: Install cargo-llvm-cov
+        if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+      - name: Run tests with coverage on the tagged commit
+        run: cargo llvm-cov --all --locked 2>&1 | tee test-output.txt
+      - name: Build the test report
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}" bash scripts/test-report.sh test-output.txt
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
+          GHCR_REPO: ghcr.io/${{ github.repository_owner }}/huginn
         run: |
           V="${GITHUB_REF_NAME#v}"
           echo "Releasing v$V"
@@ -68,17 +99,55 @@ jobs:
             echo "Release v$V" > notes.md
           fi
 
+          # Container images: the multi-arch manifest was published (and its
+          # ghcr mirror created) before the tag existed — ci.yml tags last.
+          # The digest is fetched from the public registry; best-effort, a
+          # registry hiccup must not block the release.
+          {
+            echo ""
+            echo "## Container images"
+            echo ""
+            echo "Multi-arch (linux/amd64, linux/arm64), byte-identical on both registries:"
+            echo ""
+            echo '```bash'
+            echo "docker pull ${DH_REPO}:${V}"
+            echo "docker pull ${GHCR_REPO}:${V}"
+            echo '```'
+          } >> notes.md
+          DIGEST=""
+          for i in 1 2 3; do
+            DIGEST="$(docker buildx imagetools inspect --format '{{json .Manifest}}' \
+              "docker.io/${DH_REPO}:${V}" 2>/dev/null | jq -r '.digest // empty')" || true
+            [ -n "$DIGEST" ] && break
+            echo "attempt $i: manifest for ${DH_REPO}:${V} not yet visible, retrying in 10s"
+            sleep 10
+          done
+          if [ -n "$DIGEST" ]; then
+            {
+              echo ""
+              echo "Manifest digest: \`docker.io/${DH_REPO}@${DIGEST}\` — [all tags](https://hub.docker.com/r/${DH_REPO}/tags)"
+            } >> notes.md
+          else
+            echo "::warning::could not resolve the manifest digest for ${DH_REPO}:${V}; the notes omit it"
+          fi
+
+          # Test summary from the report step above.
+          cat test-summary.md >> notes.md
+
           # 0.x and any -prerelease build are marked as a pre-release.
           PRE=""
           case "$V" in 0.*|*-*) PRE="yes" ;; esac
 
           if gh release view "v$V" >/dev/null 2>&1; then
-            echo "Release v$V already exists — skipping."
+            echo "Release v$V already exists — skipping creation."
           elif [ -n "$PRE" ]; then
             gh release create "v$V" --title "v$V" --notes-file notes.md --prerelease
           else
             gh release create "v$V" --title "v$V" --notes-file notes.md
           fi
+
+          # Attach (or refresh, on a re-run) the full test report.
+          gh release upload "v$V" test-report.md --clobber
 
   # ── Reopen the changelog for the next cycle, on dev, via an auto-merge PR ──
   prepare-dev:

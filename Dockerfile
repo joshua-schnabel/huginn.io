@@ -37,6 +37,7 @@ COPY config/config.example.yaml /etc/huginn/config.yaml
 # Run as non-root
 USER nonroot:nonroot
 
-EXPOSE 9116
+# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default)
+EXPOSE 9116 9464
 
 ENTRYPOINT ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml"]

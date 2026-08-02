@@ -5,6 +5,7 @@
 ```yaml
 influx:          # InfluxDB connection (required)
 ui:              # Debug web UI (optional)
+metrics:         # Prometheus /metrics endpoint (optional)
 log:             # Logging settings (optional)
 probes:          # List of probes (required)
 ```
@@ -72,6 +73,41 @@ deliberate act:
 `bind` must be an IP address (`0.0.0.0`, `127.0.0.1`, `::1`, `::`); a hostname
 is rejected at load.
 
+## `metrics` section
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable the Prometheus `/metrics` listener |
+| `bind` | string | `127.0.0.1` | Listening address (IP, not a hostname) |
+| `port` | int | `9464` | Listening port (9464 is the conventional exporter port) |
+| `api_key_file` | string | — | Optional path to a file containing an API key. When set, scrapes must send `Authorization: Bearer <key>`. Path only — the key value never goes into YAML or ENV (same policy as `influx.token_file`). A configured-but-missing or empty file stops startup rather than serving unauthenticated |
+
+Serves `GET /metrics` in the Prometheus text format, independently of the debug
+UI — either can be enabled without the other (but not both on the same
+`bind:port`; that is rejected at load). Exposed gauges, one sample per probe
+with labels `probe`, `type`, `target`:
+
+- `huginn_probe_success` — 1/0 for the last run
+- `huginn_probe_duration_seconds` — last run duration
+- `huginn_probe_http_status_code` — HTTP probes only
+- `huginn_probe_last_run_timestamp_seconds`
+- `huginn_probe_<key>` for every probe-specific reading, e.g.
+  `huginn_probe_tls_cert_expiry_days`
+
+Without `api_key_file` the endpoint is unauthenticated like the UI: bind
+loopback unless the network is trusted, and use `0.0.0.0` inside a container.
+With a key, Prometheus scrapes it via:
+
+```yaml
+scrape_configs:
+  - job_name: huginn
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/huginn_api_key
+    static_configs:
+      - targets: ["huginn-host:9464"]
+```
+
 ## `log` section
 
 | Key | Type | Default | Description |
@@ -109,7 +145,9 @@ later in a way that looks like an outage:
   the probe type — `type: http` with an `https://` target is fine.
 - `interval_secs`, `timeout_secs`, `batch_size`, `batch_timeout_ms`,
   `max_buffered_bytes` and `event_hub_capacity` must be greater than 0.
-- `tls_expiry_fail_days` must be ≥ 0; `ui.bind` must be an IP address.
+- `tls_expiry_fail_days` must be ≥ 0; `ui.bind` and `metrics.bind` must be IP
+  addresses; `ui` and `metrics` must not both be enabled on the same
+  `bind:port`.
 
 ### DNS probe example
 
@@ -169,6 +207,10 @@ All values can be overridden without editing the YAML file:
 | `HUGINN_UI_BIND` | `ui.bind` |
 | `HUGINN_UI_ENABLED` | `ui.enabled` |
 | `HUGINN_UI_PORT` | `ui.port` |
+| `HUGINN_METRICS_BIND` | `metrics.bind` |
+| `HUGINN_METRICS_ENABLED` | `metrics.enabled` |
+| `HUGINN_METRICS_PORT` | `metrics.port` |
+| `HUGINN_METRICS_API_KEY_FILE` | `metrics.api_key_file` (a path — never the key itself) |
 | `INFLUX_URL` | `influx.url` |
 | `INFLUX_ORG` | `influx.org` |
 | `INFLUX_BUCKET` | `influx.bucket` |

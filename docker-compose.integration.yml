@@ -4,8 +4,9 @@
 # Starts InfluxDB + huginn with a short-interval test config,
 # using inline env vars instead of secret files so no local setup is needed.
 #
-# Usage (CI creates the token file first):
+# Usage (CI creates the secret files first):
 #   echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
+#   echo -n "integration-test-metrics-key" > /tmp/metrics_api_key.txt
 #   docker compose -f docker-compose.integration.yml up -d --build
 #   bash scripts/integration-test.sh
 #   docker compose -f docker-compose.integration.yml down -v
@@ -19,8 +20,10 @@ services:
     volumes:
       - ./config/config.integration.yaml:/etc/huginn/config.yaml:ro
       - /tmp/influx_token.txt:/run/secrets/influx_token:ro
+      - /tmp/metrics_api_key.txt:/run/secrets/metrics_api_key:ro
     ports:
       - "9116:9116"
+      - "9464:9464"
     depends_on:
       influxdb:
         condition: service_healthy

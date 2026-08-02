@@ -34,6 +34,19 @@ ui:
   bind: "127.0.0.1"
   port: 9116  # http://localhost:9116
 
+# Prometheus metrics endpoint (optional, independent of the debug UI).
+# Serves GET /metrics in Prometheus text format: huginn_probe_success,
+# huginn_probe_duration_seconds, huginn_probe_tls_cert_expiry_days, ...
+# Unauthenticated by default — bind loopback unless the network is trusted;
+# in a container use 0.0.0.0 (published ports never reach loopback). To require
+# `Authorization: Bearer <key>`, point api_key_file at a secret file (path
+# only — NEVER put the key value in YAML or ENV, same rule as influx.token_file).
+metrics:
+  enabled: false
+  bind: "127.0.0.1"
+  port: 9464
+  # api_key_file: "/run/secrets/metrics_api_key"
+
 # Logging
 log:
   format: pretty  # "pretty" (coloured) or "json"

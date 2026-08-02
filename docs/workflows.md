@@ -101,9 +101,14 @@ reopen), or push a new commit as yourself.
 
 **Runs on** a `v*.*.*` **tag push** (which `ci.yml`'s `publish` creates).
 
-- `github-release` — extracts the notes for that version from its `CHANGELOG.md`
-  section and creates the GitHub Release (`0.x`/`-rc` flagged as pre-release;
-  idempotent).
+- `github-release` — re-runs the full test suite with coverage on the tagged
+  commit (`cargo llvm-cov`, same pins as ci.yml's coverage job — a failure here
+  means the tag points at something CI never gated, and aborts), then creates
+  the GitHub Release: notes = the version's `CHANGELOG.md` section + container
+  pull commands with the DockerHub manifest digest (fetched from the public
+  registry, best-effort) + a test summary; `test-report.md` is attached as an
+  asset (`scripts/test-report.sh`). `0.x`/`-rc` flagged as pre-release;
+  idempotent (a re-run skips creation and refreshes the asset).
 - `prepare-dev` — opens an **auto-merging PR into `dev`** that reopens a fresh
   `## [Unreleased]`, fixes the compare links, and bumps `Cargo.toml`. It only
   pushes to a `release/*` branch (which `auto-pr.yml` ignores), never to
