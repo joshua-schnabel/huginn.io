@@ -43,6 +43,29 @@ jobs:
             .
         continue-on-error: true
 
+      # GitHub code scanning ignores the SARIF `suppressions` property, so a
+      # `nosemgrep`-suppressed finding would stay open in the Security tab
+      # forever. Strip suppressed results before upload: a reviewed, in-code
+      # `// nosemgrep: <rule>` comment (with its why) is the single source of
+      # truth for accepted findings. The rule itself stays active everywhere
+      # else — only explicitly suppressed matches are dropped, never a rule.
+      - name: Drop nosemgrep-suppressed findings from SARIF
+        run: |
+          python3 - <<'EOF'
+          import json
+
+          with open("semgrep.sarif") as f:
+              sarif = json.load(f)
+          for run in sarif["runs"]:
+              kept = [r for r in run.get("results", []) if not r.get("suppressions")]
+              dropped = len(run.get("results", [])) - len(kept)
+              if dropped:
+                  print(f"dropping {dropped} suppressed finding(s) from the upload")
+              run["results"] = kept
+          with open("semgrep.sarif", "w") as f:
+              json.dump(sarif, f)
+          EOF
+
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
         if: always()

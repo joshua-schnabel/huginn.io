@@ -79,6 +79,12 @@ scoped:
 - Every other TLS connection huginn makes (HTTP/HTTPS probes, InfluxDB writes)
   uses normal rustls verification.
 
+The `nosemgrep` comment is the authoritative record of this acceptance:
+`security.yml` strips suppressed findings from the SARIF upload (GitHub ignores
+the SARIF `suppressions` property), so this reviewed exception does not linger
+as a permanently-open alert in the Security tab. Only explicitly suppressed
+matches are dropped — the rule stays active for any new occurrence.
+
 Consequence to be aware of: the TLS probe does **not** detect an invalid chain
 or a hostname mismatch — it only measures expiry of whatever certificate the
 endpoint presents.
@@ -116,3 +122,10 @@ trivy image --severity HIGH,CRITICAL huginn
 ```
 
 Also runs automatically in CI before any image push.
+
+Only **fixable** CRITICAL/HIGH findings block the pipeline. Unfixable
+base-image CVEs (no patched Debian package exists yet) are **deliberately kept
+visible** as open code-scanning alerts: they are accepted, monitored risk, and
+filtering them out of the report would erase that audit trail. Once upstream
+ships a fix, CRITICAL/HIGH findings start blocking CI; lower severities become
+actionable in the Security tab.
