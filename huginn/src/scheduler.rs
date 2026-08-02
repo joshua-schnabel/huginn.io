@@ -79,7 +79,9 @@ async fn execute_probe(cfg: &ProbeConfig, registry: &ProbeRegistry) -> ProbeResu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huginn_core::config::{InfluxConfig, LogConfig, ProbeConfig, ProbeType, UiConfig};
+    use huginn_core::config::{
+        InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType, UiConfig,
+    };
     use huginn_core::event::{EventHub, ProbeEvent};
     use std::time::Duration;
     use tokio::net::TcpListener;
@@ -98,6 +100,7 @@ mod tests {
             },
             probes,
             ui: UiConfig::default(),
+            metrics: MetricsConfig::default(),
             log: LogConfig::default(),
             event_hub_capacity: 256,
         })

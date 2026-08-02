@@ -3,6 +3,9 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+// `common` is compiled into every integration-test binary via `mod common;`;
+// the metrics test starts its own server and doesn't use this helper.
+#[allow(dead_code)]
 pub async fn start_server(port: u16) -> Arc<EventHub> {
     let hub = Arc::new(EventHub::new(256));
     let hub_clone = Arc::clone(&hub);

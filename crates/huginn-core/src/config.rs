@@ -16,6 +16,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub ui: UiConfig,
     #[serde(default)]
+    pub metrics: MetricsConfig,
+    #[serde(default)]
     pub log: LogConfig,
     /// Capacity of the central EventHub broadcast channel (default 256).
     #[serde(default = "default_hub_capacity")]
@@ -163,6 +165,44 @@ fn default_ui_bind() -> String {
 
 fn default_ui_port() -> u16 {
     9116
+}
+
+// ---------------------------------------------------------------------------
+// Optional Prometheus metrics config
+// ---------------------------------------------------------------------------
+
+/// Prometheus `/metrics` listener, gated independently of the debug UI so
+/// scraping doesn't require exposing the UI (and vice versa).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address the metrics listener binds. Same reasoning as `ui.bind`:
+    /// loopback by default, containers need `0.0.0.0`.
+    #[serde(default = "default_metrics_bind")]
+    pub bind: String,
+    /// Default 9464 — the conventional Prometheus-exporter port used by the
+    /// OpenTelemetry Prometheus exporter.
+    #[serde(default = "default_metrics_port")]
+    pub port: u16,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_metrics_bind(),
+            port: default_metrics_port(),
+        }
+    }
+}
+
+fn default_metrics_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_metrics_port() -> u16 {
+    9464
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +418,35 @@ impl AppConfig {
                 )),
             }
         }
+        if let Ok(v) = std::env::var("HUGINN_METRICS_ENABLED") {
+            match v.to_lowercase().as_str() {
+                "true" | "1" => self.metrics.enabled = true,
+                "false" | "0" => self.metrics.enabled = false,
+                _ => warnings.push(format!(
+                    "HUGINN_METRICS_ENABLED='{v}' is not a boolean (expected true/false/1/0) — \
+                     keeping metrics.enabled={}",
+                    self.metrics.enabled
+                )),
+            }
+        }
+        if let Ok(v) = std::env::var("HUGINN_METRICS_BIND") {
+            match v.parse::<std::net::IpAddr>() {
+                Ok(_) => self.metrics.bind = v,
+                Err(_) => warnings.push(format!(
+                    "HUGINN_METRICS_BIND='{v}' is not a valid IP address — keeping metrics.bind={}",
+                    self.metrics.bind
+                )),
+            }
+        }
+        if let Ok(v) = std::env::var("HUGINN_METRICS_PORT") {
+            match v.parse::<u16>() {
+                Ok(p) => self.metrics.port = p,
+                Err(_) => warnings.push(format!(
+                    "HUGINN_METRICS_PORT='{v}' is not a valid port — keeping metrics.port={}",
+                    self.metrics.port
+                )),
+            }
+        }
         if let Ok(v) = std::env::var("HUGINN_LOG_FORMAT") {
             match v.to_lowercase().as_str() {
                 "json" => self.log.format = LogFormat::Json,
@@ -444,6 +513,27 @@ impl AppConfig {
             return Err(HuginError::Config(format!(
                 "ui.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
                 self.ui.bind
+            )));
+        }
+        // Same reasoning as ui.bind: the metrics server runs in its own task,
+        // so anything decidable here would otherwise surface only as a logged
+        // error while the daemon keeps running without metrics.
+        if self.metrics.bind.parse::<std::net::IpAddr>().is_err() {
+            return Err(HuginError::Config(format!(
+                "metrics.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
+                self.metrics.bind
+            )));
+        }
+        // Two listeners on one address can't both bind; the second would lose
+        // at runtime with only a logged error.
+        if self.ui.enabled
+            && self.metrics.enabled
+            && self.ui.bind == self.metrics.bind
+            && self.ui.port == self.metrics.port
+        {
+            return Err(HuginError::Config(format!(
+                "ui and metrics are both enabled on {}:{} — give metrics its own port (metrics.port)",
+                self.ui.bind, self.ui.port
             )));
         }
 
@@ -674,6 +764,59 @@ probes:
         // Loopback by default — exposing an unauthenticated UI must be an
         // explicit act, never something an omitted key does for you.
         assert_eq!(cfg.ui.bind, "127.0.0.1");
+    }
+
+    #[test]
+    fn metrics_disabled_on_loopback_9464_by_default() {
+        let cfg = parse(MINIMAL_YAML);
+        assert!(!cfg.metrics.enabled);
+        assert_eq!(cfg.metrics.bind, "127.0.0.1");
+        assert_eq!(cfg.metrics.port, 9464);
+    }
+
+    /// Same invariant as for `UiConfig`: a config without a `metrics:` block
+    /// must behave like one with an empty block.
+    #[test]
+    fn metrics_default_impl_matches_serde_default() {
+        let from_serde = parse(MINIMAL_YAML).metrics;
+        let from_default = MetricsConfig::default();
+        assert_eq!(from_serde.enabled, from_default.enabled);
+        assert_eq!(from_serde.bind, from_default.bind);
+        assert_eq!(from_serde.port, from_default.port);
+    }
+
+    #[test]
+    fn validation_rejects_non_ip_metrics_bind() {
+        let yaml = format!("{MINIMAL_YAML}\nmetrics:\n  bind: \"localhost\"\n");
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        let err = cfg.validate().expect_err("hostname bind must be rejected");
+        assert!(
+            err.to_string().contains("metrics.bind"),
+            "error must name the key: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_ui_and_metrics_on_same_address() {
+        let yaml = format!(
+            "{MINIMAL_YAML}\nui:\n  enabled: true\n  port: 9464\nmetrics:\n  enabled: true\n  port: 9464\n"
+        );
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        let err = cfg
+            .validate()
+            .expect_err("shared bind:port must be rejected");
+        assert!(
+            err.to_string().contains("metrics.port"),
+            "error must point at metrics.port: {err}"
+        );
+    }
+
+    #[test]
+    fn ui_and_metrics_may_share_a_port_when_only_one_is_enabled() {
+        let yaml = format!("{MINIMAL_YAML}\nui:\n  port: 9464\nmetrics:\n  enabled: true\n");
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        cfg.validate()
+            .expect("a disabled listener must not count as a collision");
     }
 
     /// `UiConfig::default()` must agree with the serde defaults, or a config
@@ -948,6 +1091,44 @@ probes:
                 cfg.apply_env_overrides();
                 assert!(cfg.ui.enabled);
                 assert_eq!(cfg.ui.port, 8080);
+            },
+        );
+    }
+
+    #[test]
+    fn env_override_metrics_enabled_bind_and_port() {
+        with_env(
+            &[
+                ("HUGINN_METRICS_ENABLED", "true"),
+                ("HUGINN_METRICS_BIND", "0.0.0.0"),
+                ("HUGINN_METRICS_PORT", "9999"),
+            ],
+            || {
+                let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+                let w = cfg.apply_env_overrides();
+                assert!(cfg.metrics.enabled);
+                assert_eq!(cfg.metrics.bind, "0.0.0.0");
+                assert_eq!(cfg.metrics.port, 9999);
+                assert!(w.is_empty(), "all values valid, should not warn: {w:?}");
+            },
+        );
+    }
+
+    #[test]
+    fn env_invalid_metrics_values_warn_and_keep_previous() {
+        with_env(
+            &[
+                ("HUGINN_METRICS_ENABLED", "yes"),
+                ("HUGINN_METRICS_BIND", "not-an-ip"),
+                ("HUGINN_METRICS_PORT", "-1"),
+            ],
+            || {
+                let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+                let w = cfg.apply_env_overrides();
+                assert!(!cfg.metrics.enabled);
+                assert_eq!(cfg.metrics.bind, "127.0.0.1");
+                assert_eq!(cfg.metrics.port, 9464);
+                assert_eq!(w.len(), 3, "each bad value must warn: {w:?}");
             },
         );
     }

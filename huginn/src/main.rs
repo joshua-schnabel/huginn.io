@@ -221,16 +221,35 @@ pub(crate) async fn run(
         shutdown_tx.subscribe(),
     ));
 
-    // Web UI subscriber (if enabled)
-    if cfg.ui.enabled {
-        let bind = cfg.ui.bind.clone();
-        let port = cfg.ui.port;
-        let web_hub = Arc::clone(&hub);
-        tokio::spawn(async move {
-            if let Err(e) = huginn_web::server::run_server(&bind, port, web_hub).await {
-                error!("Web UI error: {e}");
-            }
-        });
+    // Web UI + Prometheus subscribers (if enabled). Both listeners feed from
+    // one shared WebState so the hub gains a single subscriber either way.
+    if cfg.ui.enabled || cfg.metrics.enabled {
+        let state = Arc::new(huginn_web::state::WebState::new());
+        Arc::clone(&state).start_event_loop(Arc::clone(&hub));
+        if cfg.ui.enabled {
+            let bind = cfg.ui.bind.clone();
+            let port = cfg.ui.port;
+            let ui_state = Arc::clone(&state);
+            tokio::spawn(async move {
+                if let Err(e) =
+                    huginn_web::server::run_server_with_state(&bind, port, ui_state).await
+                {
+                    error!("Web UI error: {e}");
+                }
+            });
+        }
+        if cfg.metrics.enabled {
+            let bind = cfg.metrics.bind.clone();
+            let port = cfg.metrics.port;
+            let metrics_state = Arc::clone(&state);
+            tokio::spawn(async move {
+                if let Err(e) =
+                    huginn_web::prometheus::run_metrics_server(&bind, port, metrics_state).await
+                {
+                    error!("Prometheus metrics error: {e}");
+                }
+            });
+        }
     }
 
     // Subscribe to shutdown BEFORE moving shutdown_tx into the scheduler
@@ -301,7 +320,7 @@ fn print_result(r: &ProbeResult, json: bool) {
 mod tests {
     use super::*;
     use huginn_core::config::{
-        AppConfig, InfluxConfig, LogConfig, ProbeConfig, ProbeType, UiConfig,
+        AppConfig, InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType, UiConfig,
     };
     use huginn_core::types::ProbeResult;
     use std::sync::Arc;
@@ -372,6 +391,7 @@ mod tests {
                 bind: "127.0.0.1".into(),
                 port: 9900,
             },
+            metrics: MetricsConfig::default(),
             log: LogConfig::default(),
             event_hub_capacity: 256,
         }
