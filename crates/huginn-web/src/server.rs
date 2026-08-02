@@ -18,24 +18,35 @@ const INDEX_HTML: &str = include_str!("../assets/index.html");
 const STYLE_CSS: &str = include_str!("../assets/style.css");
 const APP_JS: &str = include_str!("../assets/app.js");
 
-/// Start the web UI server on `bind`:`port`.
+/// Start the web UI server on `bind`:`port`, creating its own [`WebState`].
 ///
 /// Subscribes to `hub` to keep the latest probe results in sync and push
-/// updates to connected browsers via Server-Sent Events.
-///
-/// `bind` must parse as an [`IpAddr`]; `AppConfig::validate` rejects anything
-/// else before startup, so reaching the error here means the caller bypassed it.
+/// updates to connected browsers via Server-Sent Events. When the metrics
+/// listener is enabled too, use [`run_server_with_state`] with a shared state
+/// instead, so both servers feed from one event loop.
 pub async fn run_server(bind: &str, port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
-    let addr: IpAddr = bind
-        .parse()
-        .with_context(|| format!("ui.bind '{bind}' is not a valid IP address"))?;
-
     let state = Arc::new(WebState::new());
     Arc::clone(&state).start_event_loop(Arc::clone(&hub));
     // Drop our Arc: `axum::serve` below never returns, so holding it would keep
     // the hub's Sender alive for the life of the process and no subscriber would
     // ever observe Closed. start_event_loop has its own clone and drops it too.
     drop(hub);
+    run_server_with_state(bind, port, state).await
+}
+
+/// Start the web UI server against an existing [`WebState`] whose event loop
+/// is already running.
+///
+/// `bind` must parse as an [`IpAddr`]; `AppConfig::validate` rejects anything
+/// else before startup, so reaching the error here means the caller bypassed it.
+pub async fn run_server_with_state(
+    bind: &str,
+    port: u16,
+    state: Arc<WebState>,
+) -> anyhow::Result<()> {
+    let addr: IpAddr = bind
+        .parse()
+        .with_context(|| format!("ui.bind '{bind}' is not a valid IP address"))?;
 
     let app = Router::new()
         .route("/", get(handle_index))
