@@ -31,7 +31,10 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "CC0-1.0",
-    "OpenSSL",
+    # "OpenSSL" removed: no crate in the tree carries that license, and allowing
+    # it while [bans] denies the OpenSSL crates was a contradiction — the kind of
+    # gap that lets the policy drift back in unnoticed. If a dependency ever
+    # needs it, that is a decision to take deliberately, not a default.
     "MPL-2.0",
     "CDLA-Permissive-2.0",
 ]
@@ -42,9 +45,19 @@ allow = [
 multiple-versions = "warn"
 # Deny wildcard dependency specifications in Cargo.toml (e.g. dep = "*")
 wildcards = "deny"
-# List of crates that must never be used
+# List of crates that must never be used.
+#
+# "TLS is rustls only, no OpenSSL" is a stated policy (AGENTS.md §9,
+# docs/hardening.md) that nothing enforced: the tree is rustls-only today purely
+# because every dependency happens to be configured that way. A transitive dep
+# flipping a default feature would pull OpenSSL back in — a C TLS stack, a
+# system library to keep patched, and a build that breaks the distroless image —
+# and CI would stay green. These entries make that a build failure instead.
 deny = [
-    # Example: { name = "openssl", reason = "use rustls instead" }
+    { name = "openssl", reason = "TLS is rustls only — see docs/hardening.md" },
+    { name = "openssl-sys", reason = "pulls in the OpenSSL C library; TLS is rustls only" },
+    { name = "native-tls", reason = "delegates to the platform/OpenSSL stack; use rustls" },
+    { name = "tokio-native-tls", reason = "native-tls wrapper; use tokio-rustls" },
 ]
 # List of crates that are allowed to appear multiple times
 skip = []
@@ -53,7 +66,9 @@ skip = []
 [sources]
 # Deny crates from registries other than crates.io
 unknown-registry = "deny"
-# Warn (not error) on crates fetched from git
-unknown-git = "warn"
+# Deny crates fetched from git: `allow-git` is empty and every dependency comes
+# from crates.io, so a git source appearing at all means something pulled in an
+# unreviewed, unversioned, force-pushable revision. A warning would scroll past.
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
