@@ -40,6 +40,25 @@ updates:
       prefix: chore
     cooldown:
       default-days: 3
+    # Transitive crates too, not just the ones named in a Cargo.toml (the
+    # default is `direct` only). Two reasons:
+    #
+    # 1. Without it the whole grouped cargo job aborts. `serde` 1.0.229 requires
+    #    `serde_core =1.0.229` — an exact pin — and `serde_core`/`serde_derive`
+    #    appear in no Cargo.toml, so Dependabot was allowed to move `serde`
+    #    alone and cargo could not honour that. The lockfile came back with the
+    #    old version and the updater raised "Failed to update serde!", taking
+    #    every other crate in the group down with it. Every weekly cargo run
+    #    failed this way from 2026-07-19 (serde 1.0.229 landed the day before)
+    #    until this was added.
+    # 2. `Cargo.lock` is committed, so the transitive versions are ours to keep
+    #    current. Without this they only ever moved when an advisory forced a
+    #    security update.
+    #
+    # The group below folds all of it into one PR, so this does not multiply
+    # pull requests.
+    allow:
+      - dependency-type: all
     groups:
       cargo:
         patterns: ["*"]
