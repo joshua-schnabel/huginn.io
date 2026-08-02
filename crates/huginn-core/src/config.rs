@@ -249,6 +249,10 @@ pub struct ProbeConfig {
     /// DNS only: expected IP address in the response (optional validation)
     #[serde(default)]
     pub dns_expected_ip: Option<String>,
+    /// TLS only: report DOWN once the certificate expires in fewer than this
+    /// many days. Unset means 0 — DOWN only once the certificate has expired.
+    #[serde(default)]
+    pub tls_expiry_fail_days: Option<f64>,
 }
 
 /// Hand-written rather than `#[derive(Default)]`.
@@ -269,6 +273,7 @@ impl Default for ProbeConfig {
             expected_status: None,
             dns_query: None,
             dns_expected_ip: None,
+            tls_expiry_fail_days: None,
         }
     }
 }
@@ -475,6 +480,16 @@ impl AppConfig {
                     probe.name
                 )));
             }
+            // A negative threshold would mean "stay UP for a while after the
+            // certificate has expired" — surely a sign error, never intent.
+            if let Some(days) = probe.tls_expiry_fail_days {
+                if days < 0.0 {
+                    return Err(HuginError::Config(format!(
+                        "probe '{}': tls_expiry_fail_days must be >= 0 (omit it to fail only once the certificate has expired)",
+                        probe.name
+                    )));
+                }
+            }
             probe.validate_target()?;
         }
         Ok(())
@@ -605,6 +620,10 @@ probes:
     target: "1.1.1.1:53"
     dns_query: "example.com"
     dns_expected_ip: "93.184.216.34"
+  - name: "cert"
+    type: tls
+    target: "example.com:443"
+    tls_expiry_fail_days: 14
 "#;
 
     fn parse(yaml: &str) -> AppConfig {
@@ -624,7 +643,7 @@ probes:
     #[test]
     fn parses_full_config_all_probe_types() {
         let cfg = parse(FULL_YAML);
-        assert_eq!(cfg.probes.len(), 6);
+        assert_eq!(cfg.probes.len(), 7);
         assert_eq!(cfg.probes[0].probe_type, ProbeType::Http);
         assert_eq!(cfg.probes[0].expected_status, Some(200));
         assert_eq!(cfg.probes[1].probe_type, ProbeType::Tcp);
@@ -634,6 +653,8 @@ probes:
         assert_eq!(cfg.probes[5].probe_type, ProbeType::Dns);
         assert_eq!(cfg.probes[5].dns_query, Some("example.com".into()));
         assert_eq!(cfg.probes[5].dns_expected_ip, Some("93.184.216.34".into()));
+        assert_eq!(cfg.probes[6].probe_type, ProbeType::Tls);
+        assert_eq!(cfg.probes[6].tls_expiry_fail_days, Some(14.0));
     }
 
     #[test]
@@ -682,6 +703,31 @@ probes:
         assert_eq!(ProbeType::Smtp.to_string(), "smtp");
         assert_eq!(ProbeType::Imap.to_string(), "imap");
         assert_eq!(ProbeType::Dns.to_string(), "dns");
+        assert_eq!(ProbeType::Tls.to_string(), "tls");
+    }
+
+    #[test]
+    fn validation_rejects_negative_tls_expiry_fail_days() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+probes:
+  - name: "cert"
+    type: tls
+    target: "example.com:443"
+    tls_expiry_fail_days: -7
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).expect("parse failed");
+        let err = cfg
+            .validate()
+            .expect_err("negative threshold must be rejected");
+        assert!(
+            err.to_string().contains("tls_expiry_fail_days"),
+            "error must name the key: {err}"
+        );
     }
 
     #[test]
