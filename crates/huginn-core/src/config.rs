@@ -185,6 +185,11 @@ pub struct MetricsConfig {
     /// OpenTelemetry Prometheus exporter.
     #[serde(default = "default_metrics_port")]
     pub port: u16,
+    /// Optional path to a file containing an API key. When set, `/metrics`
+    /// requires `Authorization: Bearer <key>`. The key lives in a **file**,
+    /// never in YAML or ENV — same policy as `influx.token_file`.
+    #[serde(default)]
+    pub api_key_file: Option<String>,
 }
 
 impl Default for MetricsConfig {
@@ -193,7 +198,34 @@ impl Default for MetricsConfig {
             enabled: false,
             bind: default_metrics_bind(),
             port: default_metrics_port(),
+            api_key_file: None,
         }
+    }
+}
+
+impl MetricsConfig {
+    /// Read the API key from `api_key_file`, if one is configured.
+    ///
+    /// A configured-but-unreadable or empty file is an error, not `None`: the
+    /// operator asked for auth, so silently serving unauthenticated would be
+    /// the worst possible fallback. Mirrors [`InfluxConfig::read_token`].
+    pub fn read_api_key(&self) -> Result<Option<String>> {
+        let Some(path) = &self.api_key_file else {
+            return Ok(None);
+        };
+        let key = std::fs::read_to_string(path)
+            .map(|s| s.trim().to_string())
+            .map_err(|e| HuginError::Secret {
+                path: path.clone(),
+                message: e.to_string(),
+            })?;
+        if key.is_empty() {
+            return Err(HuginError::Secret {
+                path: path.clone(),
+                message: "metrics API key file is empty".into(),
+            });
+        }
+        Ok(Some(key))
     }
 }
 
@@ -447,6 +479,10 @@ impl AppConfig {
                 )),
             }
         }
+        // A path to the key file, never the key itself (see read_api_key).
+        if let Ok(v) = std::env::var("HUGINN_METRICS_API_KEY_FILE") {
+            self.metrics.api_key_file = Some(v);
+        }
         if let Ok(v) = std::env::var("HUGINN_LOG_FORMAT") {
             match v.to_lowercase().as_str() {
                 "json" => self.log.format = LogFormat::Json,
@@ -523,6 +559,14 @@ impl AppConfig {
                 "metrics.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
                 self.metrics.bind
             )));
+        }
+        // An empty path is a config bug — the operator meant to set a file.
+        if let Some(path) = &self.metrics.api_key_file {
+            if path.is_empty() {
+                return Err(HuginError::Config(
+                    "metrics.api_key_file must not be empty (omit the key to disable auth)".into(),
+                ));
+            }
         }
         // Two listeners on one address can't both bind; the second would lose
         // at runtime with only a logged error.
@@ -819,6 +863,56 @@ probes:
             .expect("a disabled listener must not count as a collision");
     }
 
+    #[test]
+    fn metrics_api_key_is_none_when_no_file_is_configured() {
+        let cfg = parse(MINIMAL_YAML);
+        assert_eq!(cfg.metrics.read_api_key().unwrap(), None);
+    }
+
+    #[test]
+    fn metrics_api_key_is_read_and_trimmed_from_the_file() {
+        let path = std::env::temp_dir().join("huginn-test-metrics-key-read");
+        std::fs::write(&path, "  sekrit-key \n").unwrap();
+        let cfg = MetricsConfig {
+            api_key_file: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.read_api_key().unwrap(), Some("sekrit-key".to_string()));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn metrics_api_key_missing_file_is_an_error_not_open_access() {
+        let cfg = MetricsConfig {
+            api_key_file: Some("/nonexistent/huginn-metrics-key".into()),
+            ..Default::default()
+        };
+        assert!(cfg.read_api_key().is_err());
+    }
+
+    #[test]
+    fn metrics_api_key_empty_file_is_an_error_not_open_access() {
+        let path = std::env::temp_dir().join("huginn-test-metrics-key-empty");
+        std::fs::write(&path, "  \n").unwrap();
+        let cfg = MetricsConfig {
+            api_key_file: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        assert!(cfg.read_api_key().is_err());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn validation_rejects_empty_metrics_api_key_file_path() {
+        let yaml = format!("{MINIMAL_YAML}\nmetrics:\n  api_key_file: \"\"\n");
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        let err = cfg.validate().expect_err("empty path must be rejected");
+        assert!(
+            err.to_string().contains("api_key_file"),
+            "error must name the key: {err}"
+        );
+    }
+
     /// `UiConfig::default()` must agree with the serde defaults, or a config
     /// without a `ui:` block would behave differently from one with an empty one.
     #[test]
@@ -1110,6 +1204,25 @@ probes:
                 assert_eq!(cfg.metrics.bind, "0.0.0.0");
                 assert_eq!(cfg.metrics.port, 9999);
                 assert!(w.is_empty(), "all values valid, should not warn: {w:?}");
+            },
+        );
+    }
+
+    #[test]
+    fn env_override_metrics_api_key_file_sets_the_path() {
+        with_env(
+            &[(
+                "HUGINN_METRICS_API_KEY_FILE",
+                "/run/secrets/metrics_api_key",
+            )],
+            || {
+                let mut cfg: AppConfig = serde_yaml_ng::from_str(MINIMAL_YAML).unwrap();
+                let w = cfg.apply_env_overrides();
+                assert_eq!(
+                    cfg.metrics.api_key_file.as_deref(),
+                    Some("/run/secrets/metrics_api_key")
+                );
+                assert!(w.is_empty(), "a path is always accepted: {w:?}");
             },
         );
     }

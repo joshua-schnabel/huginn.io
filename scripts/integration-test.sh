@@ -10,7 +10,8 @@
 #   3. Expected probe names (tcp, http, dns, udp, tls probes) are present
 #   4. All probes are up: true
 #   5. The TLS probe reports a positive tls_cert_expiry_days metric
-#   6. The Prometheus endpoint on :9464 serves huginn_probe_* gauges
+#   6. The Prometheus endpoint on :9464 rejects scrapes without the API key
+#      (401) and serves huginn_probe_* gauges with it
 #   7. InfluxDB contains probe_result measurements (Flux query)
 
 set -euo pipefail
@@ -105,7 +106,13 @@ print('tls_cert_expiry_days =', days)
 " && pass "TLS probe reports positive tls_cert_expiry_days" || fail "TLS expiry metric missing or non-positive"
 
 # ── 7. Assert the Prometheus endpoint serves huginn_probe_* gauges ────────────
-PROM=$(curl -sf "http://localhost:9464/metrics") || fail "Prometheus endpoint on :9464 not reachable"
+# Auth is enabled in config.integration.yaml: no key ⇒ 401, correct key ⇒ 200.
+METRICS_KEY="integration-test-metrics-key"
+UNAUTHED=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:9464/metrics")
+[ "$UNAUTHED" = "401" ] || fail "Prometheus endpoint without key returned $UNAUTHED, expected 401"
+pass "Prometheus endpoint rejects unauthenticated scrapes (401)"
+PROM=$(curl -sf -H "Authorization: Bearer $METRICS_KEY" "http://localhost:9464/metrics") \
+  || fail "Prometheus endpoint on :9464 not reachable with the API key"
 echo "$PROM" | grep -q '^# TYPE huginn_probe_success gauge$' \
   || fail "Prometheus output lacks the huginn_probe_success family"
 echo "$PROM" | grep -q 'huginn_probe_success{probe="tls-cert",type="tls",target="tls-endpoint:443"} 1' \

@@ -55,6 +55,15 @@ secrets/
 | **Read-only config** | Config file mounted `:ro` in compose |
 | **rustls** | TLS via pure-Rust rustls — no OpenSSL dependency |
 
+## Metrics endpoint auth
+
+The Prometheus `/metrics` listener is unauthenticated by default (off, loopback
+— same posture as the debug UI). For scraping across an untrusted network, set
+`metrics.api_key_file`: requests then need `Authorization: Bearer <key>`. The
+key follows the file-only secrets policy above (Docker secret, mode `0600`,
+never in YAML/ENV), a broken or empty key file **stops startup** instead of
+falling back to unauthenticated, and the key comparison is constant-time.
+
 ## Deliberate exception: the TLS probe skips certificate verification
 
 The `tls` probe's dedicated HTTP client is built with

@@ -239,12 +239,20 @@ pub(crate) async fn run(
             });
         }
         if cfg.metrics.enabled {
+            // Read the key file up front: a configured-but-broken key file must
+            // stop startup, not fall back to serving unauthenticated (same
+            // fail-closed rule as the InfluxDB token).
+            let api_key = cfg
+                .metrics
+                .read_api_key()
+                .context("Failed to read the metrics API key file")?;
             let bind = cfg.metrics.bind.clone();
             let port = cfg.metrics.port;
             let metrics_state = Arc::clone(&state);
             tokio::spawn(async move {
                 if let Err(e) =
-                    huginn_web::prometheus::run_metrics_server(&bind, port, metrics_state).await
+                    huginn_web::prometheus::run_metrics_server(&bind, port, metrics_state, api_key)
+                        .await
                 {
                     error!("Prometheus metrics error: {e}");
                 }

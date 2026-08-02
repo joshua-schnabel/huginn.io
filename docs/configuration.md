@@ -80,6 +80,7 @@ is rejected at load.
 | `enabled` | bool | `false` | Enable the Prometheus `/metrics` listener |
 | `bind` | string | `127.0.0.1` | Listening address (IP, not a hostname) |
 | `port` | int | `9464` | Listening port (9464 is the conventional exporter port) |
+| `api_key_file` | string | — | Optional path to a file containing an API key. When set, scrapes must send `Authorization: Bearer <key>`. Path only — the key value never goes into YAML or ENV (same policy as `influx.token_file`). A configured-but-missing or empty file stops startup rather than serving unauthenticated |
 
 Serves `GET /metrics` in the Prometheus text format, independently of the debug
 UI — either can be enabled without the other (but not both on the same
@@ -93,8 +94,19 @@ with labels `probe`, `type`, `target`:
 - `huginn_probe_<key>` for every probe-specific reading, e.g.
   `huginn_probe_tls_cert_expiry_days`
 
-The same no-authentication caveat as the UI applies: bind loopback unless the
-network is trusted, and use `0.0.0.0` inside a container.
+Without `api_key_file` the endpoint is unauthenticated like the UI: bind
+loopback unless the network is trusted, and use `0.0.0.0` inside a container.
+With a key, Prometheus scrapes it via:
+
+```yaml
+scrape_configs:
+  - job_name: huginn
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/huginn_api_key
+    static_configs:
+      - targets: ["huginn-host:9464"]
+```
 
 ## `log` section
 
@@ -198,6 +210,7 @@ All values can be overridden without editing the YAML file:
 | `HUGINN_METRICS_BIND` | `metrics.bind` |
 | `HUGINN_METRICS_ENABLED` | `metrics.enabled` |
 | `HUGINN_METRICS_PORT` | `metrics.port` |
+| `HUGINN_METRICS_API_KEY_FILE` | `metrics.api_key_file` (a path — never the key itself) |
 | `INFLUX_URL` | `influx.url` |
 | `INFLUX_ORG` | `influx.org` |
 | `INFLUX_BUCKET` | `influx.bucket` |

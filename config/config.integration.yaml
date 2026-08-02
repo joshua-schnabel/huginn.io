@@ -20,6 +20,8 @@ metrics:
   # Same reasoning as ui.bind: the test scrapes through the published port.
   bind: "0.0.0.0"
   port: 9464
+  # Exercises the optional Bearer auth end-to-end (file mounted by compose).
+  api_key_file: "/run/secrets/metrics_api_key"
 
 log:
   format: json
