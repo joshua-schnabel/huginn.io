@@ -40,25 +40,19 @@ updates:
       prefix: chore
     cooldown:
       default-days: 3
-    # Transitive crates too, not just the ones named in a Cargo.toml (the
-    # default is `direct` only). Two reasons:
+    # Scope deliberately left at Dependabot's default (direct dependencies
+    # only). Widening it to `dependency-type: all` was tried and reverted: with
+    # transitive crates in scope the updater bumped `syn` 3.0.0 -> 3.0.3 but
+    # left `serde_derive`'s internal reference pointing at 3.0.0, producing a
+    # lockfile that `cargo test --locked` refuses (see #33, repaired in #36).
+    # A broken lockfile every week costs more than the stale transitives it was
+    # meant to fix, and security updates reach transitive crates regardless.
     #
-    # 1. Without it the whole grouped cargo job aborts. `serde` 1.0.229 requires
-    #    `serde_core =1.0.229` — an exact pin — and `serde_core`/`serde_derive`
-    #    appear in no Cargo.toml, so Dependabot was allowed to move `serde`
-    #    alone and cargo could not honour that. The lockfile came back with the
-    #    old version and the updater raised "Failed to update serde!", taking
-    #    every other crate in the group down with it. Every weekly cargo run
-    #    failed this way from 2026-07-19 (serde 1.0.229 landed the day before)
-    #    until this was added.
-    # 2. `Cargo.lock` is committed, so the transitive versions are ours to keep
-    #    current. Without this they only ever moved when an advisory forced a
-    #    security update.
-    #
-    # The group below folds all of it into one PR, so this does not multiply
-    # pull requests.
-    allow:
-      - dependency-type: all
+    # The failure that motivated widening it — `serde` 1.0.229 requiring an
+    # exact `serde_core =1.0.229`, which aborted the whole grouped job — was
+    # resolved by bumping serde in the lockfile by hand (#35). Should that
+    # exact-pin failure return on a future serde release, it is a
+    # dependabot-core bug in the cargo updater and belongs upstream, not here.
     groups:
       cargo:
         patterns: ["*"]
