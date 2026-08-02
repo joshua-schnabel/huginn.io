@@ -17,7 +17,7 @@ probes:          # List of probes (required)
 | `url` | string | ✅ | — | InfluxDB base URL |
 | `org` | string | ✅ | — | InfluxDB organisation |
 | `bucket` | string | ✅ | — | Target bucket |
-| `token_file` | string | — | `/run/secrets/influx_token` | Path to file containing the token. The default matches the Docker-secret mount path; the file must exist at startup |
+| `token_file` | string | — | `/run/secrets/influx_token` | Path to file containing the token. The default matches the Docker-secret mount path; the file must exist **and be non-empty** at startup, otherwise huginn refuses to start |
 | `batch_size` | int | — | `10` | Write when this many points are buffered. Must be > 0 |
 | `batch_timeout_ms` | int | — | `1000` | Write after this many ms even if batch is not full |
 | `max_buffered_bytes` | int | — | `8388608` | Memory ceiling for batches waiting while InfluxDB is unreachable (8 MiB ≈ 35k–55k results) |
@@ -27,6 +27,13 @@ probes:          # List of probes (required)
 
 > ⚠️ **Never** set the token directly in YAML or as an ENV variable.
 > Use `token_file` pointing to a Docker secret or a protected file.
+
+A missing **or empty** token file is a fatal startup error. Empty is treated the
+same as missing on purpose: with an empty token huginn would start, send
+`Authorization: Token ` with no value, and InfluxDB would answer 401 — a 4xx,
+which the writer classifies as permanent and discards. That looks like a healthy
+monitor that is throwing away every measurement it takes, so it fails at startup
+instead.
 
 ### What happens when InfluxDB is down
 

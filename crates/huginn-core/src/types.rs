@@ -76,7 +76,7 @@ impl ProbeResult {
             up: false,
             response_ms,
             status_code: None,
-            error: Some(error.into()),
+            error: Some(escape_control_chars(&error.into())),
             timestamp: Utc::now(),
             metrics: BTreeMap::new(),
         }
@@ -91,6 +91,41 @@ impl ProbeResult {
         self.metrics.insert(key.into(), value);
         self
     }
+}
+
+/// Escape control characters so the string is safe to print, store and serve —
+/// `\n`, `\r`, `\t` by name, the rest as `\xHH`.
+///
+/// `error` is the one field a **remote** host writes into: an SMTP banner and an
+/// IMAP greeting are copied into it verbatim, and that string then reaches the
+/// operator's terminal (the pretty console line prints it with `Display`),
+/// InfluxDB, and every HTTP consumer. Left raw, a monitored host can emit
+/// ANSI/OSC sequences to recolour the console, move the cursor, set the terminal
+/// title, or use CR to overwrite the line it just wrote — forging or hiding log
+/// output. The payload also persists: it is stored in InfluxDB and fires again
+/// wherever the stored value is later printed.
+///
+/// Escaping happens at the single point where every probe builds a failure, so
+/// every sink is covered at once rather than one guard per consumer.
+/// `char::is_control` is Unicode category Cc: U+0000–U+001F, U+007F–U+009F.
+/// C1 (U+0080–U+009F) is included because some terminals decode it as the 8-bit
+/// form of the same escape sequences.
+fn escape_control_chars(s: &str) -> String {
+    if !s.chars().any(char::is_control) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            // Cc is entirely below U+00A0, so two hex digits always suffice.
+            c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -110,6 +145,58 @@ mod tests {
         let r = ProbeResult::failure("my-probe", "tcp", "localhost:80", 5000.0, "timeout");
         assert!(!r.up);
         assert_eq!(r.error.as_deref(), Some("timeout"));
+    }
+
+    /// A hostile SMTP/IMAP banner is copied straight into `error`. Raw ANSI/OSC
+    /// escapes there drive the operator's terminal — this is the audit's F-01.
+    #[test]
+    fn failure_escapes_ansi_escapes_from_a_hostile_banner() {
+        let r = ProbeResult::failure(
+            "mail",
+            "smtp",
+            "evil:2525",
+            1.0,
+            "unexpected banner: 5xx \u{1b}[31mFAKE-DOWN\u{1b}[0m \u{1b}]0;PWNED\u{7} end",
+        );
+        let err = r.error.expect("failure carries an error");
+        assert!(
+            !err.chars().any(char::is_control),
+            "no raw control character may survive: {err:?}"
+        );
+        assert!(
+            err.contains("\\x1b[31mFAKE-DOWN"),
+            "the escape must stay readable, got: {err}"
+        );
+        assert!(err.contains("\\x07"), "BEL must be escaped, got: {err}");
+    }
+
+    /// CR is the log-forging vector: it lets a remote host overwrite the console
+    /// line it just wrote.
+    #[test]
+    fn failure_escapes_newlines_and_carriage_returns() {
+        let r = ProbeResult::failure("p", "tcp", "h:1", 1.0, "line one\r\nprobe UP  fake");
+        assert_eq!(
+            r.error.as_deref(),
+            Some("line one\\r\\nprobe UP  fake"),
+            "CR/LF must be escaped, not dropped"
+        );
+    }
+
+    /// The common case must be byte-identical — escaping may not reword errors.
+    #[test]
+    fn failure_leaves_ordinary_errors_untouched() {
+        let r = ProbeResult::failure("p", "tcp", "h:1", 1.0, "connection refused");
+        assert_eq!(r.error.as_deref(), Some("connection refused"));
+    }
+
+    #[test]
+    fn escape_control_chars_covers_c0_c1_and_del() {
+        assert_eq!(escape_control_chars("a\u{0}b"), "a\\x00b");
+        assert_eq!(escape_control_chars("a\u{7f}b"), "a\\x7fb");
+        // C1: the 8-bit CSI some terminals still decode.
+        assert_eq!(escape_control_chars("a\u{9b}b"), "a\\x9bb");
+        // Non-ASCII that is not a control character must pass through.
+        assert_eq!(escape_control_chars("grüß ✅"), "grüß ✅");
     }
 
     #[test]

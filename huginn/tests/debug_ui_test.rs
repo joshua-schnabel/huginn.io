@@ -126,6 +126,45 @@ async fn ui_index_html_contains_probe_name() {
     drop(hub);
 }
 
+/// Audit F-02: the security headers must reach the wire, not just exist as
+/// constants. Asserted end-to-end because the middleware is easy to detach from
+/// the router without any unit test noticing.
+#[tokio::test]
+async fn ui_responses_carry_the_security_headers() {
+    let port = free_port();
+    let hub = start_server(port).await;
+    wait_for_ready(port).await;
+
+    for path in ["/", "/metrics/latest", "/health", "/assets/app.js"] {
+        let resp = reqwest::get(format!("http://127.0.0.1:{port}{path}"))
+            .await
+            .unwrap_or_else(|e| panic!("request to {path} failed: {e}"));
+        let headers = resp.headers();
+
+        let csp = headers
+            .get("content-security-policy")
+            .unwrap_or_else(|| panic!("{path}: no CSP header"))
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("default-src 'none'"), "{path}: {csp}");
+        assert!(
+            !csp.contains("unsafe-inline"),
+            "{path}: inline script must stay blocked: {csp}"
+        );
+        assert_eq!(
+            headers.get("x-content-type-options").unwrap(),
+            "nosniff",
+            "{path}: missing nosniff"
+        );
+        assert_eq!(
+            headers.get("x-frame-options").unwrap(),
+            "DENY",
+            "{path}: missing frame denial"
+        );
+    }
+    drop(hub);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

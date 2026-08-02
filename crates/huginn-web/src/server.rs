@@ -55,6 +55,7 @@ pub async fn run_server_with_state(
         .route("/health", get(handle_health))
         .route("/assets/style.css", get(handle_css))
         .route("/assets/app.js", get(handle_js))
+        .layer(axum::middleware::from_fn(crate::headers::security_headers))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind((addr, port)).await?;
