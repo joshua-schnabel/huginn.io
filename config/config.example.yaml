@@ -39,6 +39,11 @@ log:
   format: pretty  # "pretty" (coloured) or "json"
   level: info     # trace, debug, info, warn, error  (also via RUST_LOG)
 
+# Capacity of the internal broadcast channel between the scheduler and its
+# consumers (console, InfluxDB writer, web UI). The default suits hundreds of
+# probes; raise it only if logs show lagged/dropped events.
+# event_hub_capacity: 256
+
 probes:
   # ── HTTP ──────────────────────────────────────────────────────────────────
   - name: "web-homepage"
@@ -77,20 +82,36 @@ probes:
     interval_secs: 60
     timeout_secs: 10
 
-  # ── UDP (DNS example) ─────────────────────────────────────────────────────
-  - name: "dns-google"
+  # ── UDP ───────────────────────────────────────────────────────────────────
+  # Sends a DNS-shaped datagram and counts any reply as UP — a reachability
+  # check for UDP services, not a DNS correctness check (that is `type: dns`).
+  - name: "udp-dns-google"
     type: udp
     target: "8.8.8.8:53"
     interval_secs: 30
     timeout_secs: 2
 
+  # ── DNS ───────────────────────────────────────────────────────────────────
+  # Asks the nameserver in `target` to resolve `dns_query` (A/AAAA). If
+  # `dns_expected_ip` is set, the answer must contain that IP.
+  - name: "dns-cloudflare"
+    type: dns
+    target: "1.1.1.1:53"
+    interval_secs: 30
+    timeout_secs: 2
+    dns_query: "example.com"
+    # dns_expected_ip: "93.184.216.34"
+
   # ── TLS certificate expiry ────────────────────────────────────────────────
   # Handshakes with an HTTPS endpoint and reports days until the certificate
   # expires as the `tls_cert_expiry_days` metric (negative once expired). Target
   # is host:port and must speak HTTPS; verification is skipped, so self-signed
-  # and already-expired certificates are still read.
+  # and already-expired certificates are still read. The probe reports DOWN once
+  # fewer than `tls_expiry_fail_days` days remain (default 0 — only once the
+  # certificate has expired).
   - name: "cert-example-com"
     type: tls
     target: "example.com:443"
     interval_secs: 3600
     timeout_secs: 5
+    tls_expiry_fail_days: 14

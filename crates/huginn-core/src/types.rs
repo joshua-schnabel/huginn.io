@@ -9,12 +9,6 @@ use std::collections::BTreeMap;
 pub mod metric_keys {
     /// Days until the TLS certificate expires. Negative once expired.
     pub const TLS_CERT_EXPIRY_DAYS: &str = "tls_cert_expiry_days";
-    /// Percentage of ICMP echo requests that got no reply (0.0–100.0).
-    pub const PACKET_LOSS_PCT: &str = "packet_loss_pct";
-    /// Fastest round-trip of an ICMP probe, in milliseconds.
-    pub const ICMP_RTT_MIN_MS: &str = "icmp_rtt_min_ms";
-    /// Slowest round-trip of an ICMP probe, in milliseconds.
-    pub const ICMP_RTT_MAX_MS: &str = "icmp_rtt_max_ms";
 }
 
 /// Result of a single probe execution.
@@ -28,14 +22,14 @@ pub struct ProbeResult {
     pub status_code: Option<u16>,
     pub error: Option<String>,
     pub timestamp: DateTime<Utc>,
-    /// Extra numeric readings that only some probe types produce — TLS days to
-    /// expiry, ICMP packet loss, and whatever comes next.
+    /// Extra numeric readings that only some probe types produce — currently
+    /// TLS days to expiry, and whatever comes next.
     ///
     /// A map rather than named `Option` fields, which is what `status_code`
-    /// above did and what the obvious next step would be. The reason is the
-    /// Prometheus exporter: over named fields it needs one hand-written block
-    /// per field, forever; over a map it is one loop, and a new probe type needs
-    /// no exporter change at all. See `metric_keys` for the known keys.
+    /// above did and what the obvious next step would be: every consumer
+    /// (InfluxDB line protocol, JSON/SSE) handles the map with one loop, so a
+    /// new probe metric needs no consumer change at all. See `metric_keys` for
+    /// the known keys.
     ///
     /// `BTreeMap`, not `HashMap`: iteration order feeds InfluxDB line protocol,
     /// and random field order would make output irreproducible.
@@ -164,11 +158,11 @@ mod tests {
 
     #[test]
     fn with_metric_is_chainable() {
-        let r = ProbeResult::success("p", "icmp", "1.1.1.1", 5.0, None)
-            .with_metric(metric_keys::PACKET_LOSS_PCT, 33.3)
-            .with_metric(metric_keys::ICMP_RTT_MIN_MS, 4.0);
+        let r = ProbeResult::success("p", "tls", "example.com:443", 5.0, None)
+            .with_metric(metric_keys::TLS_CERT_EXPIRY_DAYS, 47.0)
+            .with_metric("another_reading", 4.0);
         assert_eq!(r.metrics.len(), 2);
-        assert_eq!(r.metrics["packet_loss_pct"], 33.3);
+        assert_eq!(r.metrics["tls_cert_expiry_days"], 47.0);
     }
 
     /// Expired certificates are the case worth reporting, so the value has to

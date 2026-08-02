@@ -15,7 +15,9 @@ use async_trait::async_trait;
 ///
 /// Certificate verification is disabled **on purpose**: the goal is to *read*
 /// the certificate (self-signed and already-expired ones included), not to trust
-/// it. `up` reflects whether the TLS handshake completed.
+/// it. `up` reflects whether the TLS handshake completed **and** the certificate
+/// has at least `tls_expiry_fail_days` days left (default 0 — an expired
+/// certificate is DOWN).
 ///
 /// The target is `host:port` (e.g. `example.com:443`). The certificate is read
 /// from the HTTP response's TLS info, so the endpoint must speak HTTPS; raw
@@ -84,9 +86,32 @@ pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
     };
 
     match cert_expiry_days(&der, Utc::now()) {
-        Ok(days) => ProbeResult::success(&cfg.name, "tls", &cfg.target, elapsed, None)
-            .with_metric(TLS_CERT_EXPIRY_DAYS, days),
+        Ok(days) => {
+            let threshold = cfg.tls_expiry_fail_days.unwrap_or(0.0);
+            match expiry_verdict(days, threshold) {
+                None => ProbeResult::success(&cfg.name, "tls", &cfg.target, elapsed, None)
+                    .with_metric(TLS_CERT_EXPIRY_DAYS, days),
+                // The metric stays attached on failure so dashboards and alerts
+                // keep seeing how far past (or close to) expiry the cert is.
+                Some(why) => ProbeResult::failure(&cfg.name, "tls", &cfg.target, elapsed, why)
+                    .with_metric(TLS_CERT_EXPIRY_DAYS, days),
+            }
+        }
         Err(e) => ProbeResult::failure(&cfg.name, "tls", &cfg.target, elapsed, e.to_string()),
+    }
+}
+
+/// `None` when the certificate has at least `threshold` days left, otherwise the
+/// DOWN reason.
+fn expiry_verdict(days: f64, threshold: f64) -> Option<String> {
+    if days < 0.0 {
+        Some(format!("certificate expired {:.1} days ago", -days))
+    } else if days < threshold {
+        Some(format!(
+            "certificate expires in {days:.1} days (tls_expiry_fail_days: {threshold})"
+        ))
+    } else {
+        None
     }
 }
 
@@ -147,6 +172,36 @@ mod tests {
         assert!(
             days < 0.0,
             "an expired cert must give negative days, got {days}"
+        );
+    }
+
+    #[test]
+    fn verdict_is_up_with_days_to_spare() {
+        assert_eq!(expiry_verdict(90.0, 30.0), None);
+    }
+
+    #[test]
+    fn verdict_is_up_exactly_at_the_threshold() {
+        assert_eq!(expiry_verdict(30.0, 30.0), None);
+    }
+
+    #[test]
+    fn verdict_is_down_below_the_threshold() {
+        let why = expiry_verdict(12.3, 30.0).expect("below threshold must be DOWN");
+        assert!(
+            why.contains("12.3"),
+            "reason must name the days left: {why}"
+        );
+        assert!(why.contains("30"), "reason must name the threshold: {why}");
+    }
+
+    #[test]
+    fn verdict_is_down_once_expired_even_with_default_threshold() {
+        let why = expiry_verdict(-2.5, 0.0).expect("expired must be DOWN");
+        assert!(why.contains("expired"), "reason must say expired: {why}");
+        assert!(
+            why.contains("2.5"),
+            "reason must name days past expiry: {why}"
         );
     }
 

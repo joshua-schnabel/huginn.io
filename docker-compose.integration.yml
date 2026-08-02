@@ -24,6 +24,17 @@ services:
     depends_on:
       influxdb:
         condition: service_healthy
+      tls-endpoint:
+        condition: service_started
+
+  # Self-signed HTTPS endpoint for the TLS certificate-expiry probe — the cert
+  # comes from Caddy's internal CA (see config/Caddyfile.integration), so the
+  # test never leaves the compose network. Not published to the host; huginn
+  # reaches it by service name.
+  tls-endpoint:
+    image: caddy:2-alpine
+    volumes:
+      - ./config/Caddyfile.integration:/etc/caddy/Caddyfile:ro
 
   influxdb:
     image: influxdb:2.7-alpine

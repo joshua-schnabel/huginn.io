@@ -16,7 +16,7 @@ probes:          # List of probes (required)
 | `url` | string | ✅ | — | InfluxDB base URL |
 | `org` | string | ✅ | — | InfluxDB organisation |
 | `bucket` | string | ✅ | — | Target bucket |
-| `token_file` | string | ✅ | — | Path to file containing the token |
+| `token_file` | string | — | `/run/secrets/influx_token` | Path to file containing the token. The default matches the Docker-secret mount path; the file must exist at startup |
 | `batch_size` | int | — | `10` | Write when this many points are buffered. Must be > 0 |
 | `batch_timeout_ms` | int | — | `1000` | Write after this many ms even if batch is not full |
 | `max_buffered_bytes` | int | — | `8388608` | Memory ceiling for batches waiting while InfluxDB is unreachable (8 MiB ≈ 35k–55k results) |
@@ -86,27 +86,30 @@ Each probe entry:
 | Key | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `name` | string | ✅ | — | Unique probe name (used as InfluxDB tag) |
-| `type` | enum | ✅ | — | `tcp`, `http`, `https`, `smtp`, `imap`, `udp`, `dns` |
+| `type` | enum | ✅ | — | `tcp`, `http`, `https`, `smtp`, `imap`, `udp`, `dns`, `tls` |
 | `target` | string | ✅ | — | `host:port` or URL (DNS: nameserver `IP:port`) |
 | `interval_secs` | int | — | `30` | Probe interval in seconds |
 | `timeout_secs` | int | — | `5` | Connection/read timeout |
 | `expected_status` | int | — | `200` | HTTP/HTTPS only: expected status code |
 | `dns_query` | string | — | `example.com` | DNS only: hostname to resolve |
 | `dns_expected_ip` | string | — | — | DNS only: if set, probe fails when resolved IP doesn't match |
+| `tls_expiry_fail_days` | float | — | `0` | TLS only: report DOWN once the certificate expires in fewer than this many days. `0` (the default) fails only once it has expired. Must be ≥ 0 |
 
 ### Validation
 
 The config is checked at startup and huginn refuses to run rather than fail
 later in a way that looks like an outage:
 
-- `name` must be **unique**. Names key the web UI's map and the InfluxDB tag
-  series, so duplicates silently overwrite each other's history.
-- `target` must match the probe type: `dns` needs a nameserver address with a
-  port (`8.8.8.8:53`, `[2001:4860:4860::8888]:53`); `tcp`/`smtp`/`imap`/`udp`
-  need a port; `http`/`https` need an absolute URL. The URL scheme does **not**
-  have to match the probe type — `type: http` with an `https://` target is fine.
-- `interval_secs`, `timeout_secs`, `batch_size` and `event_hub_capacity` must be
-  greater than 0.
+- `name` must be **unique** and non-empty. Names key the web UI's map and the
+  InfluxDB tag series, so duplicates silently overwrite each other's history.
+- `target` must be non-empty and match the probe type: `dns` needs a nameserver
+  address with a port (`8.8.8.8:53`, `[2001:4860:4860::8888]:53`);
+  `tcp`/`smtp`/`imap`/`udp`/`tls` need a port (`tls`: typically `:443`);
+  `http`/`https` need an absolute URL. The URL scheme does **not** have to match
+  the probe type — `type: http` with an `https://` target is fine.
+- `interval_secs`, `timeout_secs`, `batch_size`, `batch_timeout_ms`,
+  `max_buffered_bytes` and `event_hub_capacity` must be greater than 0.
+- `tls_expiry_fail_days` must be ≥ 0; `ui.bind` must be an IP address.
 
 ### DNS probe example
 
@@ -118,6 +121,35 @@ later in a way that looks like an outage:
   dns_expected_ip: "93.184.216.34"   # optional IP validation
   interval_secs: 60
 ```
+
+### TLS probe example
+
+```yaml
+- name: my-cert
+  type: tls
+  target: "example.com:443"   # must speak HTTPS on this port
+  interval_secs: 3600         # certificates change slowly — probe rarely
+  tls_expiry_fail_days: 14    # DOWN once fewer than 14 days remain
+```
+
+The probe completes a TLS handshake and reports the days until the server
+certificate expires as the `tls_cert_expiry_days` metric (negative once
+expired; kept on DOWN results too, so alerts can see how far gone it is).
+Certificate **verification is intentionally skipped** — the point is to read
+the certificate, self-signed and expired ones included, not to trust it. See
+[`hardening.md`](hardening.md) for the security reasoning.
+
+### Known protocol limits
+
+- **`smtp` / `imap` expect a plaintext greeting** — probing implicit-TLS ports
+  (SMTPS `:465`, IMAPS `:993`) reports DOWN. Probe the plaintext/STARTTLS ports
+  (`:25`, `:143`) instead.
+- **`dns` resolves A/AAAA over UDP only** — no MX/TXT/etc. record types, no
+  TCP/DoT/DoH transport.
+- **`udp` sends a DNS-shaped payload** and counts any reply as UP — it is a
+  reachability check, best suited to DNS-like services.
+- **`tls` requires an HTTPS endpoint** — the certificate is read from the HTTP
+  response's TLS info, so raw-TLS ports (IMAPS, SMTPS, LDAPS) are unsupported.
 
 ## App-level settings
 
@@ -131,7 +163,7 @@ All values can be overridden without editing the YAML file:
 
 | Variable | Overrides |
 |---|---|
-| `HUGINN_CONFIG` | Config file path |
+| `HUGINN_CONFIG` | Config file path (default `/etc/huginn/config.yaml`; this is the ENV form of `--config`) |
 | `HUGINN_LOG_FORMAT` | `log.format` |
 | `HUGINN_LOG_LEVEL` | `log.level` |
 | `HUGINN_UI_BIND` | `ui.bind` |
@@ -143,6 +175,12 @@ All values can be overridden without editing the YAML file:
 | `INFLUX_TOKEN_FILE` | `influx.token_file` |
 
 Priority: **CLI > ENV > YAML > built-in defaults**
+
+**Exception — `RUST_LOG`:** if set, it feeds the tracing filter directly and
+wins over *everything*, including `--output`, `HUGINN_LOG_LEVEL` and
+`log.level`. It also accepts per-module directives
+(`RUST_LOG=huginn_influx=debug,info`), which the plain level keys cannot
+express.
 
 `--output pretty|json` overrides `log.format` in **both** directions — including
 overriding a config file that says `json` back to `pretty`. (It previously

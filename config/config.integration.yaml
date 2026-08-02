@@ -34,3 +34,28 @@ probes:
     interval_secs: 2
     timeout_secs: 2
     expected_status: 200
+
+  # Docker's embedded DNS (127.0.0.11 inside every container) resolves compose
+  # service names — no external resolver involved.
+  - name: "docker-dns"
+    type: dns
+    target: "127.0.0.11:53"
+    interval_secs: 2
+    timeout_secs: 2
+    dns_query: "influxdb"
+
+  # The UDP probe's payload is a DNS query, so the embedded DNS answers it too.
+  - name: "docker-dns-udp"
+    type: udp
+    target: "127.0.0.11:53"
+    interval_secs: 2
+    timeout_secs: 2
+
+  # Caddy sidecar with a fresh 96h self-signed cert (config/Caddyfile.integration);
+  # also exercises the tls_expiry_fail_days threshold end-to-end.
+  - name: "tls-cert"
+    type: tls
+    target: "tls-endpoint:443"
+    interval_secs: 2
+    timeout_secs: 2
+    tls_expiry_fail_days: 1

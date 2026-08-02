@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **TLS certificate-expiry probe** (`type: tls`) — completes a TLS handshake with an HTTPS endpoint (`host:port`) and emits the days until the server certificate expires as the `tls_cert_expiry_days` metric (negative once expired, still attached to DOWN results). The probe reports DOWN once the certificate has expired, or earlier via the optional `tls_expiry_fail_days` threshold (a negative threshold is rejected at load). Certificate verification is deliberately skipped so expired and self-signed certificates remain readable — see `docs/hardening.md`. New runtime dependency: `x509-parser`.
+- **Release automation** — `release.yml` fires on the `vX.Y.Z` tag that `publish` creates: it opens the GitHub Release (notes pulled from this file's matching section, `0.x`/`-rc` flagged as pre-release) and opens an auto-merging PR into `dev` that reopens a fresh `## [Unreleased]`, fixes the compare links, and bumps `Cargo.toml`. The bot never pushes to `main`/`dev`.
+- **CI version gate** — a release PR (`dev → main`) is blocked unless the top `CHANGELOG.md` version is valid SemVer and strictly greater than the latest `v*` tag; also re-checked before anything ships.
+- **GitHub Container Registry mirror** — every published image is mirrored from DockerHub to `ghcr.io` with `skopeo copy --all`, byte-identical (same digests) to the scanned/tested image; no second build.
+- **InfluxDB resilience** — the writer is split into a `run_batcher` (groups results, never awaits I/O) and a `run_writer` (drains a bounded `RetryQueue`). Failed writes are retried with exponential backoff instead of discarded; `WriteError` classifies transport/5xx/429/408 as retryable and 4xx as permanent (dropped). Retry is unbounded in attempts, bounded in memory (`max_buffered_bytes`, drop-oldest). New `influx` config keys: `max_buffered_bytes`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `shutdown_drain_timeout_ms`.
+- **`Probe` trait + `ProbeRegistry`** — per-protocol probes implement a common trait; the registry owns shared state (the HTTP client) so probe loops no longer thread resources they don't use.
+- **`ProbeResult.metrics`** (`BTreeMap<String, f64>`) — a home for per-probe-type numeric readings, emitted as additional line-protocol fields. The TLS probe populates it with `tls_cert_expiry_days`.
+- **Config validation** — rejects duplicate probe names, `event_hub_capacity: 0`, `batch_size: 0`, and per-type malformed targets (dns needs `ip:port`, tcp/smtp/imap/udp need a port, http/https need an absolute URL) at load time.
+- **DNS probe** (`type: dns`) — resolves hostnames via configurable nameserver using `hickory-resolver`; optional `dns_expected_ip` validation
+- **InfluxDB batch writes** — configurable `batch_size` and `batch_timeout_ms`; reduces HTTP traffic from 1 request per probe to batched line-protocol writes
+- **Configurable EventHub capacity** — `event_hub_capacity` in app config (default 256)
+- **System integration test** — `docker-compose.integration.yml` spins up InfluxDB + huginn (plus a Caddy sidecar serving a self-signed certificate) and runs curl-based assertions against the live stack, covering the tcp, http, dns, udp and tls probe types end-to-end
+- **E2E tests** — multi-probe parallel execution, graceful shutdown, DNS probe E2E scenarios
+- **`huginn-web` crate** — axum web server extracted into its own crate with SSE push updates, separate HTML/CSS/JS assets
+- **EventHub architecture** — central `broadcast::Sender` in `huginn-core`; probes publish events, InfluxDB writer and web server subscribe independently
+- **CI/CD redesign** — `ci.yml` (quality gate + gated DockerHub publish) and `security.yml` (Semgrep SAST + Trivy CVE)
+- **SAST tooling** — Semgrep (`p/rust` + `p/secrets`) two-pass: SARIF upload + blocking on ERROR severity
+- **Supply-chain security** — `deny.toml` for `cargo-deny`; replaces `cargo-audit` with advisories + license allow-list + registry restriction
+- **Branch setup** — `main` (stable) and `dev` (integration) branches; direct push blocked via branch protection
+- **DockerHub tags** — `:dev` + `:X.Y.Z-dev` on dev push; `:latest` + `:X.Y.Z` on main push
+- **`docs/ci-cd.md`** — pipeline documentation and branch protection guide
+- **`docs/testing.md`** — four-level test pyramid, TDD workflow, coverage requirements
+- **`docs/versioning.md`** — the SemVer stability promise (config schema, CLI/ENV, InfluxDB schema), what stays unstable, the MSRV policy, and upgrade notes for 0.1.0 users
+
+### Changed
+- **The HTTP/HTTPS probe no longer follows redirects.** reqwest follows up to 10 hops by default, which meant `expected_status: 200` silently passed for a 301→200 chain and the measured `response_ms` included the extra round-trips. An uptime check has to judge the URL it was given, so a redirect is now reported with its own status — a 301 against `expected_status: 200` is DOWN. If you were relying on the old behaviour, point the probe at the redirect target instead.
+- Project renamed from `hugin.dec` to `huginn.io`
+- `cargo-audit` replaced by `cargo-deny` in all CI pipelines
+- Docker image registry: GHCR → DockerHub
+- `hickory-resolver` 0.24 → 0.26 (fixes RUSTSEC-2026-0119); raises the MSRV to Rust 1.88 (Dockerfile builder and `rust-version` bumped to match)
+- Config precedence is now honoured in both directions: `--output`/`HUGINN_LOG_FORMAT` overrides `log.format` from the config file (previously an OR that could not override back to `pretty`)
+- Invalid ENV overrides now warn and keep the previous value instead of being silently ignored
+- **Leaner release build** — `[profile.release]` now strips symbols with thin LTO and `codegen-units = 1`; tokio is compiled with only the features huginn uses; `.dockerignore` excludes more non-build inputs.
+- **BREAKING — the debug UI now binds `127.0.0.1` instead of `0.0.0.0`.** The address is the new `ui.bind` key (`HUGINN_UI_BIND`), validated as an IP address at load. It has no authentication and publishes every probe target, so reaching a wider network is now an explicit act. **Containers must set `0.0.0.0`** — a published port reaches the container's bridge IP, never its loopback; `docker-compose.yml` and `config/config.integration.yaml` do this already. Only setups that enable the UI (`ui.enabled` defaults to `false`) are affected.
+
+### Removed
+- `run_subscriber`, `run_subscriber_batched` and `InfluxWriter::write` — the old single-consumer writer paths. Replaced by the `run_batcher` + `run_writer` split (see below). Their meaningful behaviours (clean exit on hub close, surviving a lagged receiver) are now tested against the new tasks.
+- The never-produced `packet_loss_pct` / `icmp_rtt_min_ms` / `icmp_rtt_max_ms` metric-key constants — no ICMP probe exists, and 1.0 should not freeze dead API surface.
+
 ### Fixed
 - **Dependabot's weekly cargo run had been failing since 2026-07-19** and opened no grouped dependency PRs at all. `serde` 1.0.229 (published the day before) requires `serde_core =1.0.229`, an exact pin, and neither `serde_core` nor `serde_derive` is named in a `Cargo.toml` — so with Dependabot's default `direct`-only scope it was allowed to move `serde` alone, which cargo cannot do. The lockfile came back unchanged, the updater raised `Failed to update serde!`, and every other crate in the group went down with it. Resolved by bumping `serde` in the lockfile by hand; widening the scope to `dependency-type: all` was tried first and reverted, because with transitive crates in scope the updater wrote a lockfile with a dangling `syn` reference that `cargo --locked` rejects. Security updates were unaffected throughout.
 - **The UDP probe could never reach an IPv6 target.** The local socket was always bound to the IPv4 wildcard `0.0.0.0:0`, which cannot connect to an IPv6 peer, so a target that `validate()` had accepted reported DOWN forever. The target is now resolved first (under the probe timeout, so a stalling resolver can no longer exceed `timeout_secs`) and the socket is bound in the matching address family. A bind failure now also reports the elapsed time instead of a hardcoded `0.0`.
@@ -23,49 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Config errors that only surfaced at runtime** are now rejected at load: `event_hub_capacity: 0` (panicked in `broadcast::channel`), `batch_size: 0` (made every result its own POST), duplicate probe names (collided in the UI map and the InfluxDB series), and malformed per-type targets.
 - Fixed a real flake: `run_with_ui_enabled_responds_to_health_check` slept a fixed 150 ms and made one unretried request.
 
-### Removed
-- `run_subscriber`, `run_subscriber_batched` and `InfluxWriter::write` — the old single-consumer writer paths. Replaced by the `run_batcher` + `run_writer` split (see below). Their meaningful behaviours (clean exit on hub close, surviving a lagged receiver) are now tested against the new tasks.
-
-### Added
-- **Release automation** — `release.yml` fires on the `vX.Y.Z` tag that `publish` creates: it opens the GitHub Release (notes pulled from this file's matching section, `0.x`/`-rc` flagged as pre-release) and opens an auto-merging PR into `dev` that reopens a fresh `## [Unreleased]`, fixes the compare links, and bumps `Cargo.toml`. The bot never pushes to `main`/`dev`.
-- **CI version gate** — a release PR (`dev → main`) is blocked unless the top `CHANGELOG.md` version is valid SemVer and strictly greater than the latest `v*` tag; also re-checked before anything ships.
-- **GitHub Container Registry mirror** — every published image is mirrored from DockerHub to `ghcr.io` with `skopeo copy --all`, byte-identical (same digests) to the scanned/tested image; no second build.
-- **InfluxDB resilience** — the writer is split into a `run_batcher` (groups results, never awaits I/O) and a `run_writer` (drains a bounded `RetryQueue`). Failed writes are retried with exponential backoff instead of discarded; `WriteError` classifies transport/5xx/429/408 as retryable and 4xx as permanent (dropped). Retry is unbounded in attempts, bounded in memory (`max_buffered_bytes`, drop-oldest). New `influx` config keys: `max_buffered_bytes`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `shutdown_drain_timeout_ms`.
-- **`Probe` trait + `ProbeRegistry`** — per-protocol probes implement a common trait; the registry owns shared state (the HTTP client) so probe loops no longer thread resources they don't use.
-- **`ProbeResult.metrics`** (`BTreeMap<String, f64>`) — a home for per-probe-type numeric readings (e.g. TLS expiry days, packet loss), emitted as additional line-protocol fields. No probe populates it yet.
-- **Config validation** — rejects duplicate probe names, `event_hub_capacity: 0`, `batch_size: 0`, and per-type malformed targets (dns needs `ip:port`, tcp/smtp/imap/udp need a port, http/https need an absolute URL) at load time.
-- **DNS probe** (`type: dns`) — resolves hostnames via configurable nameserver using `hickory-resolver`; optional `dns_expected_ip` validation
-- **InfluxDB batch writes** — configurable `batch_size` and `batch_timeout_ms`; reduces HTTP traffic from 1 request per probe to batched line-protocol writes
-- **Configurable EventHub capacity** — `event_hub_capacity` in app config (default 256)
-- **System integration test** — `docker-compose.integration.yml` spins up InfluxDB + huginn and runs curl-based assertions against the live stack
-- **E2E tests** — multi-probe parallel execution, graceful shutdown, DNS probe E2E scenarios
-- **`huginn-web` crate** — axum web server extracted into its own crate with SSE push updates, separate HTML/CSS/JS assets
-- **EventHub architecture** — central `broadcast::Sender` in `huginn-core`; probes publish events, InfluxDB writer and web server subscribe independently
-- **CI/CD redesign** — `ci.yml` (quality gate + gated DockerHub publish) and `security.yml` (Semgrep SAST + Trivy CVE)
-- **SAST tooling** — Semgrep (`p/rust` + `p/secrets`) two-pass: SARIF upload + blocking on ERROR severity
-- **Supply-chain security** — `deny.toml` for `cargo-deny`; replaces `cargo-audit` with advisories + license allow-list + registry restriction
-- **Branch setup** — `main` (stable) and `dev` (integration) branches; direct push blocked via branch protection
-- **DockerHub tags** — `:dev` + `:X.Y.Z-dev` on dev push; `:latest` + `:X.Y.Z` on main push
-- **`docs/ci-cd.md`** — pipeline documentation and branch protection guide
-- **`docs/testing.md`** — four-level test pyramid, TDD workflow, coverage requirements
-
-### Changed
-- **The HTTP/HTTPS probe no longer follows redirects.** reqwest follows up to 10 hops by default, which meant `expected_status: 200` silently passed for a 301→200 chain and the measured `response_ms` included the extra round-trips. An uptime check has to judge the URL it was given, so a redirect is now reported with its own status — a 301 against `expected_status: 200` is DOWN. If you were relying on the old behaviour, point the probe at the redirect target instead.
-- Project renamed from `hugin.dec` to `huginn.io`
-- `cargo-audit` replaced by `cargo-deny` in all CI pipelines
-- Docker image registry: GHCR → DockerHub
-- `hickory-resolver` 0.24 → 0.26 (fixes RUSTSEC-2026-0119); raises the MSRV to Rust 1.88 (Dockerfile builder and `rust-version` bumped to match)
-- Config precedence is now honoured in both directions: `--output`/`HUGINN_LOG_FORMAT` overrides `log.format` from the config file (previously an OR that could not override back to `pretty`)
-- Invalid ENV overrides now warn and keep the previous value instead of being silently ignored
-- **BREAKING — the debug UI now binds `127.0.0.1` instead of `0.0.0.0`.** The address is the new `ui.bind` key (`HUGINN_UI_BIND`), validated as an IP address at load. It has no authentication and publishes every probe target, so reaching a wider network is now an explicit act. **Containers must set `0.0.0.0`** — a published port reaches the container's bridge IP, never its loopback; `docker-compose.yml` and `config/config.integration.yaml` do this already. Only setups that enable the UI (`ui.enabled` defaults to `false`) are affected.
-
 ### Security
 - **Closed a shell-injection path from `CHANGELOG.md` into the `publish` job.** The version was extracted with `sed` and then interpolated as `${{ }}` straight into `run:` blocks, in the one job holding `contents: write`, `packages: write` and the DockerHub credentials — a crafted `## [...]` heading merged to `dev` reached a shell. Extraction and SemVer validation now live in `scripts/changelog-version.sh`, shared with the version gate, and every consumer takes the value through `env:`. The gate alone did not cover this: it is a deliberate no-op outside a release context, while `publish` runs on every push.
 - **Every GitHub Action is pinned to a full commit SHA**, and the Semgrep container to a digest. Tags and branches are movable, so a compromised upstream reached CI without a Dependabot PR — including the actions that consume the registry credentials. `dtolnay/rust-toolchain` moved from the `@stable`/`@master` branches to the `v1` SHA with an explicit `toolchain:` input; the toolchain channel itself still floats.
 - **A `v*` tag can no longer publish from a commit that is not on `main`.** Tags are not covered by the branch ruleset and the version gate is a no-op on a tag push, so a hand-pushed tag would have published an image and cut a release. `ci.yml` `publish` and `release.yml` now verify the tagged commit is an ancestor of `main`.
 - **Dependabot now waits 3 days before proposing a new version** (`cooldown`), so a freshly published malicious release is not auto-merged within the hour. Security updates are exempt by design and are never delayed.
 
-## [0.1.0] - 2025-03-25
+## [0.1.0] - 2026-03-25
 
 ### Added
 - Cargo workspace with 3 library crates (`huginn-core`, `huginn-probes`, `huginn-influx`) and binary `huginn`
@@ -83,5 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: `README.md`, `docs/getting-started.md`, `docs/configuration.md`, `docs/influxdb.md`, `docs/security.md`, `docs/troubleshooting.md`
 - `CONTRIBUTING.md` with branching workflow, PR process, Conventional Commits, release process
 
-[Unreleased]: https://github.com/joshua-schnabel/huginn.io/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.1.0
+[Unreleased]: https://github.com/joshua-schnabel/huginn.io/commits/dev
+[0.1.0]: https://github.com/joshua-schnabel/huginn.io/commits/main
+<!-- 0.1.0 predates the release pipeline and was never tagged; from the first
+     tagged release on, the automation maintains real compare links here. -->

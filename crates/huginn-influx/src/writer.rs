@@ -331,7 +331,7 @@ pub fn to_line_protocol(r: &ProbeResult) -> String {
     if let Some(err) = &r.error {
         line.push_str(&format!(",error=\"{}\"", escape_field_str(err)));
     }
-    // Probe-type-specific readings (TLS expiry, ICMP loss, …). InfluxDB is
+    // Probe-type-specific readings (TLS expiry, …). InfluxDB is
     // schemaless, so new keys need no migration. BTreeMap ⇒ deterministic order.
     for (key, value) in &r.metrics {
         line.push_str(&format!(",{}={}", escape_tag(key), value));

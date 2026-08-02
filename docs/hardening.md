@@ -55,6 +55,25 @@ secrets/
 | **Read-only config** | Config file mounted `:ro` in compose |
 | **rustls** | TLS via pure-Rust rustls — no OpenSSL dependency |
 
+## Deliberate exception: the TLS probe skips certificate verification
+
+The `tls` probe's dedicated HTTP client is built with
+`danger_accept_invalid_certs(true)` (plus a `nosemgrep` suppression on that
+line in `crates/huginn-probes/src/tls.rs`). This is intentional and narrowly
+scoped:
+
+- The probe's job is to **read** the peer certificate and report its expiry —
+  including certificates that are already expired or self-signed, which a
+  verifying client would refuse to complete a handshake with.
+- The connection carries no secrets and trusts nothing from the peer: the only
+  thing taken from the response is the certificate itself.
+- Every other TLS connection huginn makes (HTTP/HTTPS probes, InfluxDB writes)
+  uses normal rustls verification.
+
+Consequence to be aware of: the TLS probe does **not** detect an invalid chain
+or a hostname mismatch — it only measures expiry of whatever certificate the
+endpoint presents.
+
 ## Dependency Audit
 
 `cargo-deny` replaces `cargo-audit` and adds license and registry checks:

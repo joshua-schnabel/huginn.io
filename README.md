@@ -19,15 +19,40 @@ Lightweight uptime & latency monitor. Configures via YAML, writes to InfluxDB, s
 
 | | |
 |---|---|
-| **Probes** | TCP · HTTP · HTTPS · SMTP · IMAP · UDP · DNS |
+| **Probes** | TCP · HTTP · HTTPS · SMTP · IMAP · UDP · DNS · TLS cert expiry |
 | **Backend** | InfluxDB 2.x — batch line protocol, `rustls`, token via file |
 | **Config** | YAML + ENV overrides |
 | **Output** | Coloured CLI or `--output json` |
 | **Debug UI** | Live push updates via SSE at `:9116` (optional) |
 | **Security** | Distroless · nonroot · [Semgrep SAST](https://semgrep.dev) · Trivy CVE scan · cargo-deny |
-| **CI/CD** | GitHub Actions · DockerHub |
+| **CI/CD** | GitHub Actions · DockerHub + ghcr.io (multi-arch: amd64/arm64) |
 
-## Quickstart
+## Install
+
+The released image is published multi-arch (linux/amd64, linux/arm64) to both
+registries — pick either:
+
+```bash
+docker pull jschnabel/huginn:latest            # DockerHub
+docker pull ghcr.io/joshua-schnabel/huginn:latest   # GitHub Container Registry
+```
+
+Run it with your config mounted read-only and the InfluxDB token mounted as a
+file (never pass the token via ENV):
+
+```bash
+docker run -d --name huginn \
+  -v ./config.yaml:/etc/huginn/config.yaml:ro \
+  -v ./influx_token.txt:/run/secrets/influx_token:ro \
+  -e HUGINN_UI_ENABLED=true -e HUGINN_UI_BIND=0.0.0.0 -p 9116:9116 \
+  jschnabel/huginn:latest
+```
+
+Without a mounted config the image falls back to the baked-in
+[`config.example.yaml`](config/config.example.yaml), which probes `example.com`
+placeholder hosts — fine for a smoke test, not for real use.
+
+## Quickstart (compose, builds from source)
 
 ```bash
 mkdir -p secrets
@@ -37,8 +62,20 @@ chmod 600 secrets/*.txt
 
 cp config/config.example.yaml config/config.yaml
 docker compose up -d
-open http://localhost:9116
+open http://localhost:9116   # macOS; otherwise just browse to it
 ```
+
+### Debug web UI
+
+When enabled (`ui.enabled: true` / `HUGINN_UI_ENABLED=true`), huginn serves an
+unauthenticated debug UI on `ui.bind:ui.port` (default `127.0.0.1:9116`):
+
+| Endpoint | Purpose |
+|---|---|
+| `/` | Live dashboard (SSE-driven, no external assets) |
+| `/health` | Liveness check, returns `OK` |
+| `/metrics/latest` | Latest result per probe as JSON |
+| `/events` | Server-Sent-Events stream of every probe result |
 
 ## Development
 
@@ -46,9 +83,12 @@ open http://localhost:9116
 cargo test --workspace                             # all tests
 cargo llvm-cov --workspace --open                  # coverage HTML report
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
-cargo deny check                                   # supply-chain audit
+cargo deny check                                   # supply-chain audit (cargo install cargo-deny)
 cargo build --release --locked                     # production binary
 ```
+
+MSRV is **Rust 1.88** (`rust-version` in `Cargo.toml`); the Docker builder image
+is pinned to the same version.
 
 ## Documentation
 
@@ -62,6 +102,8 @@ All docs live in [`docs/`](docs/); only this README and [`AGENTS.md`](AGENTS.md)
 - [`docs/configuration.md`](docs/configuration.md) — every config key (YAML + `HUGINN_*` ENV) with types and defaults
 - [`docs/influxdb.md`](docs/influxdb.md) — InfluxDB setup and the measurement/field schema huginn writes
 - [`docs/troubleshooting.md`](docs/troubleshooting.md) — common failure symptoms and their fixes
+- [`docs/versioning.md`](docs/versioning.md) — SemVer policy: what is stable, MSRV, upgrade notes
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed in each release
 
 **Development & release**
 - [`docs/testing.md`](docs/testing.md) — the test pyramid, TDD workflow, coverage rules, no-sleep rule
