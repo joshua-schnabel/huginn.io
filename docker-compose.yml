@@ -8,8 +8,8 @@ services:
       # Required in a container: the default is 127.0.0.1, which the published
       # port below cannot reach. Set here rather than in config.yaml because that
       # file is your own copy of config.example.yaml and won't be updated for you.
-      # The UI is unauthenticated — keep the published port on a trusted network,
-      # or bind it to the host's loopback: "127.0.0.1:9116:9116".
+      # This binds inside the container only — the `ports` entry below decides
+      # who can actually reach it.
       HUGINN_UI_BIND: "0.0.0.0"
       INFLUX_URL: http://influxdb:8086
       INFLUX_ORG: myorg
@@ -18,9 +18,28 @@ services:
     volumes:
       - ./config/config.yaml:/etc/huginn/config.yaml:ro
     ports:
-      - "9116:9116"
+      # Host loopback, not 0.0.0.0: the debug UI has no authentication and lists
+      # every probe target, so publishing it to the whole network has to be a
+      # deliberate edit — drop the "127.0.0.1:" prefix only if that is what you
+      # mean. Same reasoning as the `ui.bind` default.
+      - "127.0.0.1:9116:9116"
     secrets:
       - influx_token
+    # Container hardening. huginn writes nothing to its filesystem (config is
+    # mounted read-only, the token is a tmpfs secret, results go to InfluxDB
+    # over HTTP), so a read-only rootfs costs nothing and removes a whole class
+    # of post-exploitation footholds. It needs no capabilities at all: it binds
+    # ports above 1024 and never changes uid.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Bounds, not tuning: each idle HTTP connection costs a task plus buffers and
+    # nothing caps how many a client may open, so without a limit a connection
+    # flood against a published UI port grows the process until the host OOMs.
+    mem_limit: 256m
+    pids_limit: 128
     depends_on:
       influxdb:
         condition: service_healthy
@@ -36,12 +55,19 @@ services:
       DOCKER_INFLUXDB_INIT_PASSWORD_FILE: /run/secrets/influx_admin_password
       DOCKER_INFLUXDB_INIT_ADMIN_TOKEN_FILE: /run/secrets/influx_token
     ports:
-      - "8086:8086"
+      # Loopback for the same reason as huginn's UI: the database holds every
+      # measurement and its admin token was just initialised. Reach it from
+      # elsewhere via a reverse proxy you control, not by widening this.
+      - "127.0.0.1:8086:8086"
     volumes:
       - influxdb-data:/var/lib/influxdb2
     secrets:
       - influx_token
       - influx_admin_password
+    # No read-only rootfs here — InfluxDB writes its data and WAL. Dropping
+    # privilege escalation still applies.
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "influx", "ping"]
       interval: 10s
