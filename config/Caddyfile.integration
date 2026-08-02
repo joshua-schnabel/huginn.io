@@ -1,0 +1,20 @@
+# Caddyfile.integration
+#
+# Self-signed HTTPS endpoint for the TLS probe in the integration stack.
+# `issuer internal` makes Caddy mint the certificate from its own local CA at
+# startup, so the stack needs no real domain and never talks to the outside.
+#
+# The leaf lifetime is raised from Caddy's 12h default to 96h so the probe's
+# `tls_expiry_fail_days: 1` assertion has a wide, non-flaky margin.
+{
+	admin off
+}
+
+https://tls-endpoint {
+	tls {
+		issuer internal {
+			lifetime 96h
+		}
+	}
+	respond "OK"
+}

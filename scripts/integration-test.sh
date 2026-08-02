@@ -6,10 +6,11 @@
 #
 # Assertions:
 #   1. huginn /health returns "OK"
-#   2. /metrics/latest returns at least 2 probe results
-#   3. Expected probe names (influxdb-tcp, influxdb-http) are present
+#   2. /metrics/latest returns at least 5 probe results
+#   3. Expected probe names (tcp, http, dns, udp, tls probes) are present
 #   4. All probes are up: true
-#   5. InfluxDB contains probe_result measurements (Flux query)
+#   5. The TLS probe reports a positive tls_cert_expiry_days metric
+#   6. InfluxDB contains probe_result measurements (Flux query)
 
 set -euo pipefail
 
@@ -54,11 +55,11 @@ info "Waiting for probe results in /metrics/latest (up to 30s)..."
 for i in $(seq 1 15); do
   COUNT=$(curl -sf "$HUGINN_URL/metrics/latest" \
     | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
-  if [ "$COUNT" -ge 2 ]; then
+  if [ "$COUNT" -ge 5 ]; then
     pass "/metrics/latest has $COUNT results"
     break
   fi
-  [ "$i" -eq 15 ] && fail "/metrics/latest had fewer than 2 results after 30s (got: $COUNT)"
+  [ "$i" -eq 15 ] && fail "/metrics/latest had fewer than 5 results after 30s (got: $COUNT)"
   sleep 2
 done
 
@@ -68,7 +69,7 @@ python3 -c "
 import json, sys
 data = json.loads('''$METRICS''')
 names = [r['probe_name'] for r in data]
-expected = ['influxdb-tcp', 'influxdb-http']
+expected = ['influxdb-tcp', 'influxdb-http', 'docker-dns', 'docker-dns-udp', 'tls-cert']
 missing = [n for n in expected if n not in names]
 if missing:
     print('Missing probes:', missing)
@@ -87,11 +88,26 @@ if down:
 print('All', len(data), 'probes are UP')
 " && pass "All probes are UP" || fail "One or more probes are DOWN (check container logs)"
 
-# ── 6. Wait for InfluxDB write (batch_size=1 so it flushes immediately) ───────
+# ── 6. Assert the TLS probe reports a positive expiry metric ──────────────────
+python3 -c "
+import json, sys
+data = json.loads('''$METRICS''')
+tls = next(r for r in data if r['probe_name'] == 'tls-cert')
+days = tls.get('metrics', {}).get('tls_cert_expiry_days')
+if days is None:
+    print('tls-cert result has no tls_cert_expiry_days metric:', tls)
+    sys.exit(1)
+if days <= 0:
+    print('tls_cert_expiry_days should be positive for a fresh cert, got:', days)
+    sys.exit(1)
+print('tls_cert_expiry_days =', days)
+" && pass "TLS probe reports positive tls_cert_expiry_days" || fail "TLS expiry metric missing or non-positive"
+
+# ── 7. Wait for InfluxDB write (batch_size=1 so it flushes immediately) ───────
 info "Waiting for InfluxDB write (up to 15s)..."
 sleep 5
 
-# ── 7. Query InfluxDB for probe_result measurements ───────────────────────────
+# ── 8. Query InfluxDB for probe_result measurements ───────────────────────────
 FLUX_RESULT=$(curl -sf \
   -X POST "$INFLUX_URL/api/v2/query?org=$INFLUX_ORG" \
   -H "Authorization: Token $INFLUX_TOKEN" \
