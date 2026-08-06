@@ -28,12 +28,21 @@ version: 2
 # `semver-*-days` is deliberately omitted: GitHub supports it for cargo but not
 # for github-actions, and a single value keeps both ecosystems on one rule.
 #
+# `target-branch: dev` on every ecosystem, because Dependabot otherwise targets
+# the *default* branch — `main` — and that breaks the branching model in both
+# directions. A bump merged straight into `main` is a change `dev` never saw, so
+# the next `dev → main` release PR silently reverts it; and it reaches `main`
+# without the review path everything else goes through. muninn.io hit exactly
+# that: a codeql-action bump landed on `main` right after its v0.1.0, and the
+# 0.1.1 release PR would have downgraded it back.
+#
 # Note: Dependabot uses `dependabot/*` branch names, which auto-pr.yml leaves
 # alone (see its branches-ignore).
 updates:
   # ── Rust crates (workspace root Cargo.toml / Cargo.lock) ──────────────────
   - package-ecosystem: cargo
     directory: "/"
+    target-branch: dev
     schedule:
       interval: weekly
     commit-message:
@@ -60,6 +69,7 @@ updates:
   # ── GitHub Actions pinned in .github/workflows ────────────────────────────
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: dev
     schedule:
       interval: weekly
     commit-message:
@@ -68,4 +78,27 @@ updates:
       default-days: 3
     groups:
       github-actions:
+        patterns: ["*"]
+
+  # ── The Dockerfile's base images ──────────────────────────────────────────
+  # `rust:1.88-slim` (builder) and `gcr.io/distroless/cc-debian12` (runtime).
+  # The builder tag is what keeps the MSRV pin honest — it is the real MSRV gate
+  # (see Cargo.toml) — and the distroless runtime is the only CVE surface in the
+  # image that Cargo.lock does not cover.
+  #
+  # NOT covered, and Dependabot cannot be made to: `container:` and `docker run`
+  # references inside the workflows (dependabot-core#5819). The Semgrep and
+  # actionlint images in security.yml are pinned by digest and need a manual
+  # bump; both say so at the pin.
+  - package-ecosystem: docker
+    directory: "/"
+    target-branch: dev
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    cooldown:
+      default-days: 3
+    groups:
+      docker:
         patterns: ["*"]
