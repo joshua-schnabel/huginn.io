@@ -1,0 +1,135 @@
+# Risks and open questions
+
+Live document. Risks are removed when they are resolved, not when they stop being
+mentioned.
+
+The 2026-08-02 audit's findings are closed and recorded in
+[`security-audit.md`](security-audit.md); what is below is what remains open by
+decision, plus the operational risks the audit did not cover.
+
+## R1 — No request limits on either HTTP listener
+
+**Severity: medium · Status: open, undecided**
+
+Neither the debug UI nor the Prometheus listener caps concurrent connections or
+request duration. A client that opens many connections and holds them open costs
+huginn a task and a socket each, and nothing in the process says stop.
+
+This is [F-03](security-audit.md#f-03) from the audit, left open pending a
+decision on adding `tower-http` — a new dependency, so it needs approval
+(AGENTS.md §3).
+
+**Mitigation.** Both listeners are off by default, bind loopback by default, and
+the shipped compose file sets `mem_limit: 256m` and `pids_limit: 128`, which
+bounds the blast radius at the container rather than in the process.
+
+**Residual.** The container limit turns resource exhaustion into a container
+restart instead of an unbounded one. For an exposed UI that is thin.
+
+**Decide it either way.** Add the layer, or write down that the container limit
+is the accepted answer. An undecided finding is the one that gets forgotten.
+
+## R2 — The debug UI is unauthenticated
+
+**Severity: medium · Status: accepted trade, documented**
+
+`/`, `/events` and `/metrics/latest` serve the complete probe inventory — names,
+targets, error strings — to anyone who can reach the port. That is an
+infrastructure map.
+
+`metrics.api_key_file` protects **only** the Prometheus listener. Enabling it
+while the UI is exposed protects nothing, because the UI serves the same data
+without a key.
+
+**Mitigation.** Off by default; binds `127.0.0.1` by default
+([ADR-0007](adr/0007-debug-ui-has-no-cli-flag.md)); published on `127.0.0.1` by
+the shipped compose file. Both listeners send a strict CSP with no
+`unsafe-inline`, plus `nosniff`, `DENY`, `no-referrer` and `no-store`.
+
+**Residual.** Every one of those is a deployment answer to an application
+question. A UI exposed on purpose is exposed to everyone.
+
+**Revisit if** anyone runs the UI outside loopback. Then it needs auth, not
+documentation.
+
+## R3 — The TLS probe only covers HTTPS ports
+
+**Severity: low · Status: known limit, documented**
+
+The `tls` probe reads the certificate out of an HTTPS response's TLS info, so the
+endpoint has to speak HTTP over TLS. Raw TLS ports — IMAPS 993, SMTPS 465,
+LDAPS — cannot be probed for expiry, even though they are exactly the kind of
+certificate that expires unnoticed.
+
+**Mitigation.** None. The limit is stated in the probe's documentation and in
+[`configuration.md`](configuration.md).
+
+**Fix.** A handshake-only client rather than a `reqwest` client. Bounded work,
+nobody has needed it yet — [`roadmap.md`](roadmap.md).
+
+## R4 — Unfixable base-image CVEs stay open in the Security tab
+
+**Severity: low · Status: accepted, monitored**
+
+17 Debian package CVEs in `gcr.io/distroless/cc-debian12`, all LOW/MEDIUM, none
+with a patched version published upstream. They appear as open code-scanning
+alerts.
+
+**Mitigation.** They are deliberately *not* filtered out — the open alert is the
+audit trail. Only fixable CRITICAL/HIGH block the pipeline, so the gate stays
+one people act on rather than one they switch off. `.trivyignore.yaml` exists
+with its rules written down and no entries.
+
+**Residual.** Unfixable today means blocking tomorrow: when Debian ships fixes,
+the gate starts failing until the image is rebuilt. That is intended, and it
+makes image currency an operational duty.
+
+## R5 — Secret file permissions are documented, not enforced
+
+**Severity: low · Status: open**
+
+The docs prescribe mode `0600` for `influx.token_file` and
+`metrics.api_key_file`. Nothing checks it. A token file left at `0644` in an
+image or a mount is readable by anything else in the container.
+
+**Mitigation.** The distroless image has no shell and no other processes, so
+"anything else in the container" is a narrow set today.
+
+**Fix.** Stat the file at startup and warn. Small, and it fits the fail-closed
+handling those files already get
+([ADR-0002](adr/0002-secrets-from-files-only.md)).
+
+## R6 — A backend outage that outlives the process loses buffered results
+
+**Severity: low · Status: accepted by design**
+
+The retry queue is in memory. If huginn restarts while InfluxDB is down, whatever
+was buffered is gone; and while it is down, `max_buffered_bytes` drops the oldest
+batches.
+
+**Mitigation.** The bound is configurable, drop-oldest keeps the newest data, and
+the shutdown drain gives the writer a bounded window to flush before exit.
+
+**Residual.** Bounded, known data loss during a long outage.
+
+**Not planned to change.** Persisting the queue turns a stateless container into
+one with a volume, to cover a case where the orchestrator is already restarting
+things — [ADR-0004](adr/0004-bounded-retry-queue.md).
+
+## O1 — Nothing has been released yet
+
+**Open question, not a risk to a deployment**
+
+There is no `v*` tag, so the whole release path — tag push, GitHub Release, SBOM,
+housekeeping PR — has never run end to end here. Two bugs in it were found by
+reading rather than by running (`ci-cd.md`), and both are fixed; a third would be
+found the same way or not at all until the first release.
+
+`release.yml`'s `workflow_dispatch` entry point exists so a partial release can
+be completed by hand rather than re-cut.
+
+## Related
+
+- [`security-audit.md`](security-audit.md) — the closed findings and the method
+- [`hardening.md`](hardening.md) — the mitigations referenced above
+- [`roadmap.md`](roadmap.md) — what is planned about all this
