@@ -1,10 +1,10 @@
-# Testing Guide
+# Testing
 
 This document describes the testing philosophy, structure, and requirements for huginn.io contributors.
 
 ---
 
-## The Test Pyramid
+## The pyramid
 
 huginn.io follows a four-level test pyramid: many fast unit tests at the base, fewer component-integration tests, a small number of end-to-end tests, and one Docker-level system integration test at the top.
 
@@ -51,7 +51,7 @@ the process.
 
 ---
 
-## Coverage Requirement
+## Coverage
 
 **CI enforces ≥ 80 % *line* coverage across the workspace, in aggregate**:
 
@@ -83,7 +83,7 @@ nothing about the shipped binary. A covered line is not a checked behaviour.
 
 ---
 
-## Unit Tests
+## Unit tests
 
 ### What to test
 - Every public function's happy path
@@ -117,7 +117,7 @@ Avoid `test_`, `should_`, or numbered names.
 
 ---
 
-## Integration Tests
+## Integration tests
 
 ### What to test
 - Interactions between two or more crates (e.g. `scheduler` + `EventHub` + `WebState`)
@@ -170,7 +170,7 @@ around a retry loop).
 
 ---
 
-## End-to-End Tests
+## End-to-end tests
 
 The complete user-visible path: binary wiring → real network I/O → observable output.
 
@@ -180,7 +180,7 @@ Add an E2E test only when a new user-visible feature cannot be adequately covere
 
 ---
 
-## System Integration Tests
+## The system layer
 
 Tests the complete production stack in Docker:
 - Image builds without errors
@@ -206,7 +206,7 @@ One system integration test covering the core data flow is enough.
 
 ---
 
-## TDD Workflow
+## TDD workflow
 
 huginn.io uses **Test-Driven Development**. New features and bug fixes follow the Red → Green → Refactor cycle:
 
@@ -225,7 +225,7 @@ huginn.io uses **Test-Driven Development**. New features and bug fixes follow th
 
 ---
 
-## Running Tests
+## Running
 
 ```bash
 # Run all tests in the workspace
@@ -246,7 +246,7 @@ cargo llvm-cov --workspace --open
 
 ---
 
-## Quick Reference
+## Quick reference
 
 | Situation | Test type | Location |
 |---|---|---|
@@ -257,3 +257,9 @@ cargo llvm-cov --workspace --open
 | New user-visible push feature | E2E | `huginn/tests/` |
 | Bug fix | Unit (reproduce the bug first) | same file as the fix |
 | New external service dependency | System Integration | `scripts/integration-test.sh` |
+
+## Related
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — where a change goes before it is tested
+- [`ci-cd.md`](ci-cd.md) — how these run in the pipeline
+- [`architecture.md`](architecture.md) — what the integration tests exercise

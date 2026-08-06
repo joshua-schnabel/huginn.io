@@ -1,6 +1,6 @@
-# Security Policy
+# Security policy
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
 Please report security issues privately via
 [GitHub's private vulnerability reporting](https://github.com/joshua-schnabel/huginn.io/security/advisories/new)
@@ -15,7 +15,7 @@ This file lives at a path GitHub recognises, which is what makes the
 handling, container hardening, the scanning pipeline — are documented in
 [`hardening.md`](hardening.md).
 
-## Supported Versions
+## Supported versions
 
 Only the **latest release** receives security fixes. There are no maintenance
 branches for older versions — upgrade to the newest release before reporting,
@@ -39,3 +39,9 @@ Out of scope:
   (`ui.bind`), and exposes probe results only. Reaching a wider network takes
   an explicit `ui.bind: "0.0.0.0"` — do not expose it to an untrusted network.
 - Probe targets you configure yourself — huginn will connect wherever you point it.
+
+## Related
+
+- [`hardening.md`](hardening.md) — the posture behind this policy
+- [`security-audit.md`](security-audit.md) — the last audit, in full
+- [`versioning.md`](versioning.md) — which versions are supported

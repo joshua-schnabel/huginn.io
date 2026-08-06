@@ -1,10 +1,10 @@
-# Versioning & Stability
+# Versioning and stability
 
 huginn.io follows [Semantic Versioning 2.0.0](https://semver.org). This page
 defines what that promise actually covers — a version number is only meaningful
 if you know which surfaces it protects.
 
-## The stable surface (breaking it requires a major release)
+## The stable surface
 
 | Surface | What is covered |
 |---|---|
@@ -15,7 +15,7 @@ if you know which surfaces it protects.
 | **Probe semantics** | What UP/DOWN means per probe type, as documented in `configuration.md`. A change that flips existing results (like a stricter default) is breaking. |
 | **Prometheus metrics** | The `/metrics` endpoint's metric names, label names (`probe`, `type`, `target`) and units as documented in `configuration.md`. New metric families may appear in a minor release; renaming or removing one is breaking. |
 
-## Explicitly unstable (may change in any release)
+## Explicitly unstable
 
 - **The debug web UI** — its HTML/JS/CSS, and the exact JSON shape of
   `/metrics/latest` and `/events`. It is a debug tool, not an API. (`/health`
@@ -26,7 +26,7 @@ if you know which surfaces it protects.
   library.
 - **Log output** — messages, fields and formatting of the pretty/JSON logs.
 
-## MSRV policy
+## MSRV
 
 The minimum supported Rust version (currently **1.88**, `rust-version` in
 `Cargo.toml`) may be raised in a **minor** release, never in a patch release.
@@ -51,3 +51,9 @@ Two behaviour changes need attention; everything else is additive:
    to the redirect code if the redirect itself is what you monitor.
 
 The full change list lives in the [CHANGELOG](../CHANGELOG.md).
+
+## Related
+
+- [`CHANGELOG.md`](../CHANGELOG.md) — what changed in each release
+- [`releasing.md`](releasing.md) — how a version number becomes a release
+- [`roadmap.md`](roadmap.md) — what might change next

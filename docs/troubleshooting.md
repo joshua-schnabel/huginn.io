@@ -68,3 +68,10 @@ RUST_LOG=debug huginn --config config.yaml
 environment:
   HUGINN_LOG_LEVEL: debug
 ```
+
+## Related
+
+- [`configuration.md`](configuration.md) — every key and its default
+- [`architecture.md`](architecture.md) — what the process is doing when it fails
+- [`hardening.md`](hardening.md) — the secret-file rules several of these hit
+- [`risks.md`](risks.md) — known limits that look like bugs

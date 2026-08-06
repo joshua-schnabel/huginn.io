@@ -1,6 +1,6 @@
-# Configuration Reference
+# Configuration reference
 
-## YAML Structure
+## YAML structure
 
 ```yaml
 influx:          # InfluxDB connection (required)
@@ -202,7 +202,7 @@ the certificate, self-signed and expired ones included, not to trust it. See
 |---|---|---|---|
 | `event_hub_capacity` | int | `256` | Broadcast channel capacity for internal probe events |
 
-## ENV Overrides
+## Environment overrides
 
 All values can be overridden without editing the YAML file:
 
@@ -245,3 +245,10 @@ falling back to something wider.
 These warnings appear *after* the tracing subscriber starts — the log level to
 start it with comes from the very config being read — so they arrive a few lines
 below `huginn starting`, not before it.
+
+## Related
+
+- [`architecture.md`](architecture.md) — what these settings actually control
+- [`influxdb.md`](influxdb.md) — the schema the `influx` section writes into
+- [`hardening.md`](hardening.md) — the secret files and why they are files
+- [`troubleshooting.md`](troubleshooting.md) — when a setting does not do what you expect

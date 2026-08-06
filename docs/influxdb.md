@@ -1,4 +1,4 @@
-# InfluxDB Setup
+# InfluxDB
 
 huginn writes raw [line protocol](https://docs.influxdata.com/influxdb/v2/reference/syntax/line-protocol/)
 to the InfluxDB 2.x write API — `POST /api/v2/write?org=…&bucket=…&precision=ms`
@@ -13,7 +13,7 @@ influx auth create --org myorg --write-bucket <bucket-id> --description huginn
 
 Scope the token to **write-only on that one bucket** — huginn never reads.
 
-## Data Model
+## Data model
 
 **Measurement:** `probe_result`
 
@@ -35,7 +35,7 @@ Scope the token to **write-only on that one bucket** — huginn never reads.
 | `error` | string | Error message when down |
 | _metrics_ | float | Per-probe-type extra readings — each `ProbeResult.metrics` entry becomes its own field. Currently: `tls_cert_expiry_days` (TLS probe; negative once expired, present on DOWN results too). InfluxDB is schemaless, so future keys need no migration. |
 
-## Example Flux Queries
+## Example Flux queries
 
 **Uptime % over last 24h:**
 ```flux
@@ -64,9 +64,15 @@ from(bucket: "monitoring")
   |> filter(fn: (r) => r._value < 30.0)
 ```
 
-## Grafana Dashboard
+## Grafana dashboard
 
 Import a dashboard using the queries above. Recommended panels:
 - **Stat panel** — Current `up` value per probe (green/red)
 - **Time series** — `response_ms` over time per probe
 - **Table** — Latest results with error column
+
+## Related
+
+- [`configuration.md`](configuration.md) — the `influx` section, key by key
+- [`architecture.md`](architecture.md) — the batcher, the queue and the writer
+- [`troubleshooting.md`](troubleshooting.md) — write errors and what they mean

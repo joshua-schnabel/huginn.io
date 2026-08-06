@@ -1,11 +1,11 @@
-# Hardening & Security Practices
+# Hardening
 
 How huginn.io is secured: secrets handling, container hardening, and the scanning
 pipeline. To **report a vulnerability**, see [`SECURITY.md`](SECURITY.md). For
 the findings of the last full review — including the risks that are open by
 decision — see [`security-audit.md`](security-audit.md).
 
-## Secrets Management
+## Secrets
 
 huginn.io follows a strict **no-secrets-in-ENV** policy.
 
@@ -25,7 +25,7 @@ The token is read from the file at startup. The file should be:
 INFLUX_TOKEN=mytoken huginn   # token visible in ps, /proc/environ, logs
 ```
 
-## Docker Secrets
+## Docker secrets
 ```yaml
 # docker-compose.yml
 services:
@@ -47,7 +47,7 @@ secrets/
 .env
 ```
 
-## Container Hardening
+## The container
 
 | Measure | Details |
 |---|---|
@@ -140,7 +140,7 @@ Consequence to be aware of: the TLS probe does **not** detect an invalid chain
 or a hostname mismatch — it only measures expiry of whatever certificate the
 endpoint presents.
 
-## Dependency Audit
+## Supply chain
 
 `cargo-deny` replaces `cargo-audit` and adds license and registry checks:
 
@@ -149,22 +149,37 @@ cargo deny check
 ```
 
 Configuration in `deny.toml`:
-- **Advisories** — RustSec advisory database (like cargo-audit)
-- **Licenses** — only approved SPDX licenses (MIT, Apache-2.0, BSD, ISC, …)
-- **Bans** — forbidden crates; warns on duplicate versions
-- **Sources** — only `crates.io` as registry
 
-Runs automatically in CI (`supply-chain` job).
+- **Advisories** — the RustSec advisory database
+- **Licences** — an allow-list of SPDX identifiers (MIT, Apache-2.0, BSD, ISC, …)
+- **Bans** — `openssl`, `openssl-sys`, `native-tls` and `tokio-native-tls` are
+  banned outright, which is what makes the rustls-only policy a gate rather than
+  an intention ([ADR-0003](adr/0003-rustls-only.md)); duplicate versions warn
+- **Sources** — `crates.io` only; git sources are denied
 
-## Static Analysis (SAST)
+Runs automatically in CI (`supply-chain` job). Note that `deny.toml` must stay
+*parseable*, not merely present: it once failed to load against a newer
+cargo-deny, so the gate reported nothing while checking nothing.
 
-Semgrep scans all Rust source on every PR:
-- `p/rust` — Rust security patterns (unsafe, integer overflows, …)
-- `p/secrets` — hardcoded secrets in source code
+## Source scanning
 
-Findings appear in the GitHub Security tab. ERROR-severity findings block the PR.
+Three tools, all in `security.yml`, none of which needs a build:
 
-## Image Scanning
+- **Semgrep** — `p/rust` (unsafe patterns, taint flows) and `p/secrets`
+  (hardcoded credentials). A full pass uploads to the Security tab and never
+  blocks; a second pass blocks on ERROR severity.
+- **ShellCheck** — `scripts/*.sh` at severity `warning`. Semgrep has no registry
+  ruleset for shell, and these scripts drive the integration suite and the
+  release version stamp.
+- **actionlint** — the workflows: unknown `uses:` inputs, bad `needs`, and shell
+  errors inside `run:` blocks.
+
+A finding accepted with an in-code `// nosemgrep: <rule>` comment is stripped
+from the SARIF upload, because GitHub ignores SARIF's `suppressions` property and
+the finding would otherwise stay open forever. The comment, with its reasoning,
+is the authoritative acceptance record — see the TLS probe exception above.
+
+## Image scanning
 
 ```bash
 # Scan locally with Trivy
@@ -180,3 +195,10 @@ visible** as open code-scanning alerts: they are accepted, monitored risk, and
 filtering them out of the report would erase that audit trail. Once upstream
 ships a fix, CRITICAL/HIGH findings start blocking CI; lower severities become
 actionable in the Security tab.
+
+## Related
+
+- [`SECURITY.md`](SECURITY.md) — reporting a vulnerability
+- [`security-audit.md`](security-audit.md) — the 2026-08-02 findings
+- [`risks.md`](risks.md) — what stays open, and why
+- [`ci-cd.md`](ci-cd.md) — the gates that enforce all of this

@@ -1,4 +1,4 @@
-# Releasing a New Version
+# Releasing
 
 The **only manual decision is the version number.** Everything else — validation,
 the multi-arch image on DockerHub and ghcr.io, the git tag, the GitHub Release,
@@ -34,7 +34,7 @@ version number at all.
 
 ---
 
-## Manual release (dev → main)
+## Manual release (`dev → main`)
 
 ```
 1. On dev:  ## [Unreleased]   →   ## [X.Y.Z] - YYYY-MM-DD   (in CHANGELOG.md)
@@ -85,7 +85,7 @@ Merge the PR once it's green. That's the last thing you do by hand.
 
 ---
 
-## What happens automatically after the merge
+## What happens after the merge
 
 ```
 merge dev → main
@@ -98,15 +98,15 @@ ci.yml (main push)                          → DockerHub  :latest  :0.2.0
                                                  │
                                                  ▼ (tag push)
 release.yml
+      ├─ re-runs the full test suite with coverage on the tagged commit
       ├─ GitHub Release v0.2.0
       │    • notes: CHANGELOG section + container-image pull commands and
       │      manifest digest + test summary
-      │    • re-runs the full test suite with coverage on the tagged commit
-      │      and attaches test-report.md as a release asset
+      │    • attaches test-report.md and huginn-0.2.0.cdx.json (SBOM)
       └─ opens a PR into dev that:
            • reopens a fresh ## [Unreleased]
            • fixes the compare links
-           • bumps Cargo.toml to 0.2.0
+           • bumps the workspace version (Cargo.toml AND Cargo.lock) to 0.2.0
 ```
 
 - The published image is **byte-identical** to the one that was scanned and
@@ -133,8 +133,9 @@ docker buildx imagetools inspect ghcr.io/joshua-schnabel/huginn:0.2.0
 git ls-remote --tags origin v0.2.0
 gh release view v0.2.0
 
-# The test report is attached:
+# The test report and the SBOM are attached:
 gh release download v0.2.0 --pattern test-report.md --output -
+gh release view v0.2.0 --json assets --jq '.assets[].name'
 
 # dev was reopened for the next cycle (fresh Unreleased + Cargo bump):
 gh pr list --base dev --search "prepare next cycle"
@@ -142,17 +143,32 @@ gh pr list --base dev --search "prepare next cycle"
 
 ---
 
-## Rules & gotchas
+## Rules and gotchas
 
 - **Don't hand-push `v*` tags.** Tags are created only by the pipeline after
   every gate passes. A manually pushed tag would create a Release with an image
   that skipped the gates.
-- **`Cargo.toml` and `CHANGELOG.md` stay in sync automatically** — the version
-  gate validates the changelog version, and the housekeeping PR bumps
-  `Cargo.toml` to match. You don't edit `Cargo.toml`'s version by hand.
+- **The version lives in `CHANGELOG.md` and nowhere else you touch.** The
+  version gate validates it, and the housekeeping PR bumps the workspace version
+  to match — `Cargo.toml` *and* `Cargo.lock`, through
+  `scripts/set-workspace-version.sh`, because every CI job runs `--locked` and a
+  manifest the lock file does not know fails before a test runs. Never edit
+  either by hand.
 - **First release ever:** with no existing tag, the gate only checks that the
   version is valid SemVer (there's nothing to be "greater than").
 - **A `main` push without a version bump** is safe: the tag already exists, so
   the tag/release steps are skipped (idempotent). Nothing breaks; nothing new is
   released.
 - **Re-running a release** (re-run of a `main` push) is safe for the same reason.
+
+- **A partial release can be finished, not re-cut.** `release.yml` has a
+  `workflow_dispatch` entry point taking an existing tag; it does the same work
+  the tag push would have done and creates nothing twice. That is the way back
+  in when the tag was pushed by `GITHUB_TOKEN` (which starts no workflow) or when
+  a run failed halfway. See [`ci-cd.md`](ci-cd.md#driving-releaseyml-by-hand).
+
+## Related
+
+- [`ci-cd.md`](ci-cd.md) — the pipeline and the secrets a release depends on
+- [`workflows.md`](workflows.md) — `release.yml` and `release-dispatch.yml` job by job
+- [`versioning.md`](versioning.md) — what the number you pick promises
