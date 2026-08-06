@@ -50,6 +50,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Pinned to the action's v1 SHA, which makes `toolchain` a required input —
       # the channel itself stays floating, only the action code is frozen.
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -77,6 +79,8 @@ jobs:
     continue-on-error: ${{ matrix.rust == 'beta' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ matrix.rust }}
@@ -94,6 +98,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
@@ -111,6 +117,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
@@ -177,6 +185,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # need the tag history to find the last release
+          persist-credentials: false
       - name: Validate SemVer and successor
         env:
           EVENT: ${{ github.event_name }}
@@ -235,6 +244,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -374,6 +385,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -455,13 +468,27 @@ jobs:
       - name: Push scanned image and record its digest
         env:
           REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
-          CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          # skopeo writes and reads its credentials here instead of taking them
+          # on the command line. `--dest-creds user:token` puts the token in
+          # /proc/<pid>/cmdline, readable by every other process on the runner
+          # for as long as the copy runs; an auth file is 0600 and confined to
+          # this step's temp directory.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
+          if [ -z "$DHUSER" ] || [ -z "$DHTOKEN" ]; then
+            echo "::error::DOCKERHUB_USERNAME (repository variable) and DOCKERHUB_TOKEN (repository secret) are not set — see docs/ci-cd.md"
+            exit 1
+          fi
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN | skopeo login --username "$DHUSER" --password-stdin docker.io
+
           mkdir -p "${{ runner.temp }}/digests"
           # Staging tag is only a push target; the user-facing multi-arch tag is
           # created by the `publish` job from the digest recorded here, and the
           # staging tags are deleted again once the manifest exists.
-          skopeo copy --dest-creds "$CREDS" \
+          skopeo copy \
             "docker-archive:${{ runner.temp }}/image.tar" \
             "docker://${REPO}:staging-${PLATFORM_PAIR}" \
             --digestfile "${{ runner.temp }}/digest.txt"
@@ -621,16 +648,24 @@ jobs:
       - name: Mirror image to ghcr.io
         env:
           DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
-          DH_CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GHCR_REPO: ghcr.io/${{ github.repository_owner }}/huginn
-          GHCR_CREDS: ${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same reason as the push job: credentials through a 0600 auth file
+          # rather than through argv, where every process on the runner can read
+          # them out of /proc for the length of the copy.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN    | skopeo login --username "$DHUSER"    --password-stdin docker.io
+          printenv GHCR_TOKEN | skopeo login --username "$GHCR_USER" --password-stdin ghcr.io
+
           echo "$DOCKER_METADATA_OUTPUT_JSON" | jq -r '.tags[]' | while read -r ref; do
             tag="${ref##*:}"
             echo "Mirroring ${DH_REPO}:${tag} -> ${GHCR_REPO}:${tag}"
             skopeo copy --all \
-              --src-creds "$DH_CREDS" \
-              --dest-creds "$GHCR_CREDS" \
               "docker://${DH_REPO}:${tag}" \
               "docker://${GHCR_REPO}:${tag}"
           done
@@ -646,17 +681,23 @@ jobs:
           DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
           TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          jwt="$(curl -s -H 'Content-Type: application/json' \
-            -d "{\"username\":\"${DHUSER}\",\"password\":\"${TOKEN}\"}" \
-            https://hub.docker.com/v2/users/login/ | jq -r .token)"
+          # Body through stdin, built by jq rather than by string interpolation:
+          # `-d "{...$TOKEN...}"` would put the token in /proc/<pid>/cmdline, and
+          # would also break on any character JSON needs escaped. `--data @-`
+          # keeps it in a pipe.
+          jwt="$(jq -n --arg u "$DHUSER" --arg p "$TOKEN" '{username:$u, password:$p}' \
+            | curl -s -H 'Content-Type: application/json' --data @- \
+              https://hub.docker.com/v2/users/login/ | jq -r .token)"
           if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
             echo "Could not obtain a DockerHub token; leaving staging tags in place"
             exit 0
           fi
+          # The session token goes through a curl config on stdin for the same
+          # reason as the password above — `-H "Authorization: ..."` is argv.
           for tag in staging-linux-amd64 staging-linux-arm64; do
-            code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
-              -H "Authorization: JWT ${jwt}" \
-              "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
+            code="$(printf 'header = "Authorization: JWT %s"\n' "$jwt" \
+              | curl -s -K - -o /dev/null -w '%{http_code}' -X DELETE \
+                "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
             echo "delete ${tag}: HTTP ${code}"
           done
 
