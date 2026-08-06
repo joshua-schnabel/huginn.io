@@ -137,11 +137,31 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           retention-days: 7
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
+      # The number, where the run that produced it already is. Deliberately not
+      # a third-party coverage service: the percentage is something this
+      # pipeline computes, and shipping every line of the source tree to an
+      # external host to have it computed again buys a badge and costs a
+      # dependency with repository access. The README badge reports this job's
+      # verdict instead — green means the gate below held.
+      #
+      # Read from lcov.info rather than parsed out of cargo's output: LF/LH are
+      # a stable file format, and a summary table is not.
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ ! -s lcov.info ]; then
+            echo "::warning::no lcov.info was produced; the summary is empty"
+            exit 0
+          fi
+          awk -F: '
+            /^LF:/ { found += $2 }
+            /^LH:/ { hit   += $2 }
+            END {
+              if (found == 0) { print "No coverage data."; exit }
+              printf "## Coverage\n\n**%.2f %%** of %d workspace lines (gate: at least 80 %%)\n",
+                     hit * 100 / found, found
+            }
+          ' lcov.info >> "$GITHUB_STEP_SUMMARY"
 
   # ── Release version gate (SemVer + must exceed the last tag) ───────────────
   # Enforces only for a release context: a PR whose base is main, or a push to
@@ -298,6 +318,13 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-${{ env.PLATFORM_PAIR }}
 
+      # Blocking on FIXABLE CRITICAL/HIGH only. A gate that blocks on findings
+      # nobody can act on is a gate that gets switched off.
+      #
+      # .trivyignore.yaml is read HERE and not by the full scan above, so a
+      # suppressed finding still reaches the Security tab. Every entry in it
+      # carries an expiry date and a reason the vulnerable code cannot be
+      # reached in huginn's deployment — see the file. It is empty today.
       - name: Trivy - blocking scan (fixable CRITICAL/HIGH only)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -305,7 +332,30 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
+
+      # ── SBOM, from the same tarball ──────────────────────────────────────
+      # Generated from the artefact rather than from a rebuild or a registry
+      # pull, for the reason the whole pipeline is shaped this way: an SBOM that
+      # describes different bytes than the ones that shipped is worse than none,
+      # because it will be believed. Cargo.lock covers the Rust tree; this
+      # covers what the image actually carries alongside it.
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ${{ runner.temp }}/image.tar
+          format: cyclonedx
+          output: sbom-${{ env.PLATFORM_PAIR }}.cdx.json
+          exit-code: "0"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ env.PLATFORM_PAIR }}
+          path: sbom-${{ env.PLATFORM_PAIR }}.cdx.json
+          if-no-files-found: error
+          retention-days: 90
 
   # ── Integration-test the built artifact (loaded, never rebuilt) ───────────
   # Native runner per arch: the loaded container must run on matching hardware.

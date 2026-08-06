@@ -289,6 +289,32 @@ jobs:
             gh release upload "v$V" test-report.md --clobber
           fi
 
+      # ── SBOM for the published image ──────────────────────────────────────
+      # ci.yml already produced one per architecture from the build artefact and
+      # kept it for 90 days. This one is generated from the *published* multi-arch
+      # tag, so the file attached to a release describes the image someone
+      # actually pulls, and outlives the CI artefact's retention.
+      - name: Generate SBOM for the released image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/huginn:${{ needs.resolve.outputs.version }}
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: "0"
+
+      - name: Attach the SBOM
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.resolve.outputs.version }}
+        run: |
+          if [ -s sbom.cdx.json ]; then
+            mv sbom.cdx.json "huginn-${V}.cdx.json"
+            gh release upload "v$V" "huginn-${V}.cdx.json" --clobber
+          else
+            echo "::warning::no SBOM was produced for v$V"
+          fi
+
   # ── Reopen the changelog for the next cycle, on dev, via an auto-merge PR ──
   prepare-dev:
     name: Prepare dev for next cycle
