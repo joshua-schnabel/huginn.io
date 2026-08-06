@@ -45,6 +45,14 @@ allow = [
 multiple-versions = "warn"
 # Deny wildcard dependency specifications in Cargo.toml (e.g. dep = "*")
 wildcards = "deny"
+# Except between huginn's own crates. They are `{ path = ... }` entries with no
+# version, which is a wildcard by cargo-deny's reading and a directory on disk by
+# cargo's — there is no registry, no resolution and nothing to pin. A version
+# there is the crates.io publishing pattern and a second copy of the workspace
+# version; carrying one is what made a release bump fail resolution outright.
+# Without this the gate fails on the workspace's own structure, which is how a
+# required gate stops being run at all.
+allow-wildcard-paths = true
 # List of crates that must never be used.
 #
 # "TLS is rustls only, no OpenSSL" is a stated policy (AGENTS.md §9,
