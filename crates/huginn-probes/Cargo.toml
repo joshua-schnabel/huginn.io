@@ -4,9 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
-huginn-core = { path = "../huginn-core", version = "0.1.0" }
+# Path only, no version requirement — see huginn/Cargo.toml for why.
+huginn-core = { path = "../huginn-core" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
