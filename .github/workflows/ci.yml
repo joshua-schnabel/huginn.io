@@ -50,6 +50,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Pinned to the action's v1 SHA, which makes `toolchain` a required input —
       # the channel itself stays floating, only the action code is frozen.
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -77,6 +79,8 @@ jobs:
     continue-on-error: ${{ matrix.rust == 'beta' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ matrix.rust }}
@@ -94,6 +98,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
@@ -111,6 +117,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
@@ -137,11 +145,31 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           retention-days: 7
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
+      # The number, where the run that produced it already is. Deliberately not
+      # a third-party coverage service: the percentage is something this
+      # pipeline computes, and shipping every line of the source tree to an
+      # external host to have it computed again buys a badge and costs a
+      # dependency with repository access. The README badge reports this job's
+      # verdict instead — green means the gate below held.
+      #
+      # Read from lcov.info rather than parsed out of cargo's output: LF/LH are
+      # a stable file format, and a summary table is not.
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ ! -s lcov.info ]; then
+            echo "::warning::no lcov.info was produced; the summary is empty"
+            exit 0
+          fi
+          awk -F: '
+            /^LF:/ { found += $2 }
+            /^LH:/ { hit   += $2 }
+            END {
+              if (found == 0) { print "No coverage data."; exit }
+              printf "## Coverage\n\n**%.2f %%** of %d workspace lines (gate: at least 80 %%)\n",
+                     hit * 100 / found, found
+            }
+          ' lcov.info >> "$GITHUB_STEP_SUMMARY"
 
   # ── Release version gate (SemVer + must exceed the last tag) ───────────────
   # Enforces only for a release context: a PR whose base is main, or a push to
@@ -157,6 +185,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # need the tag history to find the last release
+          persist-credentials: false
       - name: Validate SemVer and successor
         env:
           EVENT: ${{ github.event_name }}
@@ -215,6 +244,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -268,6 +299,13 @@ jobs:
       matrix:
         platform: [linux/amd64, linux/arm64]
     steps:
+      # The scan itself only needs the tarball, but the blocking pass reads
+      # .trivyignore.yaml out of the workspace — without a checkout Trivy exits
+      # with "cannot find ignorefile" rather than scanning without it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Sanitise platform name
         env:
           platform: ${{ matrix.platform }}
@@ -298,6 +336,13 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-${{ env.PLATFORM_PAIR }}
 
+      # Blocking on FIXABLE CRITICAL/HIGH only. A gate that blocks on findings
+      # nobody can act on is a gate that gets switched off.
+      #
+      # .trivyignore.yaml is read HERE and not by the full scan above, so a
+      # suppressed finding still reaches the Security tab. Every entry in it
+      # carries an expiry date and a reason the vulnerable code cannot be
+      # reached in huginn's deployment — see the file. It is empty today.
       - name: Trivy - blocking scan (fixable CRITICAL/HIGH only)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -305,7 +350,30 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
+
+      # ── SBOM, from the same tarball ──────────────────────────────────────
+      # Generated from the artefact rather than from a rebuild or a registry
+      # pull, for the reason the whole pipeline is shaped this way: an SBOM that
+      # describes different bytes than the ones that shipped is worse than none,
+      # because it will be believed. Cargo.lock covers the Rust tree; this
+      # covers what the image actually carries alongside it.
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ${{ runner.temp }}/image.tar
+          format: cyclonedx
+          output: sbom-${{ env.PLATFORM_PAIR }}.cdx.json
+          exit-code: "0"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ env.PLATFORM_PAIR }}
+          path: sbom-${{ env.PLATFORM_PAIR }}.cdx.json
+          if-no-files-found: error
+          retention-days: 90
 
   # ── Integration-test the built artifact (loaded, never rebuilt) ───────────
   # Native runner per arch: the loaded container must run on matching hardware.
@@ -324,6 +392,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -405,13 +475,27 @@ jobs:
       - name: Push scanned image and record its digest
         env:
           REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
-          CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          # skopeo writes and reads its credentials here instead of taking them
+          # on the command line. `--dest-creds user:token` puts the token in
+          # /proc/<pid>/cmdline, readable by every other process on the runner
+          # for as long as the copy runs; an auth file is 0600 and confined to
+          # this step's temp directory.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
+          if [ -z "$DHUSER" ] || [ -z "$DHTOKEN" ]; then
+            echo "::error::DOCKERHUB_USERNAME (repository variable) and DOCKERHUB_TOKEN (repository secret) are not set — see docs/ci-cd.md"
+            exit 1
+          fi
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN | skopeo login --username "$DHUSER" --password-stdin docker.io
+
           mkdir -p "${{ runner.temp }}/digests"
           # Staging tag is only a push target; the user-facing multi-arch tag is
           # created by the `publish` job from the digest recorded here, and the
           # staging tags are deleted again once the manifest exists.
-          skopeo copy --dest-creds "$CREDS" \
+          skopeo copy \
             "docker-archive:${{ runner.temp }}/image.tar" \
             "docker://${REPO}:staging-${PLATFORM_PAIR}" \
             --digestfile "${{ runner.temp }}/digest.txt"
@@ -442,9 +526,28 @@ jobs:
       contents: write
       packages: write
     steps:
+      # The one checkout in this file that keeps its credentials: the last step
+      # runs `git push origin "$TAG"`. Nothing between here and there executes
+      # third-party code — no cargo, no build — so the token stays inside a job
+      # that only runs skopeo, jq and git.
+      #
+      # RELEASE_PAT rather than the built-in token, because of what has to happen
+      # after the push: GitHub does not start a workflow from an event that
+      # GITHUB_TOKEN created — the recursion guard — so a tag pushed with it
+      # fires nothing and release.yml (`on: push: tags`) never runs. Nothing has
+      # been released from this repository yet, so the failure is still latent
+      # here; muninn.io shipped with the same wiring and hit it at v0.1.0: the
+      # image, the ghcr mirror and the tag all went out, and the GitHub Release,
+      # the test report and the housekeeping PR did not. It is the same secret
+      # prepare-dev already needs, for the same underlying reason.
+      #
+      # The fallback keeps the pipeline working without the secret: the tag is
+      # still created, and release.yml is then driven by hand through its
+      # workflow_dispatch entry point.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # needed to read git history for version tagging
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       # `refs/tags/v*` is not covered by the branch ruleset, and the version gate
       # is a no-op on a tag push — so without this a hand-pushed tag on any
@@ -552,16 +655,24 @@ jobs:
       - name: Mirror image to ghcr.io
         env:
           DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/huginn
-          DH_CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GHCR_REPO: ghcr.io/${{ github.repository_owner }}/huginn
-          GHCR_CREDS: ${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same reason as the push job: credentials through a 0600 auth file
+          # rather than through argv, where every process on the runner can read
+          # them out of /proc for the length of the copy.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN    | skopeo login --username "$DHUSER"    --password-stdin docker.io
+          printenv GHCR_TOKEN | skopeo login --username "$GHCR_USER" --password-stdin ghcr.io
+
           echo "$DOCKER_METADATA_OUTPUT_JSON" | jq -r '.tags[]' | while read -r ref; do
             tag="${ref##*:}"
             echo "Mirroring ${DH_REPO}:${tag} -> ${GHCR_REPO}:${tag}"
             skopeo copy --all \
-              --src-creds "$DH_CREDS" \
-              --dest-creds "$GHCR_CREDS" \
               "docker://${DH_REPO}:${tag}" \
               "docker://${GHCR_REPO}:${tag}"
           done
@@ -577,17 +688,23 @@ jobs:
           DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
           TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          jwt="$(curl -s -H 'Content-Type: application/json' \
-            -d "{\"username\":\"${DHUSER}\",\"password\":\"${TOKEN}\"}" \
-            https://hub.docker.com/v2/users/login/ | jq -r .token)"
+          # Body through stdin, built by jq rather than by string interpolation:
+          # `-d "{...$TOKEN...}"` would put the token in /proc/<pid>/cmdline, and
+          # would also break on any character JSON needs escaped. `--data @-`
+          # keeps it in a pipe.
+          jwt="$(jq -n --arg u "$DHUSER" --arg p "$TOKEN" '{username:$u, password:$p}' \
+            | curl -s -H 'Content-Type: application/json' --data @- \
+              https://hub.docker.com/v2/users/login/ | jq -r .token)"
           if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
             echo "Could not obtain a DockerHub token; leaving staging tags in place"
             exit 0
           fi
+          # The session token goes through a curl config on stdin for the same
+          # reason as the password above — `-H "Authorization: ..."` is argv.
           for tag in staging-linux-amd64 staging-linux-arm64; do
-            code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
-              -H "Authorization: JWT ${jwt}" \
-              "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
+            code="$(printf 'header = "Authorization: JWT %s"\n' "$jwt" \
+              | curl -s -K - -o /dev/null -w '%{http_code}' -X DELETE \
+                "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
             echo "delete ${tag}: HTTP ${code}"
           done
 

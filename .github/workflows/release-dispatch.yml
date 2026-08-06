@@ -1,8 +1,9 @@
 name: Release (dispatch)
 
 # One-click release. Pick patch / minor / major; this computes the next SemVer
-# version from the last release, stamps CHANGELOG.md + Cargo.toml, and opens an
-# auto-merging PR into main. From there the normal pipeline takes over:
+# version from the last release, stamps CHANGELOG.md and the workspace version
+# (Cargo.toml *and* Cargo.lock), and opens an auto-merging PR into main. From
+# there the normal pipeline takes over:
 # ci.yml publishes the image (DockerHub + ghcr) and tags vX.Y.Z, then
 # release.yml creates the GitHub Release and reopens the changelog on dev.
 #
@@ -55,8 +56,11 @@ jobs:
 
           # Base = the higher of the latest v* tag and the top CHANGELOG version,
           # so the very first release still bumps from the changelog's version.
+          # The changelog side goes through the shared script rather than a bare
+          # grep: it validates SemVer before printing, and this value reaches a
+          # shell, a branch name and a git tag.
           TAG_V=$(git tag -l 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
-          CL_V=$(grep -m1 '^## \[[0-9]' CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/' || true)
+          CL_V=$(bash scripts/changelog-version.sh || true)
           BASE=$(printf '%s\n%s\n' "$TAG_V" "$CL_V" | grep -E '^[0-9]' | sort -V | tail -1 || true)
           [ -z "$BASE" ] && BASE=0.0.0
 
@@ -109,14 +113,22 @@ jobs:
               printf '[%s]: %s/releases/tag/v%s\n' "$N" "$REPO_URL" "$N" >> CHANGELOG.md
             fi
           fi
-          sed -i "s/^version = \".*\"/version = \"${N}\"/" Cargo.toml
+          # Manifest and lock file together, through the shared helper. Bumping
+          # only Cargo.toml leaves every `--locked` job failing with "cannot
+          # update the lock file" before a test runs — the release PR would
+          # arrive red every time.
+          bash scripts/set-workspace-version.sh "$N"
 
-          git add CHANGELOG.md Cargo.toml
+          git add CHANGELOG.md Cargo.toml Cargo.lock
           git commit -m "release: v${N}"
           git push -f origin "$BR"
 
           gh pr create --base main --head "$BR" \
             --title "release: v${N}" \
             --body "Automated **${BUMP}** release. Merges to main once checks pass; the pipeline then publishes the image (DockerHub + ghcr), tags v${N}, and creates the GitHub Release."
-          gh pr merge --auto --squash "$BR" || \
+          # A merge commit, not a squash: `dev → main` is the one place this
+          # repository keeps history (docs/CONTRIBUTING.md). Squashing here would
+          # give main a single commit whose parents dev never shares, and the
+          # next `main → dev` sync would conflict with itself.
+          gh pr merge --auto --merge "$BR" || \
             echo "::warning::Could not enable auto-merge (RELEASE_PAT missing?). Merge the PR manually."

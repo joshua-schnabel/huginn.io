@@ -1,8 +1,26 @@
 /target/
 # Cargo.lock is committed for reproducible builds (binary crate)
-# secrets — never commit tokens
+
+# secrets — never commit tokens, keys or credentials
 secrets/
 *.token
+*.pem
+*.key
 .env
+
+# local, uncommitted config: `config.yaml` is what an operator writes for their
+# own deployment. The shipped examples in config/ are `config.example.yaml` and
+# `config.integration.yaml`.
+/config/config.yaml
+*.local.yaml
+
+# personal Claude Code settings; .claude/settings.json is the shared one and is
+# committed
+.claude/settings.local.json
+
 # local integration-test scratch directory
 /temp-int/
+
+# coverage output — `cargo cov-ci` writes this and CI uploads it from the run
+# that produced it, so a committed copy could only ever be stale
+/lcov.info

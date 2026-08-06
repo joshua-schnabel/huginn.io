@@ -1,4 +1,4 @@
-# Security Audit — 2026-08-02
+# Security audit — 2026-08-02
 
 A full security review of huginn.io before the first release: adversarial
 testing against a running instance plus a line-by-line code review, across the
@@ -331,3 +331,10 @@ Not done in this pass, in rough priority order:
    a one-liner.
 4. Re-run this audit after any change to the probe result path, the HTTP
    listeners, or the container definition.
+
+## Related
+
+- [`hardening.md`](hardening.md) — the posture the findings changed
+- [`risks.md`](risks.md) — where the accepted risks live now
+- [`roadmap.md`](roadmap.md) — where the recommendations live now
+- [`SECURITY.md`](SECURITY.md) — how to report the next one

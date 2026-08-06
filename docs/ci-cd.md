@@ -1,214 +1,287 @@
-# CI/CD Pipeline
+# CI/CD and repository setup
 
-This document describes the branch model, CI/CD pipeline design, and required GitHub repository configuration for huginn.io.
+The branch model, the pipeline's shape, and the repository configuration it
+depends on. Each workflow explained one by one is
+[`workflows.md`](workflows.md); cutting a release is
+[`releasing.md`](releasing.md).
 
----
+## Branch model
 
-## Branch Model
-
-```
+```text
 feature/my-feature
-       │
-       │  pull request
+       │  pull request (squash)
        ▼
-      dev  ──────────────── push → DockerHub :dev
-       │
-       │  pull request
+      dev  ──────────────── push → :dev + :x.y.z-dev
+       │  pull request (merge commit)
        ▼
-      main ──────────────── push → DockerHub :latest + :x.y.z
+      main ──────────────── push → :latest + :x.y.z, then tag vX.Y.Z
 ```
 
 | Branch | Purpose | Protected |
 |---|---|:---:|
-| `main` | Production releases | ✅ |
-| `dev` | Integration / staging | ✅ |
-| `feature/*` | Feature development | ❌ |
+| `main` | Releases | yes |
+| `dev` | Integration | yes |
+| `feature/*` `fix/*` `chore/*` `docs/*` `test/*` | Work | no |
 
-**Rule:** No direct pushes to `main` or `dev`. All changes go through a pull request.
+No direct pushes to `main` or `dev`. Everything goes through a pull request,
+including Dependabot's — which is why every ecosystem sets `target-branch: dev`.
+A bump merged straight into `main` is a change `dev` never saw, so the next
+release PR would silently revert it.
 
----
+## Pipeline shape
 
-## Jobs per Trigger
+```text
+  check ─┬ test (stable + beta·canary) ─┐
+         ├ supply-chain ────────────────┤
+         ├ coverage (needs test) ───────┤
+         └ version-gate ────────────────┤
+                                        ▼
+             build (per arch, native) → image.tar artefact
+                ├ scan  (Trivy + SBOM, on the artefact)
+                └ integration (load + compose, on the artefact)
+                                        ▼
+             push (per arch, push only) → skopeo by digest → digest artefact
+                                        ▼
+             publish → manifest, ghcr mirror, staging cleanup, git tag
+                                        ▼
+                              release.yml (Release + SBOM + housekeeping PR)
+```
+
+**The image is built exactly once per architecture** and uploaded as a tarball.
+`scan`, `integration` and `push` all consume *that same artefact*, so the bytes
+scanned, tested and published are byte-identical. `push` needs `scan` **and**
+`integration`, and `publish` needs `push`, so nothing unscanned can reach a
+registry.
+
+CI runs on **every** pull request, not only those targeting `main` or `dev`. It
+was once scoped to those two, so feature branches had no gate — which is how
+`feature/refactoring` and `dev` diverged into two different "CI fixes", one of
+which silently dropped the keep-alive in `run()` and left the daemon exiting at
+startup.
+
+**Publish lives in `ci.yml` on purpose.** As its own workflow it triggered on
+`push` in parallel with CI and depended on nothing, so a commit with failing
+tests still shipped `:latest` — every documented gate was bypassable on the only
+path that reaches users. A `workflow_run` trigger would fix the ordering and
+introduce a subtler trap: `github.ref` there resolves to the default branch, so
+every `github.ref == 'refs/heads/dev'` check silently reads false. A job with
+`needs` has neither problem.
+
+## Jobs per trigger
 
 | Job | any PR | push dev | push main | push tag `v*` |
 |---|:---:|:---:|:---:|:---:|
-| Format & Lint | ✅ | ✅ | ✅ | ✅ |
-| Tests (stable) | ✅ | ✅ | ✅ | ✅ |
-| Tests (beta, canary — non-blocking) | ✅ | ✅ | ✅ | ✅ |
-| Supply-Chain (cargo-deny) | ✅ | ✅ | ✅ | ✅ |
-| Code Coverage ≥ 80% | ✅ | ✅ | ✅ | ✅ |
-| Version gate (SemVer + successor) | ✅ 🚫† | ➖ | ✅ 🚫 | ➖ |
-| **Semgrep SAST** | ✅ 🚫* | ✅ | ✅ | ❌ |
-| Build image (per arch, native) | ✅ | ✅ | ✅ | ✅ |
-| Trivy CVE Scan (SARIF) | ✅ | ✅ | ✅ | ✅ |
-| Trivy blocking scan | ✅ 🚫 | ✅ 🚫 | ✅ 🚫 | ✅ 🚫 |
-| System Integration Test | ✅ | ✅ | ✅ | ✅ |
-| Publish → DockerHub **+ ghcr.io** | ❌ | ✅ :dev + :0.1.0-dev | ✅ :latest + :0.1.0 | ✅ semver tags |
-| GitHub Release (`release.yml`) | ❌ | ❌ | ❌ | ✅ |
-| Dev housekeeping PR (`release.yml`) | ❌ | ❌ | ❌ | ✅ |
+| Format & Lint | yes | yes | yes | yes |
+| Tests (stable) | yes 🚫 | yes | yes | yes |
+| Tests (beta, canary) | yes | yes | yes | yes |
+| Supply-chain (cargo-deny) | yes 🚫 | yes | yes | yes |
+| Coverage ≥ 80 % | yes 🚫 | yes | yes | yes |
+| Version gate | yes 🚫† | ➖ | yes 🚫 | ➖ |
+| Semgrep · ShellCheck · actionlint | yes 🚫* | yes | yes | — |
+| Build image (per arch, native) | yes | yes | yes | yes |
+| Trivy SARIF + SBOM | yes | yes | yes | yes |
+| Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | yes 🚫 |
+| System integration test | yes | yes | yes | yes |
+| Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | semver tags |
+| GitHub Release + housekeeping PR | — | — | — | yes |
 
-🚫 = Blocks the PR  
-🚫* = Blocks only on ERROR-severity findings (hardcoded secrets, critical code patterns)  
-🚫† = Only enforced on PRs whose base is `main` (the release PR); a no-op pass elsewhere  
-➖ = Runs but is a deliberate no-op (so it can gate `build` without skipping it)
+🚫 blocks · 🚫* blocks only on ERROR-severity findings · 🚫† enforced only on a
+PR whose base is `main` · ➖ runs as a deliberate no-op, so it can gate `build`
+without skipping it.
 
-CI runs on **every** pull request, not only those targeting `main`/`dev`. It was
-previously scoped to those two, so feature branches had no gate — which is how
-`feature/refactoring` and `dev` once diverged into two different "CI fixes", one
-of which silently dropped the keep-alive in `run()` and left the daemon exiting
-at startup.
+## What can reach a credential
 
-The image is **built exactly once per architecture** (the `build` job) and
-uploaded as an artifact. Every later job — `scan` (Trivy), `integration`
-(compose test), `push` (skopeo) — consumes *that same tarball*, so the bytes
-scanned, tested and published are byte-for-byte identical. `push` needs both
-`scan` and `integration`, and `publish` needs `push`, so nothing unscanned can
-ever reach DockerHub and the published image is provably the one that passed the
-scan. This is also why Trivy now lives in `ci.yml` rather than rebuilding its own
-image in `security.yml`.
+Two shapes are worth knowing when editing a workflow here.
 
----
+**No job runs `cargo` with a write token.** `actions/checkout` persists its token
+into `.git/config`, and `cargo` compiles and executes `build.rs` and proc-macros
+from every dependency in the tree. Every checkout therefore sets
+`persist-credentials: false` except the three that push — `ci.yml`'s `publish`,
+`release.yml`'s `prepare-dev` and `release-dispatch.yml` — none of which runs
+cargo. `release.yml` is split into `test-report` (`contents: read`, runs cargo,
+uploads an artefact) and `github-release` (`contents: write`, downloads it) for
+exactly this reason. If you add a cargo step, it belongs in the first job.
 
-## Workflow Files
+**Credentials go through stdin or a file, never argv.** `/proc/<pid>/cmdline` is
+readable by every process on the runner. `skopeo login --password-stdin` with
+`REGISTRY_AUTH_FILE` replaces `--dest-creds`; `jq -n --arg` piped into
+`curl --data @-` replaces `-d "{…$TOKEN…}"`; `curl -K -` replaces
+`-H "Authorization: …"`.
 
-### `ci.yml` — Quality Gate and Publish
-Runs on every pull request, on pushes to `dev`/`main`, and on `v*.*.*` tags.
+**Permissions are least-privilege per job.** The default is `contents: read`.
+`publish` needs `contents: write` for the tag and `packages: write` for the ghcr
+mirror; the Trivy and Semgrep jobs need `security-events: write` for the SARIF
+upload, and in `security.yml` that permission is scoped to the Semgrep job alone
+— ShellCheck and actionlint only read the tree.
 
-- **check**: `cargo fmt --check` + `cargo clippy -D warnings`
-- **test**: `cargo test --all` on Rust stable *and* beta (`fail-fast: false`). Beta is a canary for the next compiler and is **non-blocking** (`continue-on-error`): it warns of an upcoming toolchain break without gating a merge.
-- **supply-chain**: `cargo deny check` — advisory CVEs + licenses + banned crates + registry sources
-- **coverage**: `cargo llvm-cov --fail-under-lines 80` — **workspace-aggregate line** coverage. Not per-file, not regions; see `docs/testing.md`. The `cargo-llvm-cov` binary is compiled once and cached (pinned version); `cargo-deny` is deliberately left on the latest release so it keeps detecting new advisory classes.
-- **version-gate**: reads the top version from `CHANGELOG.md` and enforces that it is valid SemVer **and** strictly greater than the latest `v*` git tag. It only enforces for a release context — a PR whose base is `main`, or a push to `main` — and is a no-op pass on every other event. `build` lists it in `needs`, so an invalid release version fails **before** the expensive image build. (It must always run rather than be job-level skipped: a skipped `needs` job would skip `build` too.)
-- **build** (matrix, one per architecture on its **native** runner — amd64 on `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`, no QEMU): builds the image **exactly once** into a local tarball (`outputs: type=docker,dest=image.tar`) and uploads it as the `image-<arch>` artifact. Native runners replace QEMU emulation, which had turned the arm64 build into the pipeline's dominant cost.
-- **scan** (matrix): downloads the artifact and runs Trivy against it — a full SARIF pass (all CRITICAL/HIGH/MEDIUM → Security tab) and a blocking pass (fixable CRITICAL/HIGH → fails the job). Never rebuilds the image.
-- **integration** (matrix, native runner): downloads the artifact, `docker load` + `docker compose --no-build`, and runs the system integration test against the loaded image.
-- **push** (matrix, `if: push`): `needs: [scan, integration]`; `skopeo` copies the *scanned+tested* tarball straight to the registry by digest and records the digest. Skipped on PRs, so credentials are never reachable there.
-- **publish** (`if: push`): `needs: [push]`; downloads the per-arch digests, assembles the multi-arch DockerHub manifest with `docker buildx imagetools create`, then **mirrors that finished manifest to `ghcr.io` with `skopeo copy --all`** (manifest list + all arch blobs → identical digests, so the ghcr image is byte-identical to the scanned/tested one — no second build), deletes the DockerHub staging tags, and creates the release git tag on main. It publishes **no new bytes** — only tags the digests `push` uploaded, on both registries.
-
-**Publish lives in `ci.yml` on purpose.** As its own `docker.yml` workflow it
-triggered on `push` in parallel with CI and depended on nothing, so a commit
-with failing tests, clippy or cargo-deny still shipped `:latest` — every
-documented gate was bypassable on the only path that reaches users. A
-`workflow_run` trigger would fix the ordering but introduces its own trap:
-`github.ref` there resolves to the default branch, so each
-`github.ref == 'refs/heads/dev'` check would silently read false. A job with
-`needs` has neither problem.
-
-`publish` also declares `permissions: contents: write`. It inherits
-`contents: read` otherwise, and the release step's `git push origin vX.Y.Z`
-returns 403 — which is why the repo went so long with no tags at all.
-
-### `security.yml` — Semgrep SAST
-
-**Semgrep** runs on all pushes and all PRs.
-
-1. **Full scan → SARIF**: All findings uploaded to GitHub Security tab (exit 0, always runs)
-2. **Blocking scan** (`--error`): Only ERROR-severity findings → exit code 1 → **PR blocked**
-
-Rulesets: `p/rust` (Rust-specific security patterns) and `p/secrets` (hardcoded secrets, API keys, tokens).
-
-> **Trivy used to live here** and built its *own* image to scan — so the scanned
-> image was never the one that shipped. It now runs inside `ci.yml`'s `scan`
-> job against the exact tarball that gets published (see above), on every PR and
-> every push. `security.yml` is Semgrep-only as a result.
-
-### `release.yml` — GitHub Release + next-cycle prep
-
-Triggered **only by the release tag push** (`v*.*.*`) that `ci.yml`'s `publish`
-job creates — so it runs *after* the image is out, and is kept separate from the
-image pipeline on purpose.
-
-- **github-release**: re-runs the full test suite with coverage on the tagged
-  commit, then creates the GitHub Release — notes are the tagged version's
-  `CHANGELOG.md` section, enriched with container pull commands + the DockerHub
-  manifest digest and a test summary; the full `test-report.md` is attached as
-  a release asset. `0.x` and any `-prerelease` version is flagged as a
-  pre-release. Idempotent (skips creation if the release already exists;
-  re-uploads the asset with `--clobber`).
-- **prepare-dev**: opens an **auto-merging PR into `dev`** that reopens a fresh
-  `## [Unreleased]` block, repoints the compare links at the new tag, and bumps
-  `Cargo.toml`'s workspace version to the released version. It never pushes to
-  `main` or `dev` directly — only to a `release/*` branch (which `auto-pr.yml`
-  ignores) that then flows through normal CI.
-
----
-
-## Security Tools Overview
+## Source scanning
 
 | Tool | Layer | Finds | Blocks |
-|---|---|---|:---:|
-| `cargo deny` | Dependencies | Known CVEs (RustSec), bad licenses, unknown registries | ✅ every PR + push |
-| Semgrep `p/rust` | Source code | Unsafe patterns, logic errors, taint flows | ✅ ERROR-level |
-| Semgrep `p/secrets` | Source code | Hardcoded API keys, tokens, passwords | ✅ ERROR-level |
-| Trivy | Docker image | OS + library CVEs (fixable only) | ✅ every PR + push (in the `scan` job) |
+|---|---|---|---|
+| `cargo deny` | dependencies | RustSec advisories, licences, banned crates, unknown registries | every PR and push |
+| Semgrep `p/rust` · `p/secrets` | source | unsafe patterns, taint flows, hardcoded secrets | ERROR severity |
+| ShellCheck | `scripts/*.sh` | quoting and expansion bugs | severity ≥ warning |
+| actionlint | workflows | unknown inputs, bad `needs`, shell errors in `run:` | any finding |
+| Trivy | image | OS and library CVEs | fixable CRITICAL/HIGH |
 
-`deny.toml` must stay parseable, not merely present. `severity-threshold`,
-`unlicensed` and `copyleft` were removed in cargo-deny ≥ 0.14, and CI installs
-the latest version — so the config failed to *load* and the supply-chain gate
-was not running at all, while reporting nothing. Once repaired it immediately
-surfaced four real advisories. If you edit `deny.toml`, run `cargo deny check`
-locally: a config error and a clean scan look very different, and only one of
-them is good news.
+Semgrep runs twice: a full pass to SARIF that never blocks, and a blocking pass
+on ERROR severity. GitHub code scanning ignores SARIF's `suppressions` property,
+so a `nosemgrep`-suppressed finding would stay open in the Security tab forever —
+the upload therefore strips suppressed results, and the in-code
+`// nosemgrep: <rule>` comment with its reasoning is the single source of truth
+for an accepted finding.
 
-### deny.toml Customization
+**`deny.toml` must stay parseable, not merely present.** `severity-threshold`,
+`unlicensed` and `copyleft` were removed in cargo-deny ≥ 0.14 and CI installs the
+latest release — so the config failed to *load*, and the supply-chain gate was
+not running at all while reporting nothing. Repairing it immediately surfaced
+four real advisories. If you edit it, run `cargo audit-all` locally: a config
+error and a clean scan look very different, and only one of them is good news.
 
-To allow an advisory (accepted risk or false positive), add it to `deny.toml`:
+### Suppressed image findings
 
-```toml
-[advisories]
-ignore = ["RUSTSEC-2024-0001"]   # add reason in a comment
+`scan` blocks on **fixable** CRITICAL/HIGH only. A gate that blocks on findings
+nobody can act on is a gate that gets switched off — and the distroless base
+carries 17 unfixable LOW/MEDIUM CVEs that stay visible as open alerts on purpose
+([R4](risks.md)).
+
+`.trivyignore.yaml` is read by the blocking scan only, so a suppressed finding
+still reaches the Security tab. It is empty, and its rules are written down for
+when it is not: every entry carries `expired_at`, and every entry argues why the
+vulnerable code cannot be reached in huginn's deployment.
+
+## Architectures
+
+`linux/amd64` and `linux/arm64`, each built and integration-tested on its
+**native** runner (`ubuntu-latest` and `ubuntu-24.04-arm`). No QEMU — emulation
+had made the arm64 build the pipeline's dominant cost.
+
+`publish` assembles the multi-arch manifest from the two digests and mirrors it
+to ghcr with `skopeo copy --all`, which copies the manifest list and every blob,
+so both registries carry byte-identical images from one build.
+
+## Releasing
+
+The full runbook, both paths, is [`releasing.md`](releasing.md). The shape:
+
+1. The version comes from `CHANGELOG.md`. The **version gate** enforces valid
+   SemVer, strictly greater than the last `v*` tag, on any PR whose base is
+   `main`.
+2. Merging into `main` publishes the image and creates the tag `vX.Y.Z` — no new
+   bytes, only tags on already-scanned digests.
+3. The tag push starts `release.yml`: GitHub Release, SBOM, test report, and an
+   auto-merging housekeeping PR into `dev`.
+
+**Never hand-push a `v*` tag.** The pipeline creates them after every gate.
+
+### Why the tag is pushed with `RELEASE_PAT`
+
+GitHub does not start a workflow from an event that `GITHUB_TOKEN` created — the
+recursion guard. A tag pushed with the built-in token fires nothing, so
+`release.yml` never runs: the image, the mirror and the tag ship, and the
+Release, the SBOM, the test report and the housekeeping PR do not. muninn.io hit
+exactly this at its v0.1.0. The tag push uses `RELEASE_PAT` where available and
+falls back to `GITHUB_TOKEN`, which still creates the tag — you then finish the
+release by hand.
+
+### Driving `release.yml` by hand
+
+`release.yml` has a `workflow_dispatch` entry point taking an existing tag. It
+does the same work the tag push would have done and creates nothing twice:
+`gh release view` makes creation idempotent, uploads use `--clobber`, and every
+step reads the tag rather than the branch the button was pressed on.
+
+## Repository settings — maintainer, by hand
+
+Deliberately not automated. Changing repository settings, secrets or rulesets is
+outside what an agent does here (`AGENTS.md` §3), so this is the checklist.
+
+**Branch protection** on `main` and `dev`:
+
+- require a pull request before merging;
+- require these status checks — the names are the jobs' display names:
+  - `Format & Lint`
+  - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
+  - `Supply-Chain Security`
+  - `Code Coverage (≥ 80%)`
+  - `Version gate`
+  - `Semgrep SAST`, `ShellCheck`, `Actionlint`
+- require branches to be up to date before merging;
+- disallow force pushes and deletion.
+
+The image jobs (`build`, `scan`, `integration`) are deliberately **not** required
+checks: they take tens of minutes, and requiring them would make every
+documentation typo wait for two container builds. They still run on every PR and
+still gate `publish`, so nothing unscanned ships either way.
+
+**Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
+`dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
+with `gh pr merge --auto`, which does nothing without it.
+
+**Enable both "Allow merge commits" and "Allow squash merging"** (same page).
+The branch model uses one of each: `feature/* → dev` squashes, `dev → main`
+keeps a merge commit, and `release-dispatch.yml` asks for `--merge` explicitly.
+With merge commits disabled the release PR is opened but auto-merge warns and
+you merge it by hand.
+
+**Enable "Allow GitHub Actions to create and approve pull requests"** (Settings →
+Actions → General → Workflow permissions). Without it the API refuses with *"GitHub
+Actions is not permitted to create or approve pull requests"*, and `auto-pr.yml`
+cannot open its draft PR, nor can the post-release housekeeping PR be opened.
+Both warn instead of failing — the branch is pushed either way — but you then
+open the PR yourself. The setting is off by default on new repositories.
+
+**After the first publish**, set the `huginn` package in GitHub → Packages to
+**Public**; it defaults to private, and `docker pull ghcr.io/…` would need auth.
+
+**Repository variables**
+
+| Name | Value | Needed for |
+|---|---|---|
+| `DOCKERHUB_USERNAME` | the Docker Hub account owning `<user>/huginn` | `push`, `publish`, the ghcr mirror |
+
+**Secrets**
+
+| Name | Needed for | Consequence if absent |
+|---|---|---|
+| `DOCKERHUB_TOKEN` | pushing the image | `push` fails with a message naming it; nothing is published |
+| `RELEASE_PAT` | the release tag push, the release-dispatch PR, the housekeeping PR | **`release.yml` never runs** — see above. The PRs are still opened, but CI does not trigger on them and auto-merge hangs |
+
+`GITHUB_TOKEN` is built in and needs no setup. It carries the ghcr mirror
+(`packages: write`), the git tag when `RELEASE_PAT` is absent, and the SARIF
+uploads (`security-events: write`).
+
+Use a Docker Hub **access token**, not the account password, scoped to
+Read/Write/**Delete** on this repository. Delete is required: `publish` removes
+the two `staging-*` tags once the multi-arch manifest points at their digests.
+
+## Dependencies
+
+Dependabot opens one grouped PR per ecosystem — cargo, github-actions, docker —
+weekly, against `dev`, with a 3-day cooldown. `dependabot-auto-merge.yml`
+auto-merges patch and minor bumps; a group containing a major waits for review,
+so you review exactly when a breaking bump is present. Security updates are not
+grouped and not delayed by the cooldown.
+
+Dependabot does **not** update `container:` or `docker run` references
+(dependabot-core#5819). The Semgrep and actionlint images in `security.yml` are
+pinned by digest and need a manual bump; both say so at the pin.
+
+## Local equivalents
+
+```bash
+cargo fmt-check && cargo lint && cargo t-all && cargo audit-all && cargo cov-ci
+shellcheck --severity=warning scripts/*.sh
+actionlint
+docker compose -f docker-compose.integration.yml up -d --build && bash scripts/integration-test.sh
 ```
 
-To allow an additional license:
+Run them before pushing. The image jobs take tens of minutes, and a red pipeline
+is a slower way to learn that `cargo fmt` was not run.
 
-```toml
-[licenses]
-allow = [
-    # ... existing entries ...
-    "MPL-2.0",    # add new license here
-]
-```
+## Related
 
-To ban a specific crate:
-
-```toml
-[bans]
-deny = [
-    { name = "openssl", reason = "use rustls instead" },
-]
-```
-
----
-
-## Adding a New Release
-
-> A standalone step-by-step lives in **[releasing.md](releasing.md)**. The short
-> version:
-
-The **only manual step is choosing the version number.** Everything downstream —
-tag, image, GitHub Release, and reopening the changelog — is automated. You never
-edit `main` or a tag by hand; no bot ever pushes to `main` or `dev`.
-
-1. **On `dev`**, rename the `## [Unreleased]` heading in `CHANGELOG.md` to
-   `## [X.Y.Z] - YYYY-MM-DD` (the accumulated entries stay under it). Pick `X.Y.Z`
-   per SemVer.
-2. **Open the release PR `dev → main`.** The **version gate** validates `X.Y.Z`
-   *before* the merge is allowed: it must be valid SemVer and strictly greater
-   than the latest `v*` tag. A typo or a non-increasing version fails the PR here.
-3. **Merge into `main`.** `ci.yml` then — only after fmt, clippy, tests,
-   cargo-deny, coverage, the Trivy scan and the integration test have all passed —
-   publishes the multi-arch image to **DockerHub** (`:latest` + `:X.Y.Z`),
-   **mirrors it to `ghcr.io`**, and creates the git tag `vX.Y.Z`. No new bytes are
-   built; it only tags the already-scanned digests.
-4. **`release.yml` fires on that tag push** and: creates the **GitHub Release**
-   (notes from the `CHANGELOG.md` section, `0.x`/`-rc` flagged as pre-release),
-   and opens an **auto-merging PR into `dev`** that reopens a fresh
-   `## [Unreleased]`, fixes the compare links, and bumps `Cargo.toml` to `X.Y.Z`.
-
-> `Cargo.toml` and `CHANGELOG.md` used to drift silently. Now the version gate
-> validates the changelog version, and the `release.yml` housekeeping PR bumps
-> `Cargo.toml` to match — so they stay in step without manual effort.
-
-> **One-time setup:** after the first publish, set the `huginn` package in
-> GitHub → Packages to **Public** (it defaults to private), otherwise
-> `docker pull ghcr.io/…` needs auth.
+- [`workflows.md`](workflows.md) — each workflow, job by job
+- [`releasing.md`](releasing.md) — the release runbook
+- [`hardening.md`](hardening.md) — what the pipeline is protecting
+- [`testing.md`](testing.md) — what the test jobs actually run

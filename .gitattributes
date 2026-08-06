@@ -1,7 +1,12 @@
-# Enforce LF line endings in the repo
+# Enforce LF line endings in the repo.
+#
+# This matters more here than in a pure-Linux project: development happens on
+# Windows while everything the repo produces runs in a Linux container. A CRLF
+# that slips into a shell script breaks at runtime, not at commit time.
 * text=auto eol=lf
-*.rs text eol=lf
-*.toml text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
-*.md text eol=lf
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf

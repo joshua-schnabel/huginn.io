@@ -1,218 +1,282 @@
 # AGENTS.md
 
-Canonical context for AI coding agents working on **huginn.io**. This is the
-single source of truth for how to work here; every tool (Claude Code, Cursor,
-Aider, Gemini CLI, …) should read it first. Human-facing depth lives in the docs
-linked at the bottom — this file summarises and points, it does not duplicate.
+Canonical context for AI coding agents working on **huginn.io**. Single source of
+truth for how to work here; every tool (Claude Code, Cursor, Aider, Gemini CLI, …)
+should read it first. Human-facing depth lives in the linked docs — this file
+summarises and points, it does not duplicate.
 
 ---
 
 ## 1. What this project is
 
-huginn.io is a lightweight **uptime & latency monitor** written in Rust. It runs
-configurable probes (TCP · HTTP/HTTPS · SMTP · IMAP · UDP · DNS · TLS cert
-expiry) on a schedule, measures up/down + response time, and writes results to
-**InfluxDB** via batched line-protocol HTTP. An optional Axum **debug UI** streams live results over SSE.
-It ships as a **distroless, nonroot** multi-arch Docker image. It's a Cargo
-workspace of five crates (see §4).
+huginn.io is a lightweight **uptime and latency monitor** written in Rust. It
+runs configurable probes (TCP · HTTP/HTTPS · SMTP · IMAP · UDP · DNS · TLS
+certificate expiry) on a schedule, measures up/down and response time, and
+writes results to **InfluxDB** as batched line protocol. An optional Axum debug
+UI streams live results over SSE, and a separately gated Prometheus endpoint
+exposes the same data as gauges. It ships as a **distroless, nonroot** multi-arch
+container image, from a Cargo workspace of five crates.
+
+**Status: not released yet.** There is no `v*` tag; `CHANGELOG.md` carries a
+large `## [Unreleased]`. [`docs/roadmap.md`](docs/roadmap.md) carries what is
+still open and is the one place it is tracked — do not restate it here, it goes
+stale. Start with [`docs/architecture.md`](docs/architecture.md).
+
+Sibling project: [muninn.io](https://github.com/joshua-schnabel/muninn.io), same
+maintainer. It was built on huginn's conventions, and the two are kept aligned
+deliberately — same README shape, same doc map, same pipeline, same rules here.
+A change to any of those in one project should have an obvious counterpart in
+the other.
 
 ---
 
 ## 2. Working with the maintainer
 
 - **Language:** reply to the maintainer (**Joshua**) in **German**. Keep
-  everything you commit — code, comments, commit messages, docs, and this file —
-  in **English**.
-- **Autonomy (solo project, Joshua is sole maintainer):** act pragmatically and
-  autonomously *within the guardrails in §3*. Execute the task, keep Joshua in
-  the loop with concise progress, and ask only at genuine forks. Land work as a
-  **pull request**, never as a direct change to a protected branch.
-- **Verify before changing:** confirm versions, API shapes, and facts against the
-  actual source / official docs before editing. Guessing has caused real
-  breakage here — when unsure, check, don't assume.
+  everything committed — code, comments, commit messages, docs, this file — in
+  **English**.
+- **Autonomy (solo project, Joshua is sole maintainer):** act pragmatically
+  within the guardrails in §3. Execute the task, report concisely, ask only at
+  genuine forks. Land work as a **pull request**, never directly on a protected
+  branch.
+- **Verify before changing.** Confirm versions, API shapes and facts against the
+  actual source or official docs before editing. Guessing has caused real
+  breakage here — §6 is the list. When unsure, check.
 - **Security is a first-class priority.** huginn handles credentials and ships a
-  container, so weigh **every** change through a security lens (secrets never in
-  ENV or logs, least privilege, no new attack surface) and explicitly call out
-  anything with a security dimension. When in doubt, choose the safer option and
-  flag it. See §9 — it is not optional polish.
-- **Don't duplicate:** prefer reusing existing helpers/patterns; when documenting,
-  link to the canonical doc rather than copying it.
+  container, so weigh every change through a security lens (secrets never in ENV
+  or logs, least privilege, no new attack surface) and call out anything with a
+  security dimension. §9 is not optional polish.
+- **Don't duplicate.** Reuse existing helpers; when documenting, link the
+  canonical page rather than copying it.
 
 ---
 
-## 3. Hard rules — never do these without explicit approval
+## 3. Hard rules — never without explicit approval
 
-These are stops, not preferences. Ask first, every time:
+Stops, not preferences. Ask first, every time:
 
-1. **Never push to `main` or `dev`.** Both are protected; all changes go through a
-   PR. Work on a `feature|fix|chore|docs|test/<name>` branch.
-2. **Never merge or approve PRs.** Opening PRs is fine; merging/approving is
-   Joshua's decision.
-3. **Never change secrets or repository/ruleset settings.** No creating or editing
-   Actions secrets, branch protection, rulesets, or repo config.
-4. **Never add a new dependency, and never rewrite git history / force-push**
-   without asking. New crates change the supply-chain surface; history rewrites
-   are destructive.
+1. **Never push to `main` or `dev`.** Both are protected; all changes go through
+   a PR from a `feature|fix|chore|docs|test/<name>` branch.
+2. **Never merge or approve PRs.** Opening them is fine.
+3. **Never change repository settings, secrets or rulesets.** No Actions secrets,
+   branch protection or repo configuration.
+4. **Never add a dependency, and never rewrite history or force-push**, without
+   asking. New crates change the supply-chain surface; history rewrites are
+   destructive.
+5. **Never hand-push a `v*` tag.** The pipeline creates them after every gate
+   passed; a hand-pushed tag would cut a release around them.
 
-Everything else (editing code/docs, opening PRs, running the test/lint gates) is
-fair game — do it.
+Everything else — editing code and docs, opening PRs, running the gates — is fair
+game.
 
 ---
 
 ## 4. Architecture & where things live
 
-Cargo workspace; each crate has one bounded responsibility:
+Cargo workspace; one bounded responsibility per crate:
 
 | Crate | Role |
 |---|---|
-| `huginn/` | Binary entry point — CLI, config load, logging init, the probe **scheduler**, graceful shutdown, orchestration (`main.rs`, `scheduler.rs`) |
-| `crates/huginn-core/` | Shared types (`ProbeResult`), config structs, `HuginError`, the `EventHub` (`config.rs`, `error.rs`, `event.rs`, `types.rs`) |
-| `crates/huginn-probes/` | `Probe` trait + `ProbeRegistry` + per-protocol executors (`tcp/http/smtp/imap/udp/dns/tls.rs`, `registry.rs`) |
-| `crates/huginn-influx/` | InfluxDB line-protocol writer — batching, bounded retry queue, HTTP POST (`writer.rs`, `queue.rs`) |
-| `crates/huginn-web/` | Optional Axum debug server — `/health`, `/metrics/latest`, `/events` SSE — plus the separately-gated Prometheus `/metrics` listener (`server.rs`, `sse.rs`, `state.rs`, `prometheus.rs`) |
+| `huginn/` | Binary: CLI, config load, logging init, the **scheduler**, shutdown, orchestration (`main.rs`, `scheduler.rs`) |
+| `crates/huginn-core/` | Shared types (`ProbeResult`), config model, `HuginError`, the `EventHub` |
+| `crates/huginn-probes/` | The `Probe` trait, `ProbeRegistry`, one executor per protocol |
+| `crates/huginn-influx/` | Line-protocol writer: batching, bounded retry queue, HTTP POST |
+| `crates/huginn-web/` | Axum debug server (`/`, `/health`, `/metrics/latest`, `/events`) plus the separately gated Prometheus listener |
 
-**Data flow — `EventHub` is the sole pub/sub bus** (a tokio `broadcast` channel):
+Dependencies point one way: `huginn` → everything; the other three →
+`huginn-core`. No cycles, and `huginn-core` knows nothing about HTTP, InfluxDB
+or any probe protocol.
+
+**Data flow — the `EventHub` is the sole pub/sub bus** (a tokio `broadcast`
+channel):
 
 ```
 main.rs → load AppConfig (YAML + ENV) → create EventHub → spawn tasks:
-   Scheduler ──publishes──► EventHub ──subscribes──► Console output
-                                              └─────► InfluxDB writer
-                                              └─────► Web UI (if enabled)
+   Scheduler ──publishes──► EventHub ──subscribes──► console output
+                                              └─────► InfluxDB batcher → queue → writer
+                                              └─────► WebState → debug UI + Prometheus
 ```
 
 The **scheduler is the only publisher**; everything else subscribes. Shutdown is
-a separate `broadcast::channel<()>` driven by `tokio::signal::ctrl_c()`.
+a separate `broadcast::channel<()>` fired by SIGINT and, on Unix, SIGTERM.
+Full picture: [`docs/architecture.md`](docs/architecture.md).
 
-Other locations: `config/` (example + integration YAML), `scripts/integration-test.sh`,
-`Dockerfile` + `docker-compose*.yml`, `deny.toml`, `.github/workflows/`.
+Other locations: `config/` (example + integration YAML), `scripts/` (the
+integration suite, the release version stamp, the release test report),
+`docs/adr/`, `deny.toml`, `.cargo/config.toml`, `.trivyignore.yaml`.
 
 ---
 
 ## 5. Commands (the gates)
 
-Run these before committing; CI enforces the same:
-
 ```bash
-cargo fmt --all -- --check                                   # format (CI check)
-cargo clippy --all-targets --all-features -- -D warnings     # lint: warnings = errors
-cargo test --all --locked                                    # all tests
-cargo deny check                                             # supply-chain: CVEs, licenses, banned crates
-cargo llvm-cov --all --lcov --output-path lcov.info --fail-under-lines 80   # ≥80% workspace-line coverage
-cargo build --release --locked                               # production binary
+cargo fmt --all -- --check                                   # format
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --locked
+cargo deny check                                             # advisories, licences, bans, sources
+cargo llvm-cov --all --lcov --output-path lcov.info --fail-under-lines 80
+cargo build --release --locked
 ```
 
-Run locally: `cargo run -- --config config/config.yaml [--output json]`. The web
-UI has **no CLI flag** — enable via `HUGINN_UI_ENABLED=true` or `ui.enabled: true`.
-It binds `127.0.0.1` by default (`ui.bind` / `HUGINN_UI_BIND`); **in a container
-it needs `0.0.0.0`**, or the published port reaches nothing.
-System integration test (Docker): `docker compose -f docker-compose.integration.yml up -d --build`
-then `bash scripts/integration-test.sh`. Copy `config/config.example.yaml` →
-`config/config.yaml` first.
+Aliases for all of these are in `.cargo/config.toml` (`cargo fmt-check`,
+`cargo lint`, `cargo t-all`, `cargo audit-all`, `cargo cov-ci`).
+
+Run locally: `cargo dev` (example config) or `cargo dev-json`. The web UI has
+**no CLI flag** — `HUGINN_UI_ENABLED=true cargo dev`, and see §6.
+
+System integration test:
+`docker compose -f docker-compose.integration.yml up -d --build`, then
+`bash scripts/integration-test.sh`.
+
+CI runs all of the above on every PR, plus the image build, Trivy, Semgrep,
+shellcheck, actionlint and the integration suite — see
+[`docs/ci-cd.md`](docs/ci-cd.md). Run them locally anyway: the image jobs take
+tens of minutes, and a red pipeline is a slower way to learn that `cargo fmt`
+was not run.
 
 ---
 
-## 6. Conventions
+## 6. Facts that shape the code
+
+Each cost real investigation, and each contradicts a plausible assumption. Do not
+undo them.
+
+**The Docker build is the real MSRV gate.** `rust-version = "1.88"` documents the
+floor, but under edition 2021 and resolver 2 it does *not* steer resolution — CI
+runs floating stable and stays green while the image build fails. Not
+hypothetical: `hickory-resolver` 0.26, required for RUSTSEC-2026-0119, needs 1.88
+and broke the image against the previous 1.85 pin while every local check passed.
+Keep `Cargo.toml`'s `rust-version` and the Dockerfile builder in step.
+
+**Catching only SIGINT silently disabled the shutdown drain.** `docker stop` and
+systemd send **SIGTERM**. Without a handler for it the process died before the
+InfluxDB writer could drain, so every buffered-but-unwritten result was lost on
+each restart and deploy — and nothing said so.
+
+**A broadcast receiver must be created before its task is spawned.** A tokio
+`broadcast::Receiver` only sees messages sent after it was created. Subscribing
+inside the spawned task loses the first probe tick whenever the executor does not
+poll that task promptly — an intermittent, environment-dependent gap. Both the
+console and the batcher take their receiver on the main task and move it in.
+[ADR-0001](docs/adr/0001-eventhub-single-publisher.md)
+
+**An empty secret file must be fatal, not empty.** An empty InfluxDB token file
+used to be accepted as an empty token: the process started, InfluxDB answered
+401, the writer classified that 4xx as *permanent* and discarded every batch. A
+monitor that looks healthy while losing all of its data is the worst outcome
+available. Every secret file is now fail-closed — missing, unreadable or empty
+stops startup. [ADR-0002](docs/adr/0002-secrets-from-files-only.md)
+
+**GitHub does not start a workflow from an event `GITHUB_TOKEN` created.** The
+recursion guard. `ci.yml`'s `publish` pushes the release tag, and with the
+built-in token `release.yml` (`on: push: tags`) never fires — the image ships and
+the Release does not. The tag push uses `RELEASE_PAT` where available, and
+`release.yml` has a `workflow_dispatch` entry point for when it is not.
+muninn.io hit this at its v0.1.0.
+
+**One version, in one place.** Internal crates are path dependencies with **no**
+`version =` requirement, and the workspace is `publish = false`. A version
+requirement on a path dependency is a second copy of the workspace version:
+stamping a release made the crates x.y.z while the requirements still read
+^0.1.0, and resolution failed before a test could run. `scripts/set-workspace-version.sh`
+writes `Cargo.toml` and `Cargo.lock` together, because `--locked` is everywhere.
+
+**`gawk` mis-compiles a dynamic regex containing `\[` and `\]`.** The version's
+dots open a character class. Every changelog-section extraction in the workflows
+therefore uses `substr()` comparison rather than a regex. Do not "simplify" it
+back.
+
+---
+
+## 7. Conventions
 
 ### Coding style
-- **Match the surrounding code** — its naming, module layout, comment density and
-  idioms. Consistency beats personal preference.
-- `snake_case` for items/modules, `CamelCase` for types; descriptive names
-  (`response_ms`, not `r`). Test names describe behaviour in plain English
-  (`fails_on_timeout`).
-- **No `unwrap()` / `expect()` / `panic!` in non-test code** — return a `Result`
-  and propagate with `?`. Panics are for tests and genuinely-unreachable
-  invariants only (with a comment saying why).
-- Keep functions small and single-purpose; keep each crate's public surface tight
-  (`pub` only what other crates need).
-- Doc-comment (`///`) public items; write comments about the *why*, not the *what*.
-- `cargo fmt` defaults apply (there is no `rustfmt.toml`), and
-  `clippy -D warnings` must be clean — **fix** clippy rather than `#[allow]`-ing it
-  away; if an allow is truly needed, add a one-line reason.
-- Prefer the standard library or already-present crates; **adding a dependency
-  needs approval** (§3). Avoid `unsafe`.
+
+- **Match the surrounding code** — naming, module layout, comment density,
+  idioms. Consistency beats preference.
+- `snake_case` items and modules, `CamelCase` types; descriptive names
+  (`response_ms`, not `r`). Test names read as English sentences
+  (`fails_on_timeout`), not `test_*` or `should_*`.
+- **No `unwrap()` / `expect()` / `panic!` in non-test code.** Return a `Result`
+  and propagate with `?`. Panics are for tests and genuinely unreachable
+  invariants, with a comment saying why.
+- Small, single-purpose functions; tight crate surfaces (`pub` only what other
+  crates need).
+- Doc-comment (`///`) public items. Comments explain the **why**, not the what.
+- `cargo fmt` defaults (no `rustfmt.toml`); **fix** clippy rather than
+  `#[allow]`-ing it, and if an allow is genuinely needed, give a one-line reason.
+- Avoid `unsafe`. Adding a dependency needs approval (§3).
 
 ### Project idioms
-- **Errors:** custom `HuginError` (`thiserror`) in `huginn-core::error`, with
-  `type Result<T> = std::result::Result<T, HuginError>`; `anyhow` only at the
-  binary boundary. Probe failures return `ProbeResult::failure()` and are logged
-  with `error!()` — **they never panic**.
-- **Async:** single tokio runtime (`#[tokio::main]`); each long-running component
-  is a `tokio::spawn`-ed task; `tokio::select!` multiplexes the shutdown signal
-  with timers/channels; async tests use `#[tokio::test]`.
-- **Logging:** `tracing` + `tracing-subscriber` (`EnvFilter`, `RUST_LOG`); pretty
-  by default, JSON via `--output json`; structured fields
-  (`info!(probe = %name, response_ms, "probe UP")`).
+
+- **Errors:** `HuginError` (`thiserror`) in `huginn-core::error`, with
+  `type Result<T>`; `anyhow` only at the binary boundary. **Probe failures never
+  panic** — they become `ProbeResult::failure()` and are published like any other
+  result.
 - **Config & secrets:** YAML + `HUGINN_*` ENV; precedence CLI > ENV > YAML >
-  default. **The InfluxDB token must be read from a file — never from ENV**
-  (`influx.token_file`; Docker secret at `/run/secrets/influx_token`, tmpfs, mode
-  `0600`). Missing token file = immediate fatal error.
-- **InfluxDB writes:** raw line protocol, no SDK. `run_batcher` groups results
-  (flush on `batch_size` **or** `batch_timeout_ms`) and never awaits I/O;
-  `run_writer` drains a bounded `RetryQueue`. Retryable (transport/5xx/429/408)
-  → exponential backoff; 4xx → drop the batch; memory-bounded by
-  `max_buffered_bytes` (drop-oldest).
-- **MSRV = Rust 1.88**, edition 2021 (`[workspace.package]`). CI runs floating
-  stable, so **the Docker build is the real MSRV gate** — a dep that raises the
-  MSRV passes CI but breaks the image. Keep the Dockerfile builder in step.
-- **Testing:** unit tests in inline `#[cfg(test)]` next to the code; integration
-  tests in `huginn/tests/*.rs` (anything needing `tokio::spawn`, a TCP port, or
-  `wiremock` — never hit real external services). **Don't sleep — poll** to avoid
-  flakes (see `docs/testing.md`). ≥80% aggregate workspace-line coverage.
-- **No OpenSSL:** TLS is **rustls** only.
+  default, *in both directions* — a CLI flag must be able to override the file
+  back to the default, which an `||` cannot express. Secrets are file paths only,
+  fail-closed. [ADR-0002](docs/adr/0002-secrets-from-files-only.md)
+- **Async:** single tokio runtime (`#[tokio::main]`); each long-running component
+  is a `tokio::spawn`ed task; `tokio::select!` multiplexes shutdown with timers;
+  `#[tokio::test]` for async tests.
+- **Logging:** `tracing` + `tracing-subscriber` (`EnvFilter`, `RUST_LOG`); pretty
+  by default, JSON via `--output json`. Structured fields
+  (`info!(probe = %name, response_ms, "probe UP")`), not interpolated prose.
+- **InfluxDB writes:** raw line protocol, no SDK. `run_batcher` groups and never
+  awaits I/O; `run_writer` drains a bounded `RetryQueue`. Retryable
+  (transport/5xx/429/408) → exponential backoff; other 4xx → drop the batch.
+  [ADR-0004](docs/adr/0004-bounded-retry-queue.md)
+- **TLS is rustls only.** `openssl`, `openssl-sys`, `native-tls` and
+  `tokio-native-tls` are banned in `deny.toml`.
+  [ADR-0003](docs/adr/0003-rustls-only.md)
+- **MSRV 1.88**, edition 2021, resolver 2 — and see §6 on which gate actually
+  enforces it.
+- **Testing:** unit tests inline in `#[cfg(test)]`; cross-crate and whole-binary
+  behaviour in `huginn/tests/`. Never hit a real external service — use
+  `wiremock`. **Don't sleep — poll.** Tests touching the environment must be
+  serialised. ≥ 80 % workspace line coverage.
+  [`docs/testing.md`](docs/testing.md)
 
 ---
 
-## 7. Git & PR workflow
+## 8. Git & PR workflow
 
 - Branch off `dev` with a valid prefix: `feature/` · `fix/` · `chore/` · `docs/`
-  · `test/`. Pushing such a branch makes `auto-pr.yml` open a draft PR into `dev`
-  automatically; a branch that doesn't match the prefix is auto-deleted.
-- Flow: `feature/* → dev` (**squash** merge) → `main` (**merge commit**). No
-  direct pushes to `dev`/`main` (see §3).
+  · `test/`. Pushing such a branch makes `auto-pr.yml` open a draft PR into
+  `dev`; a branch that does not match the prefix is auto-deleted.
+- Flow: `feature/* → dev` (**squash**) → `main` (**merge commit**). No direct
+  pushes (§3).
 - **Conventional Commits:** `feat · fix · chore · docs · test · refactor · perf ·
-  style`. End commit bodies with the required `Co-Authored-By` trailer.
-- Full contributor guide: [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md).
-
----
-
-## 8. CI/CD & releasing
-
-Everything runs through **`ci.yml`** on every PR + push. The image is **built
-once per arch** into a tarball; `scan` (Trivy), `integration` (compose), `push`
-(skopeo by digest) and `publish` all consume *that same artifact*, so the bytes
-scanned, tested and published are byte-identical. `publish` assembles the
-multi-arch DockerHub manifest, **mirrors it to `ghcr.io`**, and tags `vX.Y.Z`.
-`security.yml` is **Semgrep-only**; `cargo-deny` gates the supply chain. Every
-workflow is described one-by-one in [`docs/workflows.md`](docs/workflows.md).
-
-**Releasing** (details in [`docs/releasing.md`](docs/releasing.md) and
-[`docs/ci-cd.md`](docs/ci-cd.md)):
-- **One-click (recommended):** Actions → **Release (dispatch)** → pick
-  `patch`/`minor`/`major`. Owner-only. It computes the version, stamps
-  `CHANGELOG.md` + `Cargo.toml`, and opens an auto-merging PR into `main`.
-- **Manual:** rename `## [Unreleased]` → `## [X.Y.Z] - <date>` on `dev`, open a
-  PR `dev → main`; the **version gate** blocks a merge unless the version is
-  valid SemVer and greater than the last tag.
-- After the `main` merge: image published (DockerHub + ghcr) + tag created, then
-  `release.yml` creates the GitHub Release and opens the dev housekeeping PR.
-- **Never hand-push `v*` tags** — the pipeline creates them after every gate.
+  style`. End commit bodies with the `Co-Authored-By` trailer.
+- Commit messages explain **why**, and state what was verified. "Verified: X
+  passes" beats "should work".
+- Releasing is a runbook, not a habit — [`docs/releasing.md`](docs/releasing.md).
 
 ---
 
 ## 9. Security posture — high priority
 
-Security is a first-class concern here (see §2), not an afterthought. Any change
-that touches secrets, the container, network exposure, dependencies, or workflow
-permissions must be reasoned about explicitly and flagged in the PR.
+Any change touching secrets, the container, network exposure, dependencies or
+workflow permissions must be reasoned about explicitly and flagged in the PR.
 
-- Secrets **file-only, never in ENV**; never commit secret values or add them to
-  Docker/compose ENV, and never log them. Don't add `--privileged`, `--cap-add`.
-- Distroless + nonroot runtime; config mounted read-only; TLS is **rustls** only.
-- Least-privilege workflow `permissions:` — grant the minimum a job needs.
-- Gates: **cargo-deny** (CVEs + license allow-list in `deny.toml`), **Semgrep**
-  (`p/rust` + `p/secrets`, ERROR blocks), **Trivy** (image CVEs, fixable
-  CRITICAL/HIGH block). More: [`docs/hardening.md`](docs/hardening.md)
-  (practices) and [`docs/SECURITY.md`](docs/SECURITY.md) (reporting policy).
+- **Secrets are file paths only.** Never a YAML value, never an environment
+  variable, never logged. Missing, unreadable or empty stops startup.
+- **Distroless + nonroot**, read-only root filesystem, all capabilities dropped,
+  `no-new-privileges`. Never `--privileged` or `--cap-add`.
+- **Both listeners are off by default and bind loopback**, and the debug UI is
+  unauthenticated — `metrics.api_key_file` protects only the Prometheus
+  listener. [R2](docs/risks.md)
+- **Untrusted data from monitored hosts is escaped** before it leaves the
+  process: a remote SMTP/IMAP banner reached the console, InfluxDB and every HTTP
+  consumer with control bytes intact. `ProbeResult::failure` escapes the whole
+  Unicode `Cc` range.
+- **Least-privilege workflow `permissions:`** — grant the minimum a job needs,
+  and scope `security-events: write` to the one job that uploads SARIF.
+- **Gates:** cargo-deny (advisories, licences, the rustls-only ban), Semgrep
+  (`p/rust` + `p/secrets`, ERROR blocks), Trivy (fixable CRITICAL/HIGH block),
+  shellcheck, actionlint. A Trivy suppression needs an expiry and a reachability
+  argument — the rules are in `.trivyignore.yaml`.
 
 ---
 
@@ -220,16 +284,20 @@ permissions must be reasoned about explicitly and flagged in the PR.
 
 | Topic | Read |
 |---|---|
-| Contributor workflow, branching, commits | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
-| CI/CD pipeline, repo configuration | [`docs/ci-cd.md`](docs/ci-cd.md) |
-| Every workflow explained (humans + AI) | [`docs/workflows.md`](docs/workflows.md) |
-| Release runbook (one-click + manual) | [`docs/releasing.md`](docs/releasing.md) |
-| Testing pyramid, TDD, coverage, no-sleep rule | [`docs/testing.md`](docs/testing.md) |
-| Security practices (hardening) | [`docs/hardening.md`](docs/hardening.md) |
-| Security audit report (2026-08-02) | [`docs/security-audit.md`](docs/security-audit.md) |
-| Reporting a vulnerability (policy) | [`docs/SECURITY.md`](docs/SECURITY.md) |
+| What is still open | [`docs/roadmap.md`](docs/roadmap.md) |
+| Architecture, event bus, startup, shutdown | [`docs/architecture.md`](docs/architecture.md) |
 | Config reference (YAML + ENV) | [`docs/configuration.md`](docs/configuration.md) |
-| SemVer policy, stable surface, upgrade notes | [`docs/versioning.md`](docs/versioning.md) |
-| InfluxDB setup & data model | [`docs/influxdb.md`](docs/influxdb.md) |
-| Troubleshooting | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
+| InfluxDB setup and data model | [`docs/influxdb.md`](docs/influxdb.md) |
+| Symptom → cause → fix | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
+| Testing pyramid, coverage, no-sleep rule | [`docs/testing.md`](docs/testing.md) |
+| Container hardening | [`docs/hardening.md`](docs/hardening.md) |
+| The 2026-08-02 security audit | [`docs/security-audit.md`](docs/security-audit.md) |
+| Vulnerability reporting | [`docs/SECURITY.md`](docs/SECURITY.md) |
+| Contributor workflow | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
+| SemVer policy, stable surface | [`docs/versioning.md`](docs/versioning.md) |
+| CI/CD and repository setup | [`docs/ci-cd.md`](docs/ci-cd.md) |
+| Every workflow explained | [`docs/workflows.md`](docs/workflows.md) |
+| Release runbook | [`docs/releasing.md`](docs/releasing.md) |
+| Open risks | [`docs/risks.md`](docs/risks.md) |
+| Architecture decisions | [`docs/adr/`](docs/adr/) |
 | Supply-chain policy | [`deny.toml`](deny.toml) |

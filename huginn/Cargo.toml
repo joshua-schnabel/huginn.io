@@ -4,16 +4,22 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "huginn"
 path = "src/main.rs"
 
 [dependencies]
-huginn-core   = { path = "../crates/huginn-core",   version = "0.1.0" }
-huginn-probes = { path = "../crates/huginn-probes", version = "0.1.0" }
-huginn-influx = { path = "../crates/huginn-influx", version = "0.1.0" }
-huginn-web    = { path = "../crates/huginn-web",    version = "0.1.0" }
+# Path only, no version requirement. A version here is the crates.io publishing
+# pattern, and it is a second copy of the workspace version: a release bump made
+# the crates x.y.z while these requirements still read ^0.1.0, and resolution
+# failed outright — before a test ran, on the release PR. With `publish = false`
+# there is nothing a version requirement could serve.
+huginn-core   = { path = "../crates/huginn-core" }
+huginn-probes = { path = "../crates/huginn-probes" }
+huginn-influx = { path = "../crates/huginn-influx" }
+huginn-web    = { path = "../crates/huginn-web" }
 tokio              = { workspace = true }
 clap               = { workspace = true }
 tracing            = { workspace = true }
