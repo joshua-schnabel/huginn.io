@@ -1,77 +1,76 @@
 [alias]
 # ── Build ────────────────────────────────────────────────────────────────────
-# cargo b                   schneller Debug-Build
-# cargo br                  Release-Build (optimiert, --locked für CI)
-# cargo b-verbose           Build mit vollständiger Compiler-Ausgabe
-# cargo b-timings           Build mit Zeitprofiling (öffnet HTML-Bericht)
+# cargo b                   fast debug build
+# cargo br                  release build (optimised, --locked as CI uses it)
+# cargo b-verbose           build with the full compiler output
+# cargo b-timings           build with a timing profile (opens an HTML report)
 b            = "build"
 br           = "build --release --locked"
 b-verbose    = "build --workspace --message-format=human -v"
 b-timings    = "build --workspace --timings"
 
 # ── Run ──────────────────────────────────────────────────────────────────────
-# cargo dev                 Starten mit Beispiel-Config (Pretty-Output)
-# cargo dev-json            + JSON-Log-Ausgabe
+# cargo dev                 run against the shipped example config
+# cargo dev-json            the same, with JSON log output
 #
-# Debug-Web-UI: es gibt kein CLI-Flag dafür, und ein cargo-Alias kann keine ENV
-# setzen — daher vor `cargo dev` selbst exportieren. Sie lauscht per Default nur
-# auf 127.0.0.1:9116:
-#   HUGINN_UI_ENABLED=true cargo dev      # → http://127.0.0.1:9116
+# The debug web UI has no CLI flag, and a cargo alias cannot set an environment
+# variable — so export it yourself. It binds 127.0.0.1:9116 by default:
+#   HUGINN_UI_ENABLED=true cargo dev      # -> http://127.0.0.1:9116
 dev          = "run -- --config config/config.example.yaml"
 dev-json     = "run -- --config config/config.example.yaml --output json"
 
 # ── Test ─────────────────────────────────────────────────────────────────────
-# cargo t                   alle Tests (aktuelles Crate)
-# cargo t-all               alle Tests im gesamten Workspace
-# cargo t-unit              nur Unit-Tests (kein #[test] in integration/)
-# cargo t-int               nur Integrationstests (tests/*.rs)
-# cargo t-verbose           Tests mit stdout/stderr-Ausgabe pro Test
-# cargo t-fail-fast         stoppt beim ersten fehlschlagenden Test
-# cargo t-doc               Doctests aller Crates
+# cargo t                   tests for the current crate
+# cargo t-all               every test in the workspace
+# cargo t-unit              unit tests only
+# cargo t-int               integration tests only (tests/*.rs)
+# cargo t-verbose           tests with per-test stdout/stderr
+# cargo t-doc               doctests across the workspace
 t            = "test"
 t-all        = "test --workspace"
 t-unit       = "test --lib --workspace"
 t-int        = "test --test '*' --workspace"
 t-verbose    = "test --workspace -- --nocapture"
-t-fail-fast  = "test --workspace -- --fail-fast"
 t-doc        = "test --doc --workspace"
 
 # ── Coverage ─────────────────────────────────────────────────────────────────
-# Benötigt:  cargo install cargo-llvm-cov
+# Requires: cargo install cargo-llvm-cov
 #
-# cargo cov                 Zusammenfassung im Terminal (lcov-Stil)
-# cargo cov-html            Ausführlicher HTML-Bericht  → target/llvm-cov/html/
-# cargo cov-open            HTML-Bericht direkt im Browser öffnen
-# cargo cov-lcov            LCOV-Datei für externe Tools (SonarQube, Codecov …)
-# cargo cov-ci              Nur Prozentzahl ausgeben – für CI-Gate geeignet
+# cargo cov                 terminal summary
+# cargo cov-html            detailed HTML report -> target/llvm-cov/html/
+# cargo cov-open            the HTML report, straight into the browser
+# cargo cov-lcov            LCOV file for external tools
+# cargo cov-ci              the gate CI enforces (>= 80 % workspace lines)
 cov          = "llvm-cov --workspace --all-features"
 cov-html     = "llvm-cov --workspace --all-features --html --open --output-dir target/llvm-cov/html"
 cov-open     = "llvm-cov --workspace --all-features --open"
 cov-lcov     = "llvm-cov --workspace --all-features --lcov --output-path target/llvm-cov/lcov.info"
-cov-ci       = "llvm-cov --workspace --all-features --summary-only"
+cov-ci       = "llvm-cov --all --lcov --output-path lcov.info --fail-under-lines 80"
 
-# ── Code Quality ─────────────────────────────────────────────────────────────
-# cargo lint                Clippy: alle Targets, alle Features, Warnungen = Fehler
-# cargo lint-fix            Clippy: automatisch behebbare Probleme anwenden
-# cargo fmt-check           Formatierung nur prüfen (kein Schreiben, gut für CI)
+# ── Code quality ─────────────────────────────────────────────────────────────
+# cargo lint                clippy over everything, warnings are errors
+# cargo lint-fix            apply clippy's automatic fixes
+# cargo fmt-check           check formatting without writing (what CI runs)
 lint         = "clippy --workspace --all-targets --all-features -- -D warnings"
 lint-fix     = "clippy --workspace --all-targets --all-features --fix --allow-dirty"
 fmt-check    = "fmt --all -- --check"
 
-# ── Security & Audit ─────────────────────────────────────────────────────────
-# Benötigt:  cargo install cargo-audit
+# ── Supply chain ─────────────────────────────────────────────────────────────
+# Requires: cargo install cargo-deny
 #
-# cargo audit               Prüft Cargo.lock gegen RustSec Advisory DB
-# cargo audit-fix           Versucht verwundbare Dependencies automatisch zu updaten
-audit        = "audit"
-audit-fix    = "audit fix"
+# cargo audit-all           advisories, licences, bans and sources in one pass
+#
+# cargo-deny, not cargo-audit: `deny check` is what CI runs, and it covers the
+# licence allow-list and the rustls-only ban in deny.toml as well as the RustSec
+# advisory database. An alias for a tool the gate does not use is an alias that
+# passes while the gate fails.
+audit-all    = "deny check"
 
-# ── Dependency-Verwaltung ─────────────────────────────────────────────────────
-# Benötigt:  cargo install cargo-outdated  /  cargo-upgrades
+# ── Dependency management ────────────────────────────────────────────────────
+# Requires: cargo install cargo-outdated
 #
-# cargo outdated            Zeigt veraltete Dependencies
+# cargo outdated            list dependencies with newer releases available
 outdated     = "outdated --workspace"
 
 # ── Docs ─────────────────────────────────────────────────────────────────────
-# cargo doc                 Rust-Docs bauen und im Browser öffnen
 doc          = "doc --workspace --no-deps --open"
