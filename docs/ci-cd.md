@@ -199,20 +199,35 @@ outside what an agent does here (`AGENTS.md` §3), so this is the checklist.
 **Branch protection** on `main` and `dev`:
 
 - require a pull request before merging;
-- require these status checks — the names are the jobs' display names:
+- require these status checks — the names are the jobs' display names, and this
+  is the set actually configured today:
   - `Format & Lint`
   - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
   - `Supply-Chain Security`
   - `Code Coverage (≥ 80%)`
-  - `Version gate`
-  - `Semgrep SAST`, `ShellCheck`, `Actionlint`
+  - `Semgrep SAST`
+  - `Trivy scan linux/amd64` · `Trivy scan linux/arm64`
+  - `Integration test linux/amd64` · `Integration test linux/arm64`
 - require branches to be up to date before merging;
 - disallow force pushes and deletion.
 
-The image jobs (`build`, `scan`, `integration`) are deliberately **not** required
-checks: they take tens of minutes, and requiring them would make every
-documentation typo wait for two container builds. They still run on every PR and
-still gate `publish`, so nothing unscanned ships either way.
+**The image jobs are required, deliberately.** It costs: they depend on `build`,
+so a documentation-only PR waits for two container builds, and an advisory
+published that morning against something in the image blocks a branch that never
+touched the image — that happened on 2026-08-06. The decision is that this is
+the right way round: a finding that blocks is a finding someone looks at, and
+the alternative lets a fixable CRITICAL reach `dev` and be caught one step
+later, at `publish`.
+
+Two jobs are **not** required and it is worth knowing which:
+
+- `Version gate` is required only transitively — `build` lists it in `needs`, so
+  an invalid release version fails `build`, and the required image checks then
+  never report. The effect is the same; the mechanism is worth understanding
+  before anyone "simplifies" it.
+- `ShellCheck` and `Actionlint` live in `security.yml` and gate nothing. They
+  run on every push and PR and go red visibly, but a PR can merge past them.
+  Adding them is a one-line ruleset change and probably worth doing.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
