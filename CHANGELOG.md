@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [0.2.0] - 2026-08-07
 
 ### Added
@@ -120,7 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: `README.md`, `docs/getting-started.md`, `docs/configuration.md`, `docs/influxdb.md`, `docs/security.md`, `docs/troubleshooting.md`
 - `CONTRIBUTING.md` with branching workflow, PR process, Conventional Commits, release process
 
-[Unreleased]: https://github.com/joshua-schnabel/huginn.io/commits/dev
+[Unreleased]: https://github.com/joshua-schnabel/huginn.io/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.2.0
 [0.1.0]: https://github.com/joshua-schnabel/huginn.io/commits/main
 <!-- 0.1.0 predates the release pipeline and was never tagged; from the first
      tagged release on, the automation maintains real compare links here. -->
