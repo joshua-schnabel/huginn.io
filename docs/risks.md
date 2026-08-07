@@ -71,9 +71,10 @@ nobody has needed it yet — [`roadmap.md`](roadmap.md).
 
 **Severity: low · Status: accepted, monitored**
 
-17 Debian package CVEs in `gcr.io/distroless/cc-debian12`, all LOW/MEDIUM, none
-with a patched version published upstream. They appear as open code-scanning
-alerts.
+Debian package CVEs in the distroless base, all LOW/MEDIUM, none with a patched
+version published upstream. They appear as open code-scanning alerts. (17 of
+them when this was last counted, on 2026-08-02 — the count moves with the base
+image and is not worth chasing here; the Security tab has the current one.)
 
 **Mitigation.** They are deliberately *not* filtered out — the open alert is the
 audit trail. Only fixable CRITICAL/HIGH block the pipeline, so the gate stays
