@@ -2,7 +2,7 @@
 # Keep in sync with rust-version in the workspace Cargo.toml.
 # 1.88 is the floor set by hickory-resolver 0.26, which is required for
 # RUSTSEC-2026-0119 — 0.24 pins a vulnerable hickory-proto.
-FROM rust:1.88-slim AS builder
+FROM rust:1.96-slim AS builder
 
 WORKDIR /build
 
