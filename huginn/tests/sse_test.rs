@@ -1,15 +1,22 @@
 /// Integration test: SSE endpoint delivers probe events via push.
-use huginn_core::event::{EventHub, ProbeEvent};
+use huginn_core::event::ProbeEvent;
 use huginn_core::types::ProbeResult;
-use std::sync::Arc;
 use std::time::Duration;
+
+mod common;
+use common::{free_port, start_server};
 
 /// Connect to /events, publish a ProbeCompleted, verify the SSE message arrives.
 #[tokio::test]
 async fn sse_endpoint_delivers_probe_event_as_data_message() {
     let port = free_port();
     let hub = start_server(port).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Poll for readiness instead of a fixed sleep: connecting before the listener
+    // is bound made `.expect` below panic under load.
+    assert!(
+        common::wait_for_ready(port).await,
+        "web server never became ready"
+    );
 
     // Open the SSE stream — use reqwest in streaming mode
     let client = reqwest::Client::new();
@@ -49,17 +56,3 @@ async fn sse_endpoint_delivers_probe_event_as_data_message() {
 // ---------------------------------------------------------------------------
 // Helpers (shared with debug_ui_test)
 // ---------------------------------------------------------------------------
-
-async fn start_server(port: u16) -> Arc<EventHub> {
-    let hub = Arc::new(EventHub::new(256));
-    let hub_clone = Arc::clone(&hub);
-    tokio::spawn(async move {
-        huginn_web::server::run_server(port, hub_clone).await.ok();
-    });
-    hub
-}
-
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
-}

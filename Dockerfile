@@ -1,5 +1,8 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────
-FROM rust:1.81-slim AS builder
+# Keep in sync with rust-version in the workspace Cargo.toml.
+# 1.88 is the floor set by hickory-resolver 0.26, which is required for
+# RUSTSEC-2026-0119 — 0.24 pins a vulnerable hickory-proto.
+FROM rust:1.96-slim AS builder
 
 WORKDIR /build
 
@@ -20,9 +23,10 @@ RUN mkdir -p crates/huginn-core/src   && echo "pub fn _f(){}" > crates/huginn-co
  && cargo build --release --locked \
  && rm -rf crates/*/src huginn/src
 
-# Real build
+# Real build — touch source files so cargo detects them as newer than the
+# dummy artifacts from the dependency-caching step above.
 COPY . .
-RUN cargo build --release --locked
+RUN find . -name "*.rs" -exec touch {} \; && cargo build --release --locked
 
 # ── Stage 2: Runtime (distroless — no shell, no package manager) ──────────
 FROM gcr.io/distroless/cc-debian12
@@ -33,6 +37,7 @@ COPY config/config.example.yaml /etc/huginn/config.yaml
 # Run as non-root
 USER nonroot:nonroot
 
-EXPOSE 9116
+# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default)
+EXPOSE 9116 9464
 
 ENTRYPOINT ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml"]

@@ -1,10 +1,10 @@
-# Testing Guide
+# Testing
 
 This document describes the testing philosophy, structure, and requirements for huginn.io contributors.
 
 ---
 
-## The Test Pyramid
+## The pyramid
 
 huginn.io follows a four-level test pyramid: many fast unit tests at the base, fewer component-integration tests, a small number of end-to-end tests, and one Docker-level system integration test at the top.
 
@@ -14,47 +14,76 @@ huginn.io follows a four-level test pyramid: many fast unit tests at the base, f
              / 4 \       System Integration Test
             /─────\      • Real Docker stack (InfluxDB + huginn)
            /       \     • CI only, ~2 min, highest confidence
-          / E2E  ~9 \
-         /───────────\   End-to-End Tests
-        /             \  • Full running stack in-process
-       /   Integ. ~27  \ • Slow, but high confidence
-      /─────────────────\
-     /                   \ Integration Tests
-    /    Unit  ~73        \• Multiple components together
-   /───────────────────────\• Real sockets / mock HTTP servers
-  /                         \Unit Tests
- /─────────────────────────── \• Single function / module
-                               • Fast, isolated, deterministic
+          / E2E      \
+         /─────────────\ End-to-End Tests
+        /               \• Real binary as a subprocess
+       /   Integ.  ~26   \• Slow, but highest in-repo confidence
+      /───────────────────\
+     /                     \ Integration Tests
+    /      Unit   ~135      \• Multiple components together
+   /─────────────────────────\• Real sockets / mock HTTP servers
+  /                           \Unit Tests
+ /───────────────────────────── \• Single function / module
+                                 • Fast, isolated, deterministic
 ```
 
 | Level | Count | Location | Speed |
 |---|---:|---|---|
-| Unit | ~73 | `#[cfg(test)]` inside source modules | < 100 ms total |
-| Integration | ~27 | `huginn/tests/*.rs` | < 10 s total |
-| E2E | ~9 | `huginn/tests/*.rs` | < 15 s total |
+| Unit | ~135 | `#[cfg(test)]` inside source modules | < 1 s total |
+| Integration + E2E | ~26 | `huginn/tests/*.rs`, `crates/*/tests/*.rs` | < 20 s total |
 | System Integration | 1 | `scripts/integration-test.sh` + Docker Compose | ~2 min (CI only) |
 
+Counts drift. `cargo test --workspace` is the authority.
+
+### Test the artefact, not just the code
+
+`huginn/tests/binary_lifecycle_test.rs` runs the compiled binary as a subprocess
+via `CARGO_BIN_EXE_huginn`. This exists because of a specific failure: `run()`
+returned immediately without a keep-alive, so `main()` exited and the Tokio
+runtime cancelled every probe before it fired — the daemon monitored nothing.
+
+**No in-process test could catch it.** They all spawn `run()` into the *test's*
+runtime, which outlives it; production has no such runtime. The tests passed on
+a completely broken binary for months.
+
+When you test something whose behaviour depends on the process lifecycle, test
+the process.
+
 ---
 
-## Coverage Requirement
+## Coverage
 
-**Every source file must reach ≥ 80 % region coverage.**
-
-Measure with [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):
+**CI enforces ≥ 80 % *line* coverage across the workspace, in aggregate**:
 
 ```bash
-# Install (once)
-cargo install cargo-llvm-cov
-
-# Per-file region coverage report
-cargo llvm-cov --workspace --open
+cargo llvm-cov --all --lcov --output-path lcov.info --fail-under-lines 80
 ```
 
-CI will fail the PR if any file drops below 80 %.
+Know what that does and does not buy you:
+
+- It is an **aggregate**, not a per-file floor. A well-covered crate can mask an
+  entirely untested module and the gate stays green.
+- It counts **lines**, not regions. Branches inside a covered line are not
+  distinguished.
+- `cargo-llvm-cov`'s `--fail-under-*` flags are global; a genuine per-file gate
+  would need a separate tool. Until then, treat 80 % as a floor against
+  collapse, not as evidence any given file is tested.
+
+To see where the gaps actually are:
+
+```bash
+cargo install cargo-llvm-cov          # once
+cargo llvm-cov --workspace --open     # per-file, per-region HTML report
+```
+
+**Coverage is not the goal.** Dead code that is thoroughly tested still counts
+toward the number — `run_subscriber` was ~100 % covered and unreachable in
+production, and its three tests were inflating this gate while asserting
+nothing about the shipped binary. A covered line is not a checked behaviour.
 
 ---
 
-## Unit Tests
+## Unit tests
 
 ### What to test
 - Every public function's happy path
@@ -88,7 +117,7 @@ Avoid `test_`, `should_`, or numbered names.
 
 ---
 
-## Integration Tests
+## Integration tests
 
 ### What to test
 - Interactions between two or more crates (e.g. `scheduler` + `EventHub` + `WebState`)
@@ -100,17 +129,48 @@ Integration tests live in **`huginn/tests/`** as separate `.rs` files:
 
 ```
 huginn/tests/
+├── binary_lifecycle_test.rs    – the real binary as a subprocess: stays up, serves, probes
 ├── cli_output_test.rs          – ProbeResult serialisation
+├── common.rs                   – shared helpers (free_port, start_server)
 ├── config_integration_test.rs  – config loading + ENV overrides
 ├── debug_ui_test.rs            – full HTTP server + reqwest client
+├── influx_retry_test.rs        – no data lost while InfluxDB is briefly down (acceptance test)
+├── multi_probe_e2e_test.rs     – EventHub → WebState → HTTP
 └── sse_test.rs                 – SSE stream delivery
 ```
 
+A library crate may have its own `tests/` directory when what it verifies is not
+about the binary:
+
+```
+crates/huginn-core/tests/
+└── shipped_configs_test.rs     – config/*.yaml must pass our own validate()
+```
+
+Note that the rule "anything needing tokio/sockets goes in `tests/`" is not what
+the code actually does: `writer.rs` and `http.rs` run wiremock and real sockets
+in `#[cfg(test)]`. The real rule is: **library crates test their own code inline;
+`huginn/tests/` is for cross-crate and whole-binary behaviour.**
+
 Use `wiremock` to mock InfluxDB or HTTP probe targets — never hit real external services in tests.
+
+### Tests that touch the environment must be serialised
+
+The environment is process-global and cargo runs tests on parallel threads, so
+one test's `remove_var` can race another's `set_var`. `config.rs` gates all such
+tests behind an `ENV_LOCK` mutex via the `with_env` helper. Use it.
+
+### Don't sleep — poll
+
+A fixed `sleep` before an assertion is a flake waiting for a loaded CI runner.
+`run_with_ui_enabled_responds_to_health_check` slept 150 ms and made one
+unretried request; it failed under concurrent compile load. Poll with a deadline
+instead (`wait_until` in `binary_lifecycle_test.rs`, or `tokio::time::timeout`
+around a retry loop).
 
 ---
 
-## End-to-End Tests
+## End-to-end tests
 
 The complete user-visible path: binary wiring → real network I/O → observable output.
 
@@ -120,7 +180,7 @@ Add an E2E test only when a new user-visible feature cannot be adequately covere
 
 ---
 
-## System Integration Tests
+## The system layer
 
 Tests the complete production stack in Docker:
 - Image builds without errors
@@ -146,7 +206,7 @@ One system integration test covering the core data flow is enough.
 
 ---
 
-## TDD Workflow
+## TDD workflow
 
 huginn.io uses **Test-Driven Development**. New features and bug fixes follow the Red → Green → Refactor cycle:
 
@@ -165,7 +225,7 @@ huginn.io uses **Test-Driven Development**. New features and bug fixes follow th
 
 ---
 
-## Running Tests
+## Running
 
 ```bash
 # Run all tests in the workspace
@@ -186,7 +246,7 @@ cargo llvm-cov --workspace --open
 
 ---
 
-## Quick Reference
+## Quick reference
 
 | Situation | Test type | Location |
 |---|---|---|
@@ -197,3 +257,9 @@ cargo llvm-cov --workspace --open
 | New user-visible push feature | E2E | `huginn/tests/` |
 | Bug fix | Unit (reproduce the bug first) | same file as the fix |
 | New external service dependency | System Integration | `scripts/integration-test.sh` |
+
+## Related
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — where a change goes before it is tested
+- [`ci-cd.md`](ci-cd.md) — how these run in the pipeline
+- [`architecture.md`](architecture.md) — what the integration tests exercise

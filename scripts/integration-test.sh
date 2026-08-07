@@ -6,10 +6,13 @@
 #
 # Assertions:
 #   1. huginn /health returns "OK"
-#   2. /metrics/latest returns at least 2 probe results
-#   3. Expected probe names (influxdb-tcp, influxdb-http) are present
+#   2. /metrics/latest returns at least 5 probe results
+#   3. Expected probe names (tcp, http, dns, udp, tls probes) are present
 #   4. All probes are up: true
-#   5. InfluxDB contains probe_result measurements (Flux query)
+#   5. The TLS probe reports a positive tls_cert_expiry_days metric
+#   6. The Prometheus endpoint on :9464 rejects scrapes without the API key
+#      (401) and serves huginn_probe_* gauges with it
+#   7. InfluxDB contains probe_result measurements (Flux query)
 
 set -euo pipefail
 
@@ -54,27 +57,21 @@ info "Waiting for probe results in /metrics/latest (up to 30s)..."
 for i in $(seq 1 15); do
   COUNT=$(curl -sf "$HUGINN_URL/metrics/latest" \
     | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
-  if [ "$COUNT" -ge 2 ]; then
+  if [ "$COUNT" -ge 5 ]; then
     pass "/metrics/latest has $COUNT results"
     break
   fi
-  [ "$i" -eq 15 ] && fail "/metrics/latest had fewer than 2 results after 30s (got: $COUNT)"
+  [ "$i" -eq 15 ] && fail "/metrics/latest had fewer than 5 results after 30s (got: $COUNT)"
   sleep 2
 done
 
 # ── 4. Assert expected probe names are present ────────────────────────────────
 METRICS=$(curl -sf "$HUGINN_URL/metrics/latest")
-python3 - <<'EOF'
-import json, sys
-
-with open('/dev/stdin', 'r') as f:
-    data = json.loads(sys.stdin.read() if not f.readable() else f.read())
-EOF
 python3 -c "
 import json, sys
 data = json.loads('''$METRICS''')
 names = [r['probe_name'] for r in data]
-expected = ['influxdb-tcp', 'influxdb-http']
+expected = ['influxdb-tcp', 'influxdb-http', 'docker-dns', 'docker-dns-udp', 'tls-cert']
 missing = [n for n in expected if n not in names]
 if missing:
     print('Missing probes:', missing)
@@ -93,11 +90,42 @@ if down:
 print('All', len(data), 'probes are UP')
 " && pass "All probes are UP" || fail "One or more probes are DOWN (check container logs)"
 
-# ── 6. Wait for InfluxDB write (batch_size=1 so it flushes immediately) ───────
+# ── 6. Assert the TLS probe reports a positive expiry metric ──────────────────
+python3 -c "
+import json, sys
+data = json.loads('''$METRICS''')
+tls = next(r for r in data if r['probe_name'] == 'tls-cert')
+days = tls.get('metrics', {}).get('tls_cert_expiry_days')
+if days is None:
+    print('tls-cert result has no tls_cert_expiry_days metric:', tls)
+    sys.exit(1)
+if days <= 0:
+    print('tls_cert_expiry_days should be positive for a fresh cert, got:', days)
+    sys.exit(1)
+print('tls_cert_expiry_days =', days)
+" && pass "TLS probe reports positive tls_cert_expiry_days" || fail "TLS expiry metric missing or non-positive"
+
+# ── 7. Assert the Prometheus endpoint serves huginn_probe_* gauges ────────────
+# Auth is enabled in config.integration.yaml: no key ⇒ 401, correct key ⇒ 200.
+METRICS_KEY="integration-test-metrics-key"
+UNAUTHED=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:9464/metrics")
+[ "$UNAUTHED" = "401" ] || fail "Prometheus endpoint without key returned $UNAUTHED, expected 401"
+pass "Prometheus endpoint rejects unauthenticated scrapes (401)"
+PROM=$(curl -sf -H "Authorization: Bearer $METRICS_KEY" "http://localhost:9464/metrics") \
+  || fail "Prometheus endpoint on :9464 not reachable with the API key"
+echo "$PROM" | grep -q '^# TYPE huginn_probe_success gauge$' \
+  || fail "Prometheus output lacks the huginn_probe_success family"
+echo "$PROM" | grep -q 'huginn_probe_success{probe="tls-cert",type="tls",target="tls-endpoint:443"} 1' \
+  || fail "Prometheus output lacks the tls-cert success sample"
+echo "$PROM" | grep -q 'huginn_probe_tls_cert_expiry_days{probe="tls-cert"' \
+  || fail "Prometheus output lacks the tls_cert_expiry_days gauge"
+pass "Prometheus endpoint serves huginn_probe_* gauges"
+
+# ── 8. Wait for InfluxDB write (batch_size=1 so it flushes immediately) ───────
 info "Waiting for InfluxDB write (up to 15s)..."
 sleep 5
 
-# ── 7. Query InfluxDB for probe_result measurements ───────────────────────────
+# ── 9. Query InfluxDB for probe_result measurements ───────────────────────────
 FLUX_RESULT=$(curl -sf \
   -X POST "$INFLUX_URL/api/v2/query?org=$INFLUX_ORG" \
   -H "Authorization: Token $INFLUX_TOKEN" \

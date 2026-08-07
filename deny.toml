@@ -11,8 +11,6 @@
 
 # ── Advisories (RustSec vulnerability database) ──────────────────────────────
 [advisories]
-# Minimum severity to treat as an error
-severity-threshold = "medium"
 # List of advisory IDs to ignore (e.g. false positives or accepted risks)
 # Format: ignore = ["RUSTSEC-2020-0001"]
 ignore = []
@@ -33,12 +31,13 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "CC0-1.0",
-    "OpenSSL",
+    # "OpenSSL" removed: no crate in the tree carries that license, and allowing
+    # it while [bans] denies the OpenSSL crates was a contradiction — the kind of
+    # gap that lets the policy drift back in unnoticed. If a dependency ever
+    # needs it, that is a decision to take deliberately, not a default.
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
-# Deny unlicensed crates outright
-unlicensed = "deny"
-# Warn on copyleft licenses (GPL, LGPL, MPL) but don't fail
-copyleft = "warn"
 
 # ── Bans ─────────────────────────────────────────────────────────────────────
 [bans]
@@ -46,9 +45,27 @@ copyleft = "warn"
 multiple-versions = "warn"
 # Deny wildcard dependency specifications in Cargo.toml (e.g. dep = "*")
 wildcards = "deny"
-# List of crates that must never be used
+# Except between huginn's own crates. They are `{ path = ... }` entries with no
+# version, which is a wildcard by cargo-deny's reading and a directory on disk by
+# cargo's — there is no registry, no resolution and nothing to pin. A version
+# there is the crates.io publishing pattern and a second copy of the workspace
+# version; carrying one is what made a release bump fail resolution outright.
+# Without this the gate fails on the workspace's own structure, which is how a
+# required gate stops being run at all.
+allow-wildcard-paths = true
+# List of crates that must never be used.
+#
+# "TLS is rustls only, no OpenSSL" is a stated policy (AGENTS.md §9,
+# docs/hardening.md) that nothing enforced: the tree is rustls-only today purely
+# because every dependency happens to be configured that way. A transitive dep
+# flipping a default feature would pull OpenSSL back in — a C TLS stack, a
+# system library to keep patched, and a build that breaks the distroless image —
+# and CI would stay green. These entries make that a build failure instead.
 deny = [
-    # Example: { name = "openssl", reason = "use rustls instead" }
+    { name = "openssl", reason = "TLS is rustls only — see docs/hardening.md" },
+    { name = "openssl-sys", reason = "pulls in the OpenSSL C library; TLS is rustls only" },
+    { name = "native-tls", reason = "delegates to the platform/OpenSSL stack; use rustls" },
+    { name = "tokio-native-tls", reason = "native-tls wrapper; use tokio-rustls" },
 ]
 # List of crates that are allowed to appear multiple times
 skip = []
@@ -57,7 +74,9 @@ skip = []
 [sources]
 # Deny crates from registries other than crates.io
 unknown-registry = "deny"
-# Warn (not error) on crates fetched from git
-unknown-git = "warn"
+# Deny crates fetched from git: `allow-git` is empty and every dependency comes
+# from crates.io, so a git source appearing at all means something pulled in an
+# unreviewed, unversioned, force-pushable revision. A warning would scroll past.
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []

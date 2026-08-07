@@ -4,36 +4,47 @@ use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// IMAP greeting check. Stateless.
+pub struct ImapProbe;
+
+#[async_trait]
+impl Probe for ImapProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
 
 /// Connect to an IMAP port and verify the server greeting starts with `* OK`.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let start = Instant::now();
-    let connect = timeout(cfg.timeout(), TcpStream::connect(&cfg.target)).await;
     let elapsed_ms = || start.elapsed().as_secs_f64() * 1000.0;
 
-    let mut stream = match connect {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            return ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed_ms(), e.to_string())
-        }
-        Err(_) => {
-            return ProbeResult::failure(
-                &cfg.name,
-                "imap",
-                &cfg.target,
-                elapsed_ms(),
-                format!("timeout after {}s", cfg.timeout_secs),
-            )
-        }
+    let mut stream = match with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        TcpStream::connect(&cfg.target),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(msg) => return ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed_ms(), msg),
     };
 
     let mut buf = [0u8; 512];
-    let read = timeout(cfg.timeout(), stream.read(&mut buf)).await;
+    let read = with_probe_timeout(
+        cfg.timeout(),
+        "timeout reading greeting",
+        stream.read(&mut buf),
+    )
+    .await;
     let elapsed = elapsed_ms();
 
     match read {
-        Ok(Ok(n)) if n > 0 => {
+        Ok(n) if n > 0 => {
             let greeting = String::from_utf8_lossy(&buf[..n]);
             if greeting.starts_with("* OK") {
                 ProbeResult::success(&cfg.name, "imap", &cfg.target, elapsed, None)
@@ -47,21 +58,14 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
                 )
             }
         }
-        Ok(Ok(_)) => ProbeResult::failure(
+        Ok(_) => ProbeResult::failure(
             &cfg.name,
             "imap",
             &cfg.target,
             elapsed,
             "empty greeting".to_string(),
         ),
-        Ok(Err(e)) => ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed, e.to_string()),
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            "imap",
-            &cfg.target,
-            elapsed,
-            "timeout reading greeting".to_string(),
-        ),
+        Err(msg) => ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed, msg),
     }
 }
 
@@ -79,9 +83,7 @@ mod tests {
             target: target.into(),
             interval_secs: 10,
             timeout_secs: 2,
-            expected_status: None,
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }
     }
 
@@ -130,6 +132,10 @@ mod tests {
 
         let result = probe(&imap_cfg(&addr.to_string())).await;
         assert!(!result.up);
-        assert!(result.error.as_deref().unwrap_or("").contains("empty greeting"));
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("empty greeting"));
     }
 }

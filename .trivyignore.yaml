@@ -1,0 +1,26 @@
+# Suppressions for the blocking Trivy scan in .github/workflows/ci.yml.
+#
+# Empty, and the intent is that it stays that way. The file exists so that the
+# rules are already written down when the first entry is needed — a suppression
+# argued for after the fact tends to be argued for loosely.
+#
+# Rules for this file, so it does not quietly become the place findings go to
+# die:
+#
+#   1. Only the BLOCKING scan reads it. The full scan still reports everything
+#      to the Security tab, so nothing here disappears from view.
+#   2. Every entry carries `expired_at`. When the date passes the finding blocks
+#      again — a suppression with no expiry is a decision nobody revisits.
+#   3. Every entry states why the vulnerable code cannot be reached in huginn's
+#      deployment, not merely that it is inconvenient. "Not fixed upstream yet"
+#      alone is not a reason to ship it silently.
+#
+# huginn's image is distroless, so there is very little in it that is not
+# huginn's own Rust tree — and `cargo deny` gates that, ahead of Trivy. A
+# finding that reaches this file is therefore unusual and deserves the argument
+# rule 3 asks for.
+#
+# Recheck at each expiry: `trivy image --input image.tar`, and delete the entry
+# the moment upstream ships a fix.
+
+vulnerabilities: []

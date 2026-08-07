@@ -1,0 +1,120 @@
+version: 2
+
+# Continuous dependency updates, consolidated. Each ecosystem gets ONE grouped
+# PR that Dependabot keeps maintained (rebased, deps added/removed as they
+# change) instead of a PR per dependency. Dependabot cannot group across
+# ecosystems, so this is one PR for Rust crates + one for GitHub Actions.
+#
+# The group includes major bumps too, so the PR really is "everything in one".
+# Interaction with dependabot-auto-merge.yml: that workflow only auto-merges
+# patch/minor, so a group PR that happens to include a major waits for manual
+# review — you review exactly when a breaking bump is present.
+#
+# Security updates (advisory-driven) are intentionally NOT grouped — Dependabot
+# still opens those as their own PRs so an urgent CVE fix isn't held back.
+#
+# `cooldown` makes a released version wait before Dependabot will propose it.
+# dependabot-auto-merge.yml merges patch/minor without human review, so a
+# freshly published malicious release would otherwise reach `dev` — and from
+# there DockerHub — within the hour. The wait buys the time in which such a
+# release is typically yanked or gets an advisory. It does NOT close that hole
+# (an attacker can simply wait it out); only a required review does.
+# Two things worth knowing about it:
+#   - It applies to *version* updates only. Security updates are exempt by
+#     design, so a CVE fix is never delayed by this.
+#   - GitHub has applied a 3-day cooldown by default since 2026-07-14. Spelling
+#     it out changes no behaviour today; it makes the value explicit, reviewable
+#     and raisable in one place.
+# `semver-*-days` is deliberately omitted: GitHub supports it for cargo but not
+# for github-actions, and a single value keeps both ecosystems on one rule.
+#
+# `target-branch` covers VERSION updates only. Security updates — the
+# advisory-driven ones — ignore it and always open against the **default
+# branch**, and there is no setting that changes that; the only lever is which
+# branch is the default. Observed on huginn.io#51: a cargo security PR landed on
+# `main` while every version update went to `dev`, and the branch name gives it
+# away — `dependabot/cargo/cargo-…` with no `/dev/` segment, where a version
+# update reads `dependabot/docker/dev/docker-…`.
+#
+# That matters when the default branch lags: the alerts, and the security PRs
+# raised from them, describe the default branch's lockfile rather than the code
+# being developed. Releasing regularly keeps the two close; making the
+# integration branch the default closes the gap outright.
+#
+# `target-branch: dev` on every ecosystem, because Dependabot otherwise targets
+# the *default* branch — `main` — and that breaks the branching model in both
+# directions. A bump merged straight into `main` is a change `dev` never saw, so
+# the next `dev → main` release PR silently reverts it; and it reaches `main`
+# without the review path everything else goes through. muninn.io hit exactly
+# that: a codeql-action bump landed on `main` right after its v0.1.0, and the
+# 0.1.1 release PR would have downgraded it back.
+#
+# Note: Dependabot uses `dependabot/*` branch names, which auto-pr.yml leaves
+# alone (see its branches-ignore).
+updates:
+  # ── Rust crates (workspace root Cargo.toml / Cargo.lock) ──────────────────
+  - package-ecosystem: cargo
+    directory: "/"
+    target-branch: dev
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    cooldown:
+      default-days: 3
+    # Scope deliberately left at Dependabot's default (direct dependencies
+    # only). Widening it to `dependency-type: all` was tried and reverted: with
+    # transitive crates in scope the updater bumped `syn` 3.0.0 -> 3.0.3 but
+    # left `serde_derive`'s internal reference pointing at 3.0.0, producing a
+    # lockfile that `cargo test --locked` refuses (see #33, repaired in #36).
+    # A broken lockfile every week costs more than the stale transitives it was
+    # meant to fix, and security updates reach transitive crates regardless.
+    #
+    # The failure that motivated widening it — `serde` 1.0.229 requiring an
+    # exact `serde_core =1.0.229`, which aborted the whole grouped job — was
+    # resolved by bumping serde in the lockfile by hand (#35). Should that
+    # exact-pin failure return on a future serde release, it is a
+    # dependabot-core bug in the cargo updater and belongs upstream, not here.
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # ── GitHub Actions pinned in .github/workflows ────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: dev
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    cooldown:
+      default-days: 3
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # ── The Dockerfile's base images ──────────────────────────────────────────
+  # The `rust:*-slim` builder and the `gcr.io/distroless/cc-*` runtime. The
+  # builder is the real MSRV gate (see Cargo.toml), and the distroless runtime
+  # is the only CVE surface in the image that Cargo.lock does not cover.
+  #
+  # Bumping the builder is an update, not an MSRV change: `rust-version` is a
+  # floor and the builder only has to sit at or above it. Do not chase either
+  # tag in prose — name the field, not the number.
+  #
+  # NOT covered, and Dependabot cannot be made to: `container:` and `docker run`
+  # references inside the workflows (dependabot-core#5819). The Semgrep and
+  # actionlint images in security.yml are pinned by digest and need a manual
+  # bump; both say so at the pin.
+  - package-ecosystem: docker
+    directory: "/"
+    target-branch: dev
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    cooldown:
+      default-days: 3
+    groups:
+      docker:
+        patterns: ["*"]

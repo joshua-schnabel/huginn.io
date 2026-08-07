@@ -9,26 +9,57 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+# The floor. The Dockerfile's builder must be at or above it — Dependabot moves
+# that tag forward on its own, so "at least" is the invariant that survives an
+# update; "equal to" would be false the morning after every bump.
+#
+# CI tests on floating stable, so a dependency raising the MSRV leaves CI green
+# while the Docker build — the actual artefact — fails. That is not
+# hypothetical: hickory-resolver 0.26, required for RUSTSEC-2026-0119, needs
+# 1.88 and broke the image build against the then-current 1.85 builder while
+# every local check stayed green.
+#
+# Note this field documents our floor; with edition 2021 the resolver does not
+# refuse dependencies that exceed it (that needs
+# `resolver.incompatible-rust-versions = "fallback"`, which here would silently
+# pick a hickory without the CVE fix). The Docker build is the real gate.
+rust-version = "1.88"
 authors = ["huginn.io contributors"]
 license = "MIT"
-repository = "https://github.com/placeholder/huginn"
+repository = "https://github.com/joshua-schnabel/huginn.io"
+# huginn ships as a container image, not as crates. The crate APIs are internal
+# structure and `docs/versioning.md` says so explicitly — this makes that a
+# property of the manifest rather than a promise in a document, and stops an
+# accidental `cargo publish` from turning them into someone's dependency.
+publish = false
 
 [workspace.dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime. Explicit feature set rather than "full": only these subsystems
+# are used (net, timers, broadcast/RwLock, OS signals, AsyncRead for the
+# SMTP/IMAP banners). "process" is test-only (binary_lifecycle_test) and lives in
+# huginn's dev-dependencies, so it isn't compiled into the release binary.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "sync",
+    "signal",
+    "io-util",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yaml_ng = "0.10"
 serde_json = "1"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # Web framework (debug UI)
-axum = "0.7"
+axum = "0.8"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -39,10 +70,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
+
+# Object-safe async traits.
+# Native `async fn` in traits is stable since 1.75, but AFIT traits are not
+# dyn-compatible, and `&dyn Probe` is the whole point. Proc-macro only, and
+# already in the tree via axum — zero new runtime dependencies.
+async-trait = "0.1"
 
 # Colored output
-colored = "2"
+colored = "3"
 
 # InfluxDB client — unused workspace dep removed; writer uses raw reqwest line protocol
 # influxdb2 = "0.5"          # removed: not used
@@ -58,9 +95,25 @@ chrono = { version = "0.4", features = ["serde"] }
 # tokio-cron-scheduler = "0.11"
 
 # DNS resolver
-hickory-resolver = { version = "0.24", default-features = false, features = ["tokio-runtime"] }
+# 0.26 required: 0.24 pulls hickory-proto <0.26.1 (RUSTSEC-2026-0119, O(n²) name compression)
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
+
+# X.509 parsing — reads a certificate's notAfter for the TLS-expiry probe. The
+# TLS handshake itself uses rustls/tokio-rustls (already in the tree via reqwest);
+# only the certificate introspection needs this.
+x509-parser = "0.18"
 
 # Test helpers (available workspace-wide)
 tempfile = "3"
 wiremock = "0.6"
 tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Release profile — the binary that ships in the distroless image.
+# strip: drop symbols (a large fraction of an unstripped Rust binary's size).
+# lto=thin + codegen-units=1: cross-crate inlining and a single codegen unit for
+# a smaller, faster artefact. `panic` is left at "unwind" (abort is a behaviour
+# change, deliberately out of scope).
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

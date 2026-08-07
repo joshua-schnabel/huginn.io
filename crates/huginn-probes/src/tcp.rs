@@ -3,24 +3,34 @@ use std::time::Instant;
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// TCP connect check. Stateless.
+pub struct TcpProbe;
+
+#[async_trait]
+impl Probe for TcpProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
 
 /// Connect to a TCP host:port and measure the handshake time.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let start = Instant::now();
-    let result = timeout(cfg.timeout(), TcpStream::connect(&cfg.target)).await;
+    let result = with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        TcpStream::connect(&cfg.target),
+    )
+    .await;
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
     match result {
-        Ok(Ok(_)) => ProbeResult::success(&cfg.name, "tcp", &cfg.target, elapsed, None),
-        Ok(Err(e)) => ProbeResult::failure(&cfg.name, "tcp", &cfg.target, elapsed, e.to_string()),
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            "tcp",
-            &cfg.target,
-            elapsed,
-            format!("timeout after {}s", cfg.timeout_secs),
-        ),
+        Ok(_) => ProbeResult::success(&cfg.name, "tcp", &cfg.target, elapsed, None),
+        Err(msg) => ProbeResult::failure(&cfg.name, "tcp", &cfg.target, elapsed, msg),
     }
 }
 
@@ -37,9 +47,7 @@ mod tests {
             target: target.into(),
             interval_secs: 10,
             timeout_secs: 2,
-            expected_status: None,
-            dns_query: None,
-            dns_expected_ip: None,
+            ..Default::default()
         }
     }
 

@@ -8,15 +8,54 @@ influx:
   # NEVER put the token value directly in this file or in an ENV variable.
   token_file: "/run/secrets/influx_token"
 
+  # ── Batching ──────────────────────────────────────────────────────────────
+  # Results are grouped into one write instead of one POST per probe.
+  batch_size: 10          # write once this many results are buffered
+  batch_timeout_ms: 1000  # ...or after this long, whichever comes first
+
+  # ── Resilience ────────────────────────────────────────────────────────────
+  # A failed write is retried, not discarded. Retries are unbounded in attempts
+  # but bounded in memory: when the queue is full the OLDEST batch is dropped,
+  # so the most recent data survives an outage. Batches InfluxDB will never
+  # accept (bad token, wrong bucket, malformed data) are discarded immediately
+  # rather than blocking everything behind them.
+  max_buffered_bytes: 8388608     # 8 MiB ≈ 35k–55k results
+  retry_initial_backoff_ms: 500   # doubles per attempt...
+  retry_max_backoff_ms: 30000     # ...up to this
+  shutdown_drain_timeout_ms: 5000 # give up draining after this on shutdown
+
 # Optional debug web UI (axum, no external JS/CSS)
 ui:
   enabled: false
+  # The UI has no authentication and publishes every probe target, so it binds
+  # loopback only. In a container set 0.0.0.0 (or HUGINN_UI_BIND=0.0.0.0) —
+  # published ports reach the container's bridge IP, not its loopback — and put
+  # it on a trusted network. See docs/SECURITY.md.
+  bind: "127.0.0.1"
   port: 9116  # http://localhost:9116
+
+# Prometheus metrics endpoint (optional, independent of the debug UI).
+# Serves GET /metrics in Prometheus text format: huginn_probe_success,
+# huginn_probe_duration_seconds, huginn_probe_tls_cert_expiry_days, ...
+# Unauthenticated by default — bind loopback unless the network is trusted;
+# in a container use 0.0.0.0 (published ports never reach loopback). To require
+# `Authorization: Bearer <key>`, point api_key_file at a secret file (path
+# only — NEVER put the key value in YAML or ENV, same rule as influx.token_file).
+metrics:
+  enabled: false
+  bind: "127.0.0.1"
+  port: 9464
+  # api_key_file: "/run/secrets/metrics_api_key"
 
 # Logging
 log:
   format: pretty  # "pretty" (coloured) or "json"
   level: info     # trace, debug, info, warn, error  (also via RUST_LOG)
+
+# Capacity of the internal broadcast channel between the scheduler and its
+# consumers (console, InfluxDB writer, web UI). The default suits hundreds of
+# probes; raise it only if logs show lagged/dropped events.
+# event_hub_capacity: 256
 
 probes:
   # ── HTTP ──────────────────────────────────────────────────────────────────
@@ -56,9 +95,36 @@ probes:
     interval_secs: 60
     timeout_secs: 10
 
-  # ── UDP (DNS example) ─────────────────────────────────────────────────────
-  - name: "dns-google"
+  # ── UDP ───────────────────────────────────────────────────────────────────
+  # Sends a DNS-shaped datagram and counts any reply as UP — a reachability
+  # check for UDP services, not a DNS correctness check (that is `type: dns`).
+  - name: "udp-dns-google"
     type: udp
     target: "8.8.8.8:53"
     interval_secs: 30
     timeout_secs: 2
+
+  # ── DNS ───────────────────────────────────────────────────────────────────
+  # Asks the nameserver in `target` to resolve `dns_query` (A/AAAA). If
+  # `dns_expected_ip` is set, the answer must contain that IP.
+  - name: "dns-cloudflare"
+    type: dns
+    target: "1.1.1.1:53"
+    interval_secs: 30
+    timeout_secs: 2
+    dns_query: "example.com"
+    # dns_expected_ip: "93.184.216.34"
+
+  # ── TLS certificate expiry ────────────────────────────────────────────────
+  # Handshakes with an HTTPS endpoint and reports days until the certificate
+  # expires as the `tls_cert_expiry_days` metric (negative once expired). Target
+  # is host:port and must speak HTTPS; verification is skipped, so self-signed
+  # and already-expired certificates are still read. The probe reports DOWN once
+  # fewer than `tls_expiry_fail_days` days remain (default 0 — only once the
+  # certificate has expired).
+  - name: "cert-example-com"
+    type: tls
+    target: "example.com:443"
+    interval_secs: 3600
+    timeout_secs: 5
+    tls_expiry_fail_days: 14

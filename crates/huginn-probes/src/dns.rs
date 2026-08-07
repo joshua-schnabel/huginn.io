@@ -1,12 +1,31 @@
 use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
-use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::config::{
+    ConnectionConfig, LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts,
+};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::{Resolver, TokioResolver};
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
-use tokio::time::timeout;
 
+use crate::{with_probe_timeout, Probe};
+use async_trait::async_trait;
+
+/// DNS resolution check.
+///
+/// Stateless: the resolver is per-probe because it is pinned to the nameserver
+/// in `target`, which differs per configured probe.
+pub struct DnsProbe;
+
+#[async_trait]
+impl Probe for DnsProbe {
+    async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
+        probe(cfg).await
+    }
+}
+
+/// Resolve `dns_query` via the nameserver in `target` and measure the lookup.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let query = cfg.dns_query.as_deref().unwrap_or("example.com");
     let nameserver: SocketAddr = match cfg.target.parse() {
@@ -22,21 +41,30 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
         }
     };
 
-    let resolver = build_resolver(nameserver, cfg.timeout_secs);
+    let resolver = match build_resolver(nameserver, cfg.timeout_secs) {
+        Ok(r) => r,
+        Err(e) => {
+            return ProbeResult::failure(
+                &cfg.name,
+                "dns",
+                &cfg.target,
+                0.0,
+                format!("resolver setup failed: {e}"),
+            )
+        }
+    };
     let start = Instant::now();
-    let result = timeout(cfg.timeout(), resolver.lookup_ip(query)).await;
+    let result = with_probe_timeout(
+        cfg.timeout(),
+        &format!("timeout after {}s", cfg.timeout_secs),
+        resolver.lookup_ip(query),
+    )
+    .await;
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
     match result {
-        Err(_) => ProbeResult::failure(
-            &cfg.name,
-            "dns",
-            &cfg.target,
-            elapsed,
-            format!("timeout after {}s", cfg.timeout_secs),
-        ),
-        Ok(Err(e)) => ProbeResult::failure(&cfg.name, "dns", &cfg.target, elapsed, e.to_string()),
-        Ok(Ok(lookup)) => {
+        Err(msg) => ProbeResult::failure(&cfg.name, "dns", &cfg.target, elapsed, msg),
+        Ok(lookup) => {
             if let Some(expected) = &cfg.dns_expected_ip {
                 let expected_ip: IpAddr = match expected.parse() {
                     Ok(ip) => ip,
@@ -66,19 +94,35 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     }
 }
 
-fn build_resolver(nameserver: SocketAddr, timeout_secs: u64) -> TokioAsyncResolver {
-    let mut config = ResolverConfig::new();
-    config.add_name_server(NameServerConfig {
-        socket_addr: nameserver,
-        protocol: Protocol::Udp,
-        tls_dns_name: None,
-        trust_negative_responses: false,
-        bind_addr: None,
-    });
+/// Build a resolver that queries exactly one nameserver over UDP.
+///
+/// The port lives on `ConnectionConfig` rather than `NameServerConfig`, so a
+/// nameserver on a non-standard port has to be assembled in two steps.
+fn build_resolver(
+    nameserver: SocketAddr,
+    timeout_secs: u64,
+) -> Result<TokioResolver, hickory_resolver::net::NetError> {
+    let mut connection = ConnectionConfig::udp();
+    connection.port = nameserver.port();
+
+    let mut name_server = NameServerConfig::udp(nameserver.ip());
+    name_server.connections = vec![connection];
+    name_server.trust_negative_responses = false;
+
+    let mut config = ResolverConfig::default();
+    config.add_name_server(name_server);
+
     let mut opts = ResolverOpts::default();
     opts.timeout = std::time::Duration::from_secs(timeout_secs);
     opts.attempts = 1;
-    TokioAsyncResolver::tokio(config, opts)
+    // Pinned rather than inherited: the upstream default changed from
+    // Ipv4thenIpv6 to Ipv6AndIpv4 in 0.26, which would silently make every probe
+    // query AAAA as well and report DOWN for IPv4-only targets.
+    opts.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
+
+    Resolver::builder_with_config(config, TokioRuntimeProvider::default())
+        .with_options(opts)
+        .build()
 }
 
 #[cfg(test)]
@@ -94,40 +138,55 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         }
+    }
+
+    /// Return just the question section of `query` — the QNAME labels plus
+    /// QTYPE/QCLASS.
+    ///
+    /// The resolver enables EDNS(0) by default, so everything after the question
+    /// is an OPT record in the additional section. Copying that into a response
+    /// that declares ARCOUNT=0 puts the answer at an offset the parser doesn't
+    /// expect, and the response is silently rejected.
+    fn question_section(query: &[u8]) -> &[u8] {
+        let mut i = 12; // skip the fixed-size header
+        while i < query.len() && query[i] != 0 {
+            i += 1 + query[i] as usize; // length-prefixed label
+        }
+        i += 1 + 4; // root label + QTYPE + QCLASS
+        &query[12..i.min(query.len())]
     }
 
     /// Build a minimal valid DNS A-record response for the given query.
     /// Copies the transaction ID and question from the query, appends one answer.
     fn build_a_response(query: &[u8], ip: [u8; 4]) -> Vec<u8> {
         let mut r = Vec::new();
-        r.extend_from_slice(&query[0..2]);          // transaction ID
-        r.extend_from_slice(&[0x81, 0x80]);         // flags: response, RCODE=0
-        r.extend_from_slice(&[0x00, 0x01]);         // QDCOUNT=1
-        r.extend_from_slice(&[0x00, 0x01]);         // ANCOUNT=1
+        r.extend_from_slice(&query[0..2]); // transaction ID
+        r.extend_from_slice(&[0x81, 0x80]); // flags: response, RCODE=0
+        r.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+        r.extend_from_slice(&[0x00, 0x01]); // ANCOUNT=1
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // NS, AR = 0
-        r.extend_from_slice(&query[12..]);          // question section
+        r.extend_from_slice(question_section(query));
         // answer
-        r.extend_from_slice(&[0xC0, 0x0C]);         // name ptr → offset 12
-        r.extend_from_slice(&[0x00, 0x01]);         // type A
-        r.extend_from_slice(&[0x00, 0x01]);         // class IN
+        r.extend_from_slice(&[0xC0, 0x0C]); // name ptr → offset 12
+        r.extend_from_slice(&[0x00, 0x01]); // type A
+        r.extend_from_slice(&[0x00, 0x01]); // class IN
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL=60
-        r.extend_from_slice(&[0x00, 0x04]);         // rdlength=4
-        r.extend_from_slice(&ip);                   // rdata
+        r.extend_from_slice(&[0x00, 0x04]); // rdlength=4
+        r.extend_from_slice(&ip); // rdata
         r
     }
 
     fn build_nxdomain_response(query: &[u8]) -> Vec<u8> {
         let mut r = Vec::new();
-        r.extend_from_slice(&query[0..2]);          // transaction ID
-        r.extend_from_slice(&[0x81, 0x83]);         // flags: response, RCODE=3 (NXDOMAIN)
-        r.extend_from_slice(&[0x00, 0x01]);         // QDCOUNT=1
-        r.extend_from_slice(&[0x00, 0x00]);         // ANCOUNT=0
+        r.extend_from_slice(&query[0..2]); // transaction ID
+        r.extend_from_slice(&[0x81, 0x83]); // flags: response, RCODE=3 (NXDOMAIN)
+        r.extend_from_slice(&[0x00, 0x01]); // QDCOUNT=1
+        r.extend_from_slice(&[0x00, 0x00]); // ANCOUNT=0
         r.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-        r.extend_from_slice(&query[12..]);          // question section
+        r.extend_from_slice(question_section(query));
         r
     }
 
@@ -164,9 +223,8 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("nonexistent.example".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up, "should fail on NXDOMAIN");
@@ -184,9 +242,8 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 1,
-            expected_status: None,
             dns_query: Some("example.com".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up);
@@ -200,9 +257,8 @@ mod tests {
             target: "not_a_valid_address_xyz".into(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
-            dns_expected_ip: None,
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up);
@@ -226,9 +282,9 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
             dns_expected_ip: Some("1.2.3.4".into()),
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(result.up, "error: {:?}", result.error);
@@ -251,9 +307,9 @@ mod tests {
             target: addr.to_string(),
             interval_secs: 1,
             timeout_secs: 2,
-            expected_status: None,
             dns_query: Some("example.com".into()),
             dns_expected_ip: Some("9.9.9.9".into()),
+            ..Default::default()
         };
         let result = probe(&cfg).await;
         assert!(!result.up);

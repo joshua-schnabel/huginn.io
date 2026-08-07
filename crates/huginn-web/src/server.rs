@@ -1,5 +1,7 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::extract::State;
 use axum::response::Html;
 use axum::routing::get;
@@ -13,28 +15,51 @@ use crate::state::WebState;
 
 // Embed assets at compile time so the binary is self-contained.
 const INDEX_HTML: &str = include_str!("../assets/index.html");
-const STYLE_CSS: &str  = include_str!("../assets/style.css");
-const APP_JS: &str     = include_str!("../assets/app.js");
+const STYLE_CSS: &str = include_str!("../assets/style.css");
+const APP_JS: &str = include_str!("../assets/app.js");
 
-/// Start the web UI server.
+/// Start the web UI server on `bind`:`port`, creating its own [`WebState`].
 ///
 /// Subscribes to `hub` to keep the latest probe results in sync and push
-/// updates to connected browsers via Server-Sent Events.
-pub async fn run_server(port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
+/// updates to connected browsers via Server-Sent Events. When the metrics
+/// listener is enabled too, use [`run_server_with_state`] with a shared state
+/// instead, so both servers feed from one event loop.
+pub async fn run_server(bind: &str, port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
     let state = Arc::new(WebState::new());
     Arc::clone(&state).start_event_loop(Arc::clone(&hub));
+    // Drop our Arc: `axum::serve` below never returns, so holding it would keep
+    // the hub's Sender alive for the life of the process and no subscriber would
+    // ever observe Closed. start_event_loop has its own clone and drops it too.
+    drop(hub);
+    run_server_with_state(bind, port, state).await
+}
+
+/// Start the web UI server against an existing [`WebState`] whose event loop
+/// is already running.
+///
+/// `bind` must parse as an [`IpAddr`]; `AppConfig::validate` rejects anything
+/// else before startup, so reaching the error here means the caller bypassed it.
+pub async fn run_server_with_state(
+    bind: &str,
+    port: u16,
+    state: Arc<WebState>,
+) -> anyhow::Result<()> {
+    let addr: IpAddr = bind
+        .parse()
+        .with_context(|| format!("ui.bind '{bind}' is not a valid IP address"))?;
 
     let app = Router::new()
-        .route("/",               get(handle_index))
-        .route("/events",         get(sse_handler))
+        .route("/", get(handle_index))
+        .route("/events", get(sse_handler))
         .route("/metrics/latest", get(handle_metrics))
-        .route("/health",         get(handle_health))
+        .route("/health", get(handle_health))
         .route("/assets/style.css", get(handle_css))
-        .route("/assets/app.js",    get(handle_js))
+        .route("/assets/app.js", get(handle_js))
+        .layer(axum::middleware::from_fn(crate::headers::security_headers))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    info!("Web UI listening on http://0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind((addr, port)).await?;
+    info!("Web UI listening on http://{addr}:{port}");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -51,9 +76,7 @@ async fn handle_health() -> &'static str {
     "OK"
 }
 
-async fn handle_metrics(
-    State(state): State<Arc<WebState>>,
-) -> Json<Vec<ProbeResult>> {
+async fn handle_metrics(State(state): State<Arc<WebState>>) -> Json<Vec<ProbeResult>> {
     let guard = state.results.read().await;
     Json(guard.values().cloned().collect())
 }
@@ -63,7 +86,10 @@ async fn handle_css() -> ([(&'static str, &'static str); 1], &'static str) {
 }
 
 async fn handle_js() -> ([(&'static str, &'static str); 1], &'static str) {
-    ([("content-type", "application/javascript; charset=utf-8")], APP_JS)
+    (
+        [("content-type", "application/javascript; charset=utf-8")],
+        APP_JS,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +171,10 @@ mod tests {
     #[tokio::test]
     async fn js_handler_returns_js_content_type() {
         let (headers, body) = handle_js().await;
-        assert_eq!(headers[0], ("content-type", "application/javascript; charset=utf-8"));
+        assert_eq!(
+            headers[0],
+            ("content-type", "application/javascript; charset=utf-8")
+        );
         assert!(!body.is_empty());
     }
 }

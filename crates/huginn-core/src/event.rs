@@ -63,9 +63,13 @@ mod tests {
         hub.publish(ProbeEvent::ProbeCompleted(sample_result()));
 
         let e1 = tokio::time::timeout(Duration::from_secs(1), rx1.recv())
-            .await.expect("rx1 timed out").expect("rx1 closed");
+            .await
+            .expect("rx1 timed out")
+            .expect("rx1 closed");
         let e2 = tokio::time::timeout(Duration::from_secs(1), rx2.recv())
-            .await.expect("rx2 timed out").expect("rx2 closed");
+            .await
+            .expect("rx2 timed out")
+            .expect("rx2 closed");
 
         let ProbeEvent::ProbeCompleted(r1) = e1;
         let ProbeEvent::ProbeCompleted(r2) = e2;
@@ -87,7 +91,8 @@ mod tests {
 
         drop(hub);
 
-        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await
+        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
             .expect("timed out waiting for Closed");
 
         assert!(
