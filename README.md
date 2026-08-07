@@ -190,8 +190,9 @@ bash scripts/integration-test.sh
 ```
 
 Run locally against the example config with `cargo dev`. The debug UI has no CLI
-flag — `HUGINN_UI_ENABLED=true cargo dev`. MSRV is **Rust 1.88**, and the Docker
-builder is pinned to the same version because it, not CI, is the real MSRV gate.
+flag — `HUGINN_UI_ENABLED=true cargo dev`. The MSRV is `rust-version` in
+[`Cargo.toml`](Cargo.toml); the Docker builder sits at or above it and is the
+real MSRV gate, because CI runs floating stable.
 
 Start at [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md); if you are an AI coding
 agent, read [`AGENTS.md`](AGENTS.md) first.

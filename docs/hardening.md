@@ -51,7 +51,7 @@ secrets/
 
 | Measure | Details |
 |---|---|
-| **Distroless base** | `gcr.io/distroless/cc-debian12` — no shell, no apt, minimal surface |
+| **Distroless base** | the `gcr.io/distroless/cc-*` image pinned in the [`Dockerfile`](../Dockerfile) — no shell, no apt, minimal surface |
 | **Non-root user** | Runs as `nonroot:nonroot` |
 | **No capabilities** | `cap_drop: ALL` — huginn binds ports above 1024 and never changes uid, so it needs none |
 | **No privilege escalation** | `security_opt: no-new-privileges:true` |

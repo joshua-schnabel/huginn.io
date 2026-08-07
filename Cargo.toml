@@ -11,11 +11,15 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# Must match the builder image in the Dockerfile. CI tests on floating stable, so
-# a dependency raising the MSRV leaves CI green while the Docker build — the
-# actual artefact — fails. That is not hypothetical: hickory-resolver 0.26,
-# required for RUSTSEC-2026-0119, needs 1.88 and broke the image build against
-# the previous 1.85 pin while every local check stayed green.
+# The floor. The Dockerfile's builder must be at or above it — Dependabot moves
+# that tag forward on its own, so "at least" is the invariant that survives an
+# update; "equal to" would be false the morning after every bump.
+#
+# CI tests on floating stable, so a dependency raising the MSRV leaves CI green
+# while the Docker build — the actual artefact — fails. That is not
+# hypothetical: hickory-resolver 0.26, required for RUSTSEC-2026-0119, needs
+# 1.88 and broke the image build against the then-current 1.85 builder while
+# every local check stayed green.
 #
 # Note this field documents our floor; with edition 2021 the resolver does not
 # refuse dependencies that exceed it (that needs

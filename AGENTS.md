@@ -141,12 +141,13 @@ was not run.
 Each cost real investigation, and each contradicts a plausible assumption. Do not
 undo them.
 
-**The Docker build is the real MSRV gate.** `rust-version = "1.88"` documents the
-floor, but under edition 2021 and resolver 2 it does *not* steer resolution — CI
-runs floating stable and stays green while the image build fails. Not
-hypothetical: `hickory-resolver` 0.26, required for RUSTSEC-2026-0119, needs 1.88
-and broke the image against the previous 1.85 pin while every local check passed.
-Keep `Cargo.toml`'s `rust-version` and the Dockerfile builder in step.
+**The Docker build is the real MSRV gate.** `rust-version` in `Cargo.toml`
+documents the floor, but under edition 2021 and resolver 2 it does *not* steer
+resolution — CI runs floating stable and stays green while the image build
+fails. Not hypothetical: `hickory-resolver` 0.26, required for
+RUSTSEC-2026-0119, needs 1.88 and broke the image against the then-current 1.85
+builder while every local check passed. The builder must stay at or above the
+floor; Dependabot moves it forward on its own, and that is not an MSRV change.
 
 **Catching only SIGINT silently disabled the shutdown drain.** `docker stop` and
 systemd send **SIGTERM**. Without a handler for it the process died before the
@@ -203,6 +204,15 @@ back.
 - Small, single-purpose functions; tight crate surfaces (`pub` only what other
   crates need).
 - Doc-comment (`///`) public items. Comments explain the **why**, not the what.
+- **Never repeat a version number in prose.** A version belongs where it is the
+  authority — `rust-version` in `Cargo.toml`, the pins in the `Dockerfile`, a
+  `fixed_version` in `.trivyignore.yaml` — and everywhere else you name the
+  field and let the reader look. A number copied into a sentence is wrong the
+  morning after Dependabot bumps it, and nothing fails when it goes stale.
+  Two exceptions, because they are records rather than claims about now:
+  a **historical incident** ("broke against the then-current 1.85 builder") and
+  a **dated measurement** ("17 CVEs when counted on 2026-08-02"). Both keep
+  their numbers, and both say when.
 - `cargo fmt` defaults (no `rustfmt.toml`); **fix** clippy rather than
   `#[allow]`-ing it, and if an allow is genuinely needed, give a one-line reason.
 - Avoid `unsafe`. Adding a dependency needs approval (§3).
@@ -230,8 +240,8 @@ back.
 - **TLS is rustls only.** `openssl`, `openssl-sys`, `native-tls` and
   `tokio-native-tls` are banned in `deny.toml`.
   [ADR-0003](docs/adr/0003-rustls-only.md)
-- **MSRV 1.88**, edition 2021, resolver 2 — and see §6 on which gate actually
-  enforces it.
+- **MSRV** is `rust-version` in `Cargo.toml`; edition 2021, resolver 2 — and see
+  §6 on which gate actually enforces it.
 - **Testing:** unit tests inline in `#[cfg(test)]`; cross-crate and whole-binary
   behaviour in `huginn/tests/`. Never hit a real external service — use
   `wiremock`. **Don't sleep — poll.** Tests touching the environment must be

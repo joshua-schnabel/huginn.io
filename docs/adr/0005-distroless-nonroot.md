@@ -16,9 +16,10 @@ a frequently red pipeline or a gate that gets relaxed.
 
 ## Decision
 
-Runtime base is `gcr.io/distroless/cc-debian12`, running as the image's nonroot
-user. The builder stage is a normal `rust:1.88-slim`; nothing from it reaches
-the final image except the binary.
+Runtime base is `gcr.io/distroless/cc-*`, running as the image's nonroot user;
+the exact tag is pinned in the Dockerfile and moves with Debian. The builder
+stage is a normal `rust:*-slim`; nothing from it reaches the final image except
+the binary.
 
 `cc` rather than `static`: the binary links against glibc. rustls means no
 system TLS library is needed ([ADR-0003](0003-rustls-only.md)), which is what
