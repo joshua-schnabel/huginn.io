@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-08
+
 ### Fixed
 
 - **A secret file readable beyond its owner is reported.** `influx.token_file` and `metrics.api_key_file` were checked for existence, readability and emptiness but never for their mode, while the documentation prescribes `0600` — R5, and the second recommendation of the 2026-08-02 audit. A warning rather than a refusal: a read-only bind mount can carry permissions the operator does not control, and a token that works should not stop a deployment. Raised again as M-01 of muninn.io's own review, where the gap is sharper because that image carries a shell; the fix landed in both, which is what keeping the two aligned is for.
@@ -148,7 +150,8 @@ Fixes the tail of the release path. huginn's own code is untouched — the image
 - Documentation: `README.md`, `docs/getting-started.md`, `docs/configuration.md`, `docs/influxdb.md`, `docs/security.md`, `docs/troubleshooting.md`
 - `CONTRIBUTING.md` with branching workflow, PR process, Conventional Commits, release process
 
-[Unreleased]: https://github.com/joshua-schnabel/huginn.io/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/joshua-schnabel/huginn.io/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.3.0
 [0.2.1]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.2.1
 [0.2.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.2.0
 [0.1.0]: https://github.com/joshua-schnabel/huginn.io/commits/main
