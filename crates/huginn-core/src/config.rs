@@ -135,6 +135,7 @@ impl InfluxConfig {
                 path: self.token_file.clone(),
                 message: e.to_string(),
             })?;
+        warn_if_readable_by_others(self.token_file.as_str());
         if token.is_empty() {
             return Err(HuginError::Secret {
                 path: self.token_file.clone(),
@@ -144,6 +145,45 @@ impl InfluxConfig {
         Ok(token)
     }
 }
+
+/// Warn when a secret file is readable by anyone but its owner.
+///
+/// A warning, not a refusal — R5 of `docs/risks.md`. The documentation
+/// prescribes `0600` for `influx.token_file` and `metrics.api_key_file` and
+/// nothing checked it, so a file left `0644` in an image or a mount said
+/// nothing at all. Refusing to start would be worse than the risk: a read-only
+/// bind mount can carry permissions the operator does not control, and the
+/// token still works.
+///
+/// The distroless image has no shell and no other processes, so "readable by
+/// anything else in the container" is a narrow set here — narrower than in
+/// muninn.io, whose runtime carries apt and a shell and where the same finding
+/// (M-01) was raised first. Alignment is why this exists in both.
+///
+/// Unix only: mode bits are the check, and there is nothing equivalent
+/// elsewhere. The path is named, never the contents.
+#[cfg(unix)]
+fn warn_if_readable_by_others(path: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Best-effort: the file was just read, so a failing stat says something odd
+    // about the filesystem rather than about the secret, and is no reason to
+    // hold up the start.
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        tracing::warn!(
+            path = %path,
+            mode = format!("{mode:04o}"),
+            "secret file is readable beyond its owner; 0600 is expected"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_readable_by_others(_path: &str) {}
 
 // ---------------------------------------------------------------------------
 // Optional debug UI config
@@ -233,6 +273,7 @@ impl MetricsConfig {
                 path: path.clone(),
                 message: e.to_string(),
             })?;
+        warn_if_readable_by_others(path.as_str());
         if key.is_empty() {
             return Err(HuginError::Secret {
                 path: path.clone(),
@@ -1405,5 +1446,47 @@ probes:
             assert_eq!(cfg.influx.token_file, path_str);
             assert_eq!(cfg.influx.read_token().unwrap(), "envtoken");
         });
+    }
+
+    /// A loose mode is warned about, never fatal.
+    ///
+    /// The assertion is the behaviour: refusing would take down a deployment
+    /// whose token works, which is the wrong trade for a mode bit (R5).
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_token_file_still_loads() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "tok").unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let cfg = InfluxConfig {
+            token_file: f.path().display().to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.read_token().expect("a loose mode must not be fatal"),
+            "tok"
+        );
+    }
+
+    /// And a correctly-moded one is unaffected.
+    #[cfg(unix)]
+    #[test]
+    fn a_private_token_file_loads() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "tok").unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let cfg = InfluxConfig {
+            token_file: f.path().display().to_string(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.read_token().unwrap(), "tok");
     }
 }

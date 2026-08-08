@@ -64,21 +64,6 @@ with its rules written down and no entries.
 the gate starts failing until the image is rebuilt. That is intended, and it
 makes image currency an operational duty.
 
-## R5 — Secret file permissions are documented, not enforced
-
-**Severity: low · Status: open**
-
-The docs prescribe mode `0600` for `influx.token_file` and
-`metrics.api_key_file`. Nothing checks it. A token file left at `0644` in an
-image or a mount is readable by anything else in the container.
-
-**Mitigation.** The distroless image has no shell and no other processes, so
-"anything else in the container" is a narrow set today.
-
-**Fix.** Stat the file at startup and warn. Small, and it fits the fail-closed
-handling those files already get
-([ADR-0002](adr/0002-secrets-from-files-only.md)).
-
 ## R6 — A backend outage that outlives the process loses buffered results
 
 **Severity: low · Status: accepted by design**

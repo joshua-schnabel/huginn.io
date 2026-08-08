@@ -324,8 +324,9 @@ Not done in this pass, in rough priority order:
    suggested. A `tower-http` layer would not have helped: it wraps the service,
    which a never-completed request head never reaches. The fix is a connection
    cap and hyper's `header_read_timeout`, below the service.
-2. Consider warning at startup when a secret file is group- or world-readable.
-   The docs prescribe mode `0600`; nothing checks it.
+2. ~~Consider warning at startup when a secret file is group- or world-readable~~
+   — **done**. Raised again as M-01 of muninn.io's own review, where the same
+   gap is sharper because that image carries a shell; the fix landed in both.
 3. Consider a `HEALTHCHECK` in the `Dockerfile`. It needs a health subcommand on
    the binary — distroless has no shell or `curl` — so it is a small feature, not
    a one-liner.
