@@ -61,14 +61,31 @@ secrets/
 | **Loopback publishing** | Compose publishes `127.0.0.1:9116` / `127.0.0.1:8086`; widening it is a deliberate edit |
 | **rustls** | TLS via pure-Rust rustls — no OpenSSL. Enforced, not just intended: `deny.toml` bans `openssl`, `openssl-sys`, `native-tls` and `tokio-native-tls` |
 
-### No request limits on the HTTP listeners
+### Request limits on the HTTP listeners
 
-Neither listener caps concurrent connections or times out a client that opens a
-socket and never finishes its request. Measured on the shipped image: 4 000 idle
-half-open connections raised RSS from 29 MiB to 113 MiB (~21 KiB each) while both
-listeners kept serving normally. Nothing stops that growing further, so the
-bound is the container memory limit above, not the application. Keep the
-listeners on loopback or a trusted network — which is the default on both counts.
+Both listeners cap concurrent connections at **256** and give a peer **10
+seconds** to send its request head. A connection that has sent nothing complete
+by then is dropped.
+
+This closes [F-03](security-audit.md#f-03). The measurement that opened it: 4 000
+idle half-open connections raised RSS from 29 MiB to 113 MiB (~21 KiB each) while
+both listeners kept serving normally, and nothing capped the count — the bound
+was the container's memory limit, not the application.
+
+**Neither limit is a `tower` layer, and that is the point.** A layer wraps the
+service, and the service is not reached until hyper has parsed a request; a
+request head that never completes never arrives, so `TimeoutLayer` would have
+run zero times against this attack. The limits sit below the service instead:
+the cap is a semaphore permit taken *before* `accept`, so at capacity peers wait
+in the kernel backlog rather than each costing a task, and the deadline is
+hyper's own `header_read_timeout`.
+
+It bounds the **head**, not the connection — the SSE stream on `/events` stays
+open as long as the browser wants it. `crates/huginn-web/src/serve.rs` carries
+the reasoning and the tests, including one that fails if the timeout is removed.
+
+Keep the listeners on loopback or a trusted network all the same, which is the
+default on both counts.
 
 ## Metrics endpoint auth
 

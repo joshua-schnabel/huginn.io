@@ -1,33 +1,12 @@
 # Risks and open questions
 
 Live document. Risks are removed when they are resolved, not when they stop being
-mentioned.
+mentioned — R1 went that way when the listener limits landed. Numbers are not
+reused, so a gap means something was fixed, not lost.
 
 The 2026-08-02 audit's findings are closed and recorded in
 [`security-audit.md`](security-audit.md); what is below is what remains open by
 decision, plus the operational risks the audit did not cover.
-
-## R1 — No request limits on either HTTP listener
-
-**Severity: medium · Status: open, undecided**
-
-Neither the debug UI nor the Prometheus listener caps concurrent connections or
-request duration. A client that opens many connections and holds them open costs
-huginn a task and a socket each, and nothing in the process says stop.
-
-This is [F-03](security-audit.md#f-03) from the audit, left open pending a
-decision on adding `tower-http` — a new dependency, so it needs approval
-(AGENTS.md §3).
-
-**Mitigation.** Both listeners are off by default, bind loopback by default, and
-the shipped compose file sets `mem_limit: 256m` and `pids_limit: 128`, which
-bounds the blast radius at the container rather than in the process.
-
-**Residual.** The container limit turns resource exhaustion into a container
-restart instead of an unbounded one. For an exposed UI that is thin.
-
-**Decide it either way.** Add the layer, or write down that the container limit
-is the accepted answer. An undecided finding is the one that gets forgotten.
 
 ## R2 — The debug UI is unauthenticated
 
@@ -84,21 +63,6 @@ with its rules written down and no entries.
 **Residual.** Unfixable today means blocking tomorrow: when Debian ships fixes,
 the gate starts failing until the image is rebuilt. That is intended, and it
 makes image currency an operational duty.
-
-## R5 — Secret file permissions are documented, not enforced
-
-**Severity: low · Status: open**
-
-The docs prescribe mode `0600` for `influx.token_file` and
-`metrics.api_key_file`. Nothing checks it. A token file left at `0644` in an
-image or a mount is readable by anything else in the container.
-
-**Mitigation.** The distroless image has no shell and no other processes, so
-"anything else in the container" is a narrow set today.
-
-**Fix.** Stat the file at startup and warn. Small, and it fits the fail-closed
-handling those files already get
-([ADR-0002](adr/0002-secrets-from-files-only.md)).
 
 ## R6 — A backend outage that outlives the process loses buffered results
 

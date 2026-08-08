@@ -25,13 +25,6 @@ the release PR. See [`ci-cd.md`](ci-cd.md).
 
 ## Next
 
-**Decide F-03: request limits on the HTTP listeners.** Neither listener caps
-concurrent connections or request duration. Either add a `tower-http` timeout and
-concurrency-limit layer — a new dependency, so it needs approval — or write down
-that the container's `mem_limit` and `pids_limit` are the accepted mitigation.
-Open either way; it should not stay undecided.
-[R1](risks.md), [`security-audit.md`](security-audit.md#f-03).
-
 **Authentication for the debug UI, or a decision not to have it.** `metrics.api_key_file`
 protects only the Prometheus listener; the UI serves the same probe inventory
 unauthenticated. Today the answer is "off by default, loopback by default,

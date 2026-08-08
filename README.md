@@ -169,8 +169,6 @@ with findings, reproductions and accepted risks, in
   [ADR-0004](docs/adr/0004-bounded-retry-queue.md)
 - **The TLS probe only covers HTTPS ports.** IMAPS, SMTPS and other raw TLS
   ports are out of scope. [R3](docs/risks.md)
-- **No request limits on the HTTP listeners.** Open and undecided —
-  [R1](docs/risks.md).
 
 ## Development
 
