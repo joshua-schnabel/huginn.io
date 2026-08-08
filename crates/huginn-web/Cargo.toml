@@ -10,6 +10,7 @@ publish.workspace = true
 # Path only, no version requirement — see huginn/Cargo.toml for why.
 huginn-core = { path = "../huginn-core" }
 axum = { workspace = true }
+hyper-util = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

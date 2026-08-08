@@ -824,6 +824,7 @@ dependencies = [
  "anyhow",
  "axum",
  "huginn-core",
+ "hyper-util",
  "serde_json",
  "tokio",
  "tokio-stream",

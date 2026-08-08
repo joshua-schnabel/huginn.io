@@ -60,6 +60,12 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 # Web framework (debug UI)
 axum = "0.8"
+# The connection cap and header-read timeout in huginn-web/src/serve.rs. Both
+# already sit in the tree under axum, so declaring them adds no crate to the
+# supply chain — it only names what is already there. A tower layer could not
+# do the job: it wraps the service, and a request head that never completes
+# never reaches one (F-03).
+hyper-util = { version = "0.1", features = ["server", "server-auto", "service", "tokio"] }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
