@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 # The floor. The Dockerfile's builder must be at or above it — Dependabot moves
 # that tag forward on its own, so "at least" is the invariant that survives an
