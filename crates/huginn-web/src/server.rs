@@ -60,7 +60,7 @@ pub async fn run_server_with_state(
 
     let listener = tokio::net::TcpListener::bind((addr, port)).await?;
     info!("Web UI listening on http://{addr}:{port}");
-    axum::serve(listener, app).await?;
+    crate::serve::serve_with_limits(listener, app).await?;
     Ok(())
 }
 

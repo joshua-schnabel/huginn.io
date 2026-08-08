@@ -64,7 +64,7 @@ pub async fn run_metrics_server(
         "Prometheus metrics listening on http://{addr}:{port}/metrics (auth: {})",
         if authed { "bearer" } else { "none" }
     );
-    axum::serve(listener, app).await?;
+    crate::serve::serve_with_limits(listener, app).await?;
     Ok(())
 }
 

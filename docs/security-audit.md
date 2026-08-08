@@ -35,7 +35,7 @@ method/path/auth matrix against both listeners.
 |---|---|---|---|---|
 | [F-01](#f-01) | **Medium** | `huginn-core`, probes | Control-character injection from a monitored host into console, logs and InfluxDB | **Fixed** |
 | [F-02](#f-02) | Low | `huginn-web` | No security response headers on either listener | **Fixed** |
-| [F-03](#f-03) | Low | `huginn-web` | No connection cap or request timeout on either listener | **Mitigated** — bounded by container limits, documented |
+| [F-03](#f-03) | Low | `huginn-web` | No connection cap or request timeout on either listener | **Fixed** — 256-connection cap and a 10 s header-read timeout |
 | [F-04](#f-04) | Low | `docker-compose.yml` | Shipped compose ran without container hardening and published both ports to `0.0.0.0` | **Fixed** |
 | [F-05](#f-05) | **Medium** | `huginn-core` | An empty InfluxDB token file started the process, which then discarded every batch | **Fixed** |
 | [F-06](#f-06) | Low | `deny.toml` | The "rustls only, no OpenSSL" policy was documented but not enforced | **Fixed** |
@@ -315,15 +315,15 @@ Recorded deliberately, not hidden — these are open by decision.
    patched version published upstream). They are accepted, monitored risk and are
    deliberately *not* filtered out of the Security tab — the open alert is the
    audit trail. Only fixable CRITICAL/HIGH findings block the pipeline.
-4. **No request timeout on the HTTP listeners** — [F-03](#f-03), pending a
-   decision on adding `tower-http`.
 
 ## Recommendations
 
 Not done in this pass, in rough priority order:
 
-1. Decide on [F-03](#f-03): add a `tower-http` timeout + concurrency-limit layer,
-   or accept the container-limit mitigation as sufficient.
+1. ~~Decide on [F-03](#f-03)~~ — **done**, and not the way this recommendation
+   suggested. A `tower-http` layer would not have helped: it wraps the service,
+   which a never-completed request head never reaches. The fix is a connection
+   cap and hyper's `header_read_timeout`, below the service.
 2. Consider warning at startup when a secret file is group- or world-readable.
    The docs prescribe mode `0600`; nothing checks it.
 3. Consider a `HEALTHCHECK` in the `Dockerfile`. It needs a health subcommand on
