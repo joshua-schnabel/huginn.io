@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2026-08-07
 
+Fixes the tail of the release path. huginn's own code is untouched — the image
+`0.2.1` publishes is `0.2.0` rebuilt from the same sources.
+
+### Fixed
+
+- **The release test report was never built.** `scripts/test-report.sh` failed with "no `test result:` lines found in input" against a log that contained fourteen of them, so `v0.2.0` shipped without its report. `CARGO_TERM_COLOR: always` is set workflow-wide, cargo colours its status lines even when piped to a file, and the escape sequences sit *before* the word — so `^\s*Running` never matched, no suite was ever opened, and every `test result:` line was skipped as belonging to nothing. The parser strips ANSI on the way in now. Stripping there rather than asking the caller for `CARGO_TERM_COLOR=never`: the input is a captured log, and a parser that only works on logs captured a particular way breaks on the next caller. muninn.io hit this at its own first release and fixed it the same way; huginn never received the fix.
+- **`## [Unreleased]` was left closed after `v0.2.0`.** `release.yml`'s `prepare-dev` was skipped because the SBOM upload failed against a release GitHub had marked immutable, so the changelog was never reopened — and `release-dispatch.yml` refuses to cut a release without that section. Reopened by hand, with the compare link repointed at the released tag.
+
+### Added
+
+- **Security updates are moved onto `dev` automatically.** `target-branch: dev` covers *version* updates only; security updates ignore it and always open against the default branch, and no setting changes that. Left alone, such a PR merges a lockfile into `main` that `dev` has never seen, and the next release merge reverts it silently. `dependabot-auto-merge.yml` now retargets them and asks Dependabot to rebuild the branch against `dev` — the rebuild matters, because the original diff was resolved against `main`'s manifests and can be a *downgrade*: #51 proposed `rustls-webpki` 0.103.10 while `dev` already carried 0.103.13. A just-retargeted PR is never auto-merged in the same run.
+
+### Changed
+
+- **`dependabot.yml` no longer overstates what `target-branch` covers.** It claimed the setting stops bumps landing on `main`; it stops version updates only.
+
 ## [0.2.0] - 2026-08-07
 
 ### Added
