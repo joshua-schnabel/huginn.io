@@ -204,7 +204,9 @@ the certificate, self-signed and expired ones included, not to trust it. See
 
 ## Environment overrides
 
-All values can be overridden without editing the YAML file:
+A defined subset can be overridden without editing the YAML file — not every
+key. Probe entries, `event_hub_capacity` and the `influx` batching and retry
+keys have no ENV form; the table below is the whole list:
 
 | Variable | Overrides |
 |---|---|

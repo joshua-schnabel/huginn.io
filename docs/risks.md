@@ -8,44 +8,6 @@ The 2026-08-02 audit's findings are closed and recorded in
 [`security-audit.md`](security-audit.md); what is below is what remains open by
 decision, plus the operational risks the audit did not cover.
 
-## R2 — The debug UI is unauthenticated
-
-**Severity: medium · Status: accepted trade, documented**
-
-`/`, `/events` and `/metrics/latest` serve the complete probe inventory — names,
-targets, error strings — to anyone who can reach the port. That is an
-infrastructure map.
-
-`metrics.api_key_file` protects **only** the Prometheus listener. Enabling it
-while the UI is exposed protects nothing, because the UI serves the same data
-without a key.
-
-**Mitigation.** Off by default; binds `127.0.0.1` by default
-([ADR-0007](adr/0007-debug-ui-has-no-cli-flag.md)); published on `127.0.0.1` by
-the shipped compose file. Both listeners send a strict CSP with no
-`unsafe-inline`, plus `nosniff`, `DENY`, `no-referrer` and `no-store`.
-
-**Residual.** Every one of those is a deployment answer to an application
-question. A UI exposed on purpose is exposed to everyone.
-
-**Revisit if** anyone runs the UI outside loopback. Then it needs auth, not
-documentation.
-
-## R3 — The TLS probe only covers HTTPS ports
-
-**Severity: low · Status: known limit, documented**
-
-The `tls` probe reads the certificate out of an HTTPS response's TLS info, so the
-endpoint has to speak HTTP over TLS. Raw TLS ports — IMAPS 993, SMTPS 465,
-LDAPS — cannot be probed for expiry, even though they are exactly the kind of
-certificate that expires unnoticed.
-
-**Mitigation.** None. The limit is stated in the probe's documentation and in
-[`configuration.md`](configuration.md).
-
-**Fix.** A handshake-only client rather than a `reqwest` client. Bounded work,
-nobody has needed it yet — [`roadmap.md`](roadmap.md).
-
 ## R4 — Unfixable base-image CVEs stay open in the Security tab
 
 **Severity: low · Status: accepted, monitored**
@@ -81,17 +43,21 @@ the shutdown drain gives the writer a bounded window to flush before exit.
 one with a volume, to cover a case where the orchestrator is already restarting
 things — [ADR-0004](adr/0004-bounded-retry-queue.md).
 
-## O1 — Nothing has been released yet
+## O1 — The release path has run, but not yet under one build
 
 **Open question, not a risk to a deployment**
 
-There is no `v*` tag, so the whole release path — tag push, GitHub Release, SBOM,
-housekeeping PR — has never run end to end here. Two bugs in it were found by
-reading rather than by running (`ci-cd.md`), and both are fixed; a third would be
-found the same way or not at all until the first release.
+Three releases have been cut, so the path is no longer untested — but every one
+of them ran it in the shape that built the image twice, and the fix for that
+(`ci.yml` no longer triggering on tags, plus the digest recorded in the tag and
+re-checked before the Release is created) has not yet been exercised by a real
+release.
 
 `release.yml`'s `workflow_dispatch` entry point exists so a partial release can
 be completed by hand rather than re-cut.
+
+**Closes when** one release completes end to end with a single build, and the
+digest in the GitHub Release matches the one the tag records.
 
 ## Related
 

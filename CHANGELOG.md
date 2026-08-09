@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The debug UI stays unauthenticated, and that is now a decision rather than an open question.** It had been carried as R2, and on the roadmap as "authentication for the debug UI, or a decision not to have it", through three releases. An open question that never closes is indistinguishable from an oversight, which by then was the larger risk. [ADR-0009](docs/adr/0009-debug-ui-stays-unauthenticated.md) records the decision and what was rejected — chiefly `ui.api_key_file`, which is cheap to build and buys little: a bearer token typed into a browser means either a query parameter that lands in logs and `Referer` headers, or a proxy holding the header, and a proxy can do the authentication itself. R2 leaves `risks.md`, which is that file's own rule for a resolved risk.
+- **The canonical documentation no longer says the project has never been released.** `AGENTS.md`, `docs/roadmap.md`, `docs/risks.md` (O1) and a comment in `release.yml` all described a repository with no `v*` tag, through three tagged and published releases. None of them names a version now — the current one is the topmost `## [x.y.z]` heading in this file, the one place it cannot go stale. O1 is rewritten to the question that is genuinely still open: whether a release completes end to end under the single-build path.
+- **`docs/security-audit.md` no longer contradicts itself about F-03.** The summary table marked it Fixed while the finding below still read "Mitigated and documented — not fixed in code" and "Open decision for the maintainer". The detail section now records what was actually built, and why it is not what the report recommended.
+- **Smaller corrections found while checking the above.** `configuration.md` claimed every value has an ENV override; it is a defined subset, and probe entries, `event_hub_capacity` and the `influx` batching keys have none. `config.example.yaml` pointed at `docs/SECURITY.md` — the vulnerability-reporting policy — for a hardening question, a leftover from the `docs/security.md` rename. Two comments in `config.rs` referenced R5, which was removed from `risks.md` when the fix that closed it landed. `versioning.md`'s upgrade section was headed "0.1.0 to 1.0" while skipping the three releases in between.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed

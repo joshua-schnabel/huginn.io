@@ -24,9 +24,9 @@ name: Release
 #
 # The same GITHUB_TOKEN rule is why `publish` pushes the tag with RELEASE_PAT:
 # GitHub does not start a workflow from an event that token created, so a tag
-# pushed with it fires nothing here. Nothing has been released from this
-# repository yet; muninn.io shipped with the same wiring and its v0.1.0 got its
-# image, its mirror and its tag, and no Release at all, because of exactly that.
+# pushed with it fires nothing here. muninn.io shipped with the same wiring and
+# its v0.1.0 got its image, its mirror and its tag, and no Release at all,
+# because of exactly that.
 #
 # workflow_dispatch is the way back in when that happens — and the way to rebuild
 # a Release whose run failed halfway. It takes an existing tag and does the same

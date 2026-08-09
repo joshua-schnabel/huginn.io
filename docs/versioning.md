@@ -41,7 +41,14 @@ a deliberate act and gets a changelog entry.
 
 Only the latest release receives fixes — see [`SECURITY.md`](SECURITY.md).
 
-## Upgrading from 0.1.0 to 1.0
+## Upgrading
+
+Between released `0.x` versions the changes that need attention are listed in
+[`CHANGELOG.md`](../CHANGELOG.md), release by release. This section covers only
+the two behaviour changes that pre-date `0.2.0` and are therefore easy to miss
+when coming from the very first version.
+
+### From 0.1.0
 
 Two behaviour changes need attention; everything else is additive:
 
