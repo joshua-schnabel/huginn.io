@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Base images are pinned by digest.** Every GitHub Action in this repository is pinned to a 40-character SHA, because a tag is movable and a compromised upstream would otherwise reach CI with no Dependabot PR — but the builder and runtime base images, which end up *inside the artefact people run*, were still floating tags. `gcr.io/distroless/cc-debian12` in particular has no version to speak of, so two builds of one commit could differ in their runtime layer. All of them now use the `tag@sha256:…` form, which keeps the version readable and lets Dependabot move both halves together; the same applies to `influxdb` and `caddy` in both compose files. R4 already makes base-image currency an operational duty, and the Trivy gate is what says when it is due.
+- **Two probe constructors return errors instead of panicking.** The HTTP and TLS clients were built with `expect`, so a failure at that point would have taken down the whole monitor — every other probe with it — while the `Probe` contract says a failure is *data*: a result that says what went wrong. Both now carry a `Result` and report DOWN with the reason. The two remaining `expect`s in non-test code (the retry queue's front-pop under its own lock, and the connection semaphore that is never closed) are genuinely unreachable invariants and say so in a comment, which is what AGENTS.md §7 asks for — an error branch no test could reach and no reader could check would be worse.
+
+### Fixed
+
+- **The integration stack no longer publishes on every interface.** `docker-compose.integration.yml` exposed the unauthenticated debug UI, a metrics endpoint whose API key is a known test string, and an InfluxDB initialised with a known admin token, on `0.0.0.0` — on what may be a shared CI runner or a developer's laptop. All three are on `127.0.0.1` now, matching the shipped compose file. Its header comment also claimed the file uses inline environment variables instead of secret files; it mounts files, and the claim contradicted the rule the project is built on.
+- **Three unused licence allowances are gone from `deny.toml`.** `BSD-2-Clause`, `Unicode-DFS-2016` and `CC0-1.0` matched no crate in the tree, which cargo-deny had been reporting as `license-not-encountered`. An allowance nobody examined is the gap that let the OpenSSL entry sit there until audit F-06; removing them is not a restriction but a decision point — if a future dependency arrives under one, the gate fails and someone adds it back deliberately.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed

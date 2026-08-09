@@ -45,7 +45,10 @@ services:
         condition: service_healthy
 
   influxdb:
-    image: influxdb:2.7-alpine
+    # Digest-pinned like the Dockerfile's bases: the tag is movable, and this
+    # container is initialised with an admin token. Dependabot updates the
+    # tag and digest together.
+    image: influxdb:2.7-alpine@sha256:991673dc2d237bd79b15d6627410d72de111387e7dac673dbb92cf3333ffcc8c
     restart: unless-stopped
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
