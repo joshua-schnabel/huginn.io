@@ -224,35 +224,55 @@ pub(crate) async fn run(
     // Web UI + Prometheus subscribers (if enabled). Both listeners feed from
     // one shared WebState so the hub gains a single subscriber either way.
     if cfg.ui.enabled || cfg.metrics.enabled {
-        let state = Arc::new(huginn_web::state::WebState::new());
-        Arc::clone(&state).start_event_loop(Arc::clone(&hub));
-        if cfg.ui.enabled {
-            let bind = cfg.ui.bind.clone();
-            let port = cfg.ui.port;
-            let ui_state = Arc::clone(&state);
-            tokio::spawn(async move {
-                if let Err(e) =
-                    huginn_web::server::run_server_with_state(&bind, port, ui_state).await
-                {
-                    error!("Web UI error: {e}");
-                }
-            });
-        }
-        if cfg.metrics.enabled {
-            // Read the key file up front: a configured-but-broken key file must
-            // stop startup, not fall back to serving unauthenticated (same
-            // fail-closed rule as the InfluxDB token).
+        // Bind both sockets here, on the main task, before anything is spawned.
+        // They used to be bound inside their own tasks, so a taken port produced
+        // a single logged error while the process carried on without the service
+        // that had been explicitly enabled. For the UI that is a dashboard
+        // nobody can reach; for metrics it is worse, because Prometheus reports
+        // a scrape target that never answers as the *monitored* host being down.
+        // Enabled and absent is not a state worth having.
+        let ui_listener = if cfg.ui.enabled {
+            Some(
+                huginn_web::server::bind_ui(&cfg.ui.bind, cfg.ui.port)
+                    .await
+                    .context("Failed to start the debug UI")?,
+            )
+        } else {
+            None
+        };
+        // Read the key file up front too: a configured-but-broken key file must
+        // stop startup, not fall back to serving unauthenticated (same
+        // fail-closed rule as the InfluxDB token).
+        let metrics_bound = if cfg.metrics.enabled {
             let api_key = cfg
                 .metrics
                 .read_api_key()
                 .context("Failed to read the metrics API key file")?;
-            let bind = cfg.metrics.bind.clone();
-            let port = cfg.metrics.port;
+            Some((
+                huginn_web::prometheus::bind_metrics(&cfg.metrics.bind, cfg.metrics.port)
+                    .await
+                    .context("Failed to start the Prometheus metrics listener")?,
+                api_key,
+            ))
+        } else {
+            None
+        };
+
+        let state = Arc::new(huginn_web::state::WebState::new());
+        Arc::clone(&state).start_event_loop(Arc::clone(&hub));
+        if let Some(listener) = ui_listener {
+            let ui_state = Arc::clone(&state);
+            tokio::spawn(async move {
+                if let Err(e) = huginn_web::server::serve_ui(listener, ui_state).await {
+                    error!("Web UI error: {e}");
+                }
+            });
+        }
+        if let Some((listener, api_key)) = metrics_bound {
             let metrics_state = Arc::clone(&state);
             tokio::spawn(async move {
                 if let Err(e) =
-                    huginn_web::prometheus::run_metrics_server(&bind, port, metrics_state, api_key)
-                        .await
+                    huginn_web::prometheus::serve_metrics(listener, metrics_state, api_key).await
                 {
                     error!("Prometheus metrics error: {e}");
                 }
@@ -595,6 +615,41 @@ mod tests {
 
         shutdown_tx.send(()).ok();
         assert!(ok.is_ok(), "/health did not return 200 within 10s");
+    }
+
+    /// An enabled listener whose port is taken must stop startup.
+    ///
+    /// It used to bind inside its own spawned task, so a clash produced one
+    /// logged line and the daemon carried on without the service that had been
+    /// explicitly turned on. For metrics that is the worse half: Prometheus
+    /// reports a scrape target that never answers as the *monitored* host being
+    /// down, so the failure is attributed to the wrong machine entirely.
+    #[tokio::test]
+    async fn run_fails_when_an_enabled_listener_port_is_taken() {
+        for which in ["ui", "metrics"] {
+            let tf = tempfile_with("mytoken");
+            let port = free_port();
+            let _squatter = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+
+            let mut cfg = minimal_config(&tf);
+            match which {
+                "ui" => {
+                    cfg.ui.enabled = true;
+                    cfg.ui.port = port;
+                }
+                _ => {
+                    cfg.metrics.enabled = true;
+                    cfg.metrics.port = port;
+                }
+            }
+
+            let (shutdown_tx, _) = broadcast::channel(1);
+            let result = run(Arc::new(cfg), false, shutdown_tx).await;
+            assert!(
+                result.is_err(),
+                "{which}: a listener that cannot bind must stop startup"
+            );
+        }
     }
 
     /// run() returns an error when InfluxWriter::new() fails (missing token file).

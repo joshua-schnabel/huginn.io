@@ -9,6 +9,7 @@ use crate::error::{HuginError, Result};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub influx: InfluxConfig,
     #[serde(default)]
@@ -33,6 +34,7 @@ fn default_hub_capacity() -> usize {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InfluxConfig {
     pub url: String,
     pub org: String,
@@ -190,6 +192,7 @@ fn warn_if_readable_by_others(_path: &str) {}
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UiConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -228,6 +231,7 @@ fn default_ui_port() -> u16 {
 /// Prometheus `/metrics` listener, gated independently of the debug UI so
 /// scraping doesn't require exposing the UI (and vice versa).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -305,6 +309,7 @@ pub enum LogFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogConfig {
     #[serde(default)]
     pub format: LogFormat,
@@ -359,6 +364,7 @@ impl std::fmt::Display for ProbeType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProbeConfig {
     pub name: String,
     #[serde(rename = "type")]
@@ -563,6 +569,16 @@ impl AppConfig {
         if self.influx.url.is_empty() {
             return Err(HuginError::Config("influx.url must not be empty".into()));
         }
+        // The URL is only ever used to build the write endpoint, and reqwest
+        // does not parse it until the first batch is ready to go — so a typo
+        // like `localhost:8086` with no scheme surfaced as a transport error on
+        // every write, minutes in, looking exactly like an unreachable server.
+        if !(self.influx.url.starts_with("http://") || self.influx.url.starts_with("https://")) {
+            return Err(HuginError::Config(format!(
+                "influx.url '{}' must be an absolute URL starting with http:// or https://",
+                self.influx.url
+            )));
+        }
         if self.influx.org.is_empty() {
             return Err(HuginError::Config("influx.org must not be empty".into()));
         }
@@ -592,28 +608,71 @@ impl AppConfig {
                     .into(),
             ));
         }
+        // A zero initial backoff makes the writer retry in a tight loop against a
+        // server that is already struggling; a zero ceiling caps every wait at
+        // zero and does the same thing however large the initial value is.
+        if self.influx.retry_initial_backoff_ms == 0 {
+            return Err(HuginError::Config(
+                "influx.retry_initial_backoff_ms must be > 0 (0 retries in a tight loop against a failing server)"
+                    .into(),
+            ));
+        }
+        if self.influx.retry_max_backoff_ms == 0 {
+            return Err(HuginError::Config(
+                "influx.retry_max_backoff_ms must be > 0 (0 caps every retry wait at zero)".into(),
+            ));
+        }
+        // The ceiling below the first delay is not a smaller ceiling, it is a
+        // contradiction: the backoff starts above its own maximum, so the value
+        // an operator wrote as "wait at most this long" never applies.
+        if self.influx.retry_max_backoff_ms < self.influx.retry_initial_backoff_ms {
+            return Err(HuginError::Config(format!(
+                "influx.retry_max_backoff_ms ({}) is below influx.retry_initial_backoff_ms ({}) — \
+                 the ceiling must not be lower than the first delay",
+                self.influx.retry_max_backoff_ms, self.influx.retry_initial_backoff_ms
+            )));
+        }
         // tokio::sync::broadcast::channel panics on a capacity of 0, so without
         // this the process dies at startup with no hint about which key is wrong.
         if self.event_hub_capacity == 0 {
             return Err(HuginError::Config("event_hub_capacity must be > 0".into()));
         }
-        // Caught here rather than at bind time: the UI is spawned into its own
-        // task, so a parse failure there would only surface as a logged error
-        // while the daemon keeps running without a UI.
-        if self.ui.bind.parse::<std::net::IpAddr>().is_err() {
-            return Err(HuginError::Config(format!(
+        // Caught here rather than at bind time: each listener is spawned into
+        // its own task, so a parse failure there would only surface as a logged
+        // error while the daemon keeps running without the service.
+        //
+        // The parsed values are kept, because the collision check below has to
+        // compare addresses rather than the strings they were written as: `::1`
+        // and `0:0:0:0:0:0:0:1` are the same socket and were not the same
+        // `String`, so two listeners could be configured onto one address and
+        // the check would wave them through.
+        let ui_addr = self.ui.bind.parse::<std::net::IpAddr>().map_err(|_| {
+            HuginError::Config(format!(
                 "ui.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
                 self.ui.bind
-            )));
-        }
-        // Same reasoning as ui.bind: the metrics server runs in its own task,
-        // so anything decidable here would otherwise surface only as a logged
-        // error while the daemon keeps running without metrics.
-        if self.metrics.bind.parse::<std::net::IpAddr>().is_err() {
-            return Err(HuginError::Config(format!(
+            ))
+        })?;
+        let metrics_addr = self.metrics.bind.parse::<std::net::IpAddr>().map_err(|_| {
+            HuginError::Config(format!(
                 "metrics.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
                 self.metrics.bind
-            )));
+            ))
+        })?;
+        // Port 0 asks the OS for an arbitrary free port. For a listener whose
+        // whole purpose is to be connected to by something else — a browser, a
+        // Prometheus scrape config — that produces a service on an address
+        // nobody can predict, and a config that appears to work while nothing
+        // can reach it.
+        for (name, enabled, port) in [
+            ("ui", self.ui.enabled, self.ui.port),
+            ("metrics", self.metrics.enabled, self.metrics.port),
+        ] {
+            if enabled && port == 0 {
+                return Err(HuginError::Config(format!(
+                    "{name}.port must not be 0 — port 0 asks the OS for an arbitrary free port, \
+                     so nothing could be configured to reach it"
+                )));
+            }
         }
         // An empty path is a config bug — the operator meant to set a file.
         if let Some(path) = &self.metrics.api_key_file {
@@ -624,10 +683,11 @@ impl AppConfig {
             }
         }
         // Two listeners on one address can't both bind; the second would lose
-        // at runtime with only a logged error.
+        // at runtime with only a logged error. Compared as parsed addresses —
+        // see above for why the string comparison this replaced was not enough.
         if self.ui.enabled
             && self.metrics.enabled
-            && self.ui.bind == self.metrics.bind
+            && ui_addr == metrics_addr
             && self.ui.port == self.metrics.port
         {
             return Err(HuginError::Config(format!(
@@ -671,10 +731,49 @@ impl AppConfig {
             }
             // A negative threshold would mean "stay UP for a while after the
             // certificate has expired" — surely a sign error, never intent.
+            //
+            // The finiteness check is not pedantry: YAML accepts `.nan` and
+            // `.inf`, and `NaN < 0.0` is false, so a NaN threshold passed this
+            // check and then made every later comparison false too — the probe
+            // reported UP whatever the certificate said, which is the one
+            // outcome a certificate-expiry probe must never produce silently.
+            // `.inf` passes for the opposite reason and reports DOWN forever.
             if let Some(days) = probe.tls_expiry_fail_days {
+                if !days.is_finite() {
+                    return Err(HuginError::Config(format!(
+                        "probe '{}': tls_expiry_fail_days must be a finite number (got {days}) — \
+                         NaN makes every expiry comparison false, so the probe would report UP \
+                         however close the certificate is to expiring",
+                        probe.name
+                    )));
+                }
                 if days < 0.0 {
                     return Err(HuginError::Config(format!(
                         "probe '{}': tls_expiry_fail_days must be >= 0 (omit it to fail only once the certificate has expired)",
+                        probe.name
+                    )));
+                }
+            }
+            // A status code outside the HTTP range can never be returned, so the
+            // probe would report DOWN on every tick for ever — the exact failure
+            // shape this whole function exists to prevent.
+            if let Some(status) = probe.expected_status {
+                if !(100..=599).contains(&status) {
+                    return Err(HuginError::Config(format!(
+                        "probe '{}': expected_status {status} is not a valid HTTP status code \
+                         (100-599), so the probe could never match it",
+                        probe.name
+                    )));
+                }
+            }
+            // Compared against the resolved answer as an IpAddr by the probe, so
+            // an unparseable value never matches: the probe reports DOWN on every
+            // tick and the resolver was working perfectly.
+            if let Some(ip) = &probe.dns_expected_ip {
+                if ip.parse::<std::net::IpAddr>().is_err() {
+                    return Err(HuginError::Config(format!(
+                        "probe '{}': dns_expected_ip '{ip}' is not an IP address — it is compared \
+                         against the resolved address, so nothing would ever match it",
                         probe.name
                     )));
                 }
@@ -1018,6 +1117,229 @@ probes:
             err.to_string().contains("tls_expiry_fail_days"),
             "error must name the key: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Strict loading: unknown keys, and values that could never work
+    // -----------------------------------------------------------------------
+
+    /// A misspelled key used to be swallowed in silence, which is the worst
+    /// possible outcome for a config: the operator believes they set something,
+    /// the default applies, and nothing anywhere says otherwise. `batch_sizes`
+    /// here is the shape of a real typo.
+    #[test]
+    fn loading_rejects_an_unknown_key() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+  batch_sizes: 10
+"#;
+        let err = serde_yaml_ng::from_str::<AppConfig>(yaml)
+            .expect_err("an unknown key must not be accepted");
+        assert!(
+            err.to_string().contains("batch_sizes"),
+            "the error must name the offending key: {err}"
+        );
+    }
+
+    /// Same rule one level up, where a mistyped *section* would otherwise mean
+    /// the whole block is ignored — `metric:` instead of `metrics:` silently
+    /// disables the endpoint it was meant to configure.
+    #[test]
+    fn loading_rejects_an_unknown_section() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+metric:
+  enabled: true
+"#;
+        assert!(
+            serde_yaml_ng::from_str::<AppConfig>(yaml).is_err(),
+            "an unknown section must not be accepted"
+        );
+    }
+
+    /// A scheme-less InfluxDB URL parses fine as a string and fails only when
+    /// the first batch is written, minutes later, looking like an unreachable
+    /// server.
+    #[test]
+    fn validation_rejects_influx_url_without_a_scheme() {
+        let yaml = r#"
+influx:
+  url: "localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a scheme-less URL must be rejected");
+        assert!(err.to_string().contains("influx.url"), "got: {err}");
+    }
+
+    /// The regression this check exists for: `NaN < 0.0` is false, so a NaN
+    /// threshold passed the sign check and then made every expiry comparison
+    /// false as well — the probe reported UP whatever the certificate said.
+    #[test]
+    fn validation_rejects_non_finite_tls_expiry_fail_days() {
+        for value in [".nan", ".inf"] {
+            let yaml = format!(
+                r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+probes:
+  - name: "cert"
+    type: tls
+    target: "example.com:443"
+    tls_expiry_fail_days: {value}
+"#
+            );
+            let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+            let err = cfg
+                .validate()
+                .expect_err(&format!("{value} must be rejected"));
+            assert!(
+                err.to_string().contains("tls_expiry_fail_days"),
+                "error must name the key for {value}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_an_impossible_expected_status() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+probes:
+  - name: "web"
+    type: http
+    target: "https://example.com"
+    expected_status: 1000
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a status outside 100-599 must be rejected");
+        assert!(err.to_string().contains("expected_status"), "got: {err}");
+    }
+
+    #[test]
+    fn validation_rejects_an_unparseable_dns_expected_ip() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+probes:
+  - name: "dns"
+    type: dns
+    target: "1.1.1.1:53"
+    dns_expected_ip: "example.com"
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a hostname is not an IP address and could never match");
+        assert!(err.to_string().contains("dns_expected_ip"), "got: {err}");
+    }
+
+    #[test]
+    fn validation_rejects_a_retry_ceiling_below_the_first_delay() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+  retry_initial_backoff_ms: 5000
+  retry_max_backoff_ms: 100
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a ceiling below the first delay must be rejected");
+        assert!(
+            err.to_string().contains("retry_max_backoff_ms"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_zero_retry_backoffs() {
+        for key in ["retry_initial_backoff_ms", "retry_max_backoff_ms"] {
+            let yaml = format!(
+                r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+  {key}: 0
+"#
+            );
+            let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert!(cfg.validate().is_err(), "{key}: 0 must be rejected");
+        }
+    }
+
+    /// Port 0 asks the OS for an arbitrary free port — a listener nothing can be
+    /// configured to reach.
+    #[test]
+    fn validation_rejects_port_zero_on_an_enabled_listener() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+ui:
+  enabled: true
+  port: 0
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg.validate().expect_err("port 0 must be rejected");
+        assert!(err.to_string().contains("ui.port"), "got: {err}");
+    }
+
+    /// The collision check compares parsed addresses, so two spellings of the
+    /// same IPv6 address are caught. As raw strings they differ, and both
+    /// listeners were allowed onto one socket.
+    #[test]
+    fn validation_rejects_equivalent_ipv6_addresses_on_one_port() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+ui:
+  enabled: true
+  bind: "::1"
+  port: 9500
+metrics:
+  enabled: true
+  bind: "0:0:0:0:0:0:0:1"
+  port: 9500
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("the same address written two ways is still one socket");
+        assert!(err.to_string().contains("metrics.port"), "got: {err}");
     }
 
     #[test]

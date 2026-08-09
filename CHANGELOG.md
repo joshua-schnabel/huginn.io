@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Config loading is strict, and settings that could never work are rejected at startup.** An unknown key used to be swallowed in silence — the worst outcome available, because the operator believes they set something, the default applies, and nothing disagrees. `batch_sizes` for `batch_size` now fails and names the key, as does a mistyped section like `metric:` for `metrics:`, which would otherwise have quietly disabled the endpoint it was meant to configure. Several values that were only decidable later are decided now: `influx.url` must carry a scheme (without one it failed on the first write, minutes in, looking like an unreachable server); `expected_status` must be a real HTTP status and `dns_expected_ip` must parse as an IP address, neither of which could otherwise ever match, so the probe reported DOWN on every tick while the target was fine; the retry backoffs must be non-zero and the ceiling must not sit below the first delay. `tls_expiry_fail_days` must now be **finite** as well as non-negative — YAML accepts `.nan`, and `NaN < 0.0` is false, so a NaN threshold passed the sign check and then made every expiry comparison false too, reporting UP however close the certificate was to expiring. The `ui`/`metrics` collision check compares parsed addresses instead of raw strings, so `::1` and `0:0:0:0:0:0:0:1` are recognised as one socket, and an enabled listener may not use port `0`.
+
+### Fixed
+
+- **An enabled listener that cannot bind now stops startup.** The debug UI and the Prometheus endpoint bound their sockets inside their own spawned tasks, so a port clash produced a single logged error while the daemon carried on without the service that had been explicitly enabled. For the UI that is a dashboard nobody can reach; for metrics it is worse, because Prometheus reports a scrape target that never answers as the *monitored* host being down — the failure is attributed to the wrong machine entirely. Both are bound on the main task before the scheduler starts, so the process either has the listeners it was configured with or does not start.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed
