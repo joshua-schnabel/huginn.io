@@ -133,16 +133,34 @@ actually send, and catching only SIGINT meant the drain below never ran under
 either — every buffered result was lost on each deploy.
 
 1. The signal fires; `run()` stops waiting.
-2. The hub is dropped, which closes every subscriber's receiver.
-3. The batcher takes `Closed` as its cue to queue what it still holds and close
+2. **Every probe loop stops and is joined.** Each holds its own
+   `Arc<EventHub>`, so this has to complete before step 3 means anything.
+3. The hub is dropped, which closes every subscriber's receiver.
+4. The batcher takes `Closed` as its cue to queue what it still holds and close
    the queue.
-4. The writer drains, bounded by `influx.shutdown_drain_timeout_ms`.
-5. The process exits.
+5. The writer drains, bounded by `influx.shutdown_drain_timeout_ms`.
+6. The process exits.
 
-The bound in step 4 matters as much as the wait itself: retries are unbounded in
+**Step 2 is not a formality, and its position is the whole point.** The loops
+were once detached: `run()` dropped only its own hub clone and went straight to
+the drain. A probe still inside a slow read — an SMTP or IMAP peer can consume a
+full timeout connecting and another one being read from — kept the hub's
+`Sender` alive, so the batcher never observed `Closed` and never queued the
+partial batch it was holding. The drain then ran its full timeout and logged
+that InfluxDB was unreachable, while InfluxDB had been reachable throughout.
+Each loop therefore also selects on the shutdown channel *during* a probe, not
+only between two of them, and anything still running when the grace period ends
+is aborted so it cannot hold the hub open indefinitely. The drain's timeout
+message names which stage overran, because "the backend is down" and "a probe
+would not stop" call for opposite responses.
+
+The bound in step 5 matters as much as the wait itself: retries are unbounded in
 attempts, so an InfluxDB that is down at shutdown would otherwise keep the
 process alive forever. On timeout the buffered results are discarded and a
 warning says so.
+
+An interrupted probe publishes nothing. Inventing a DOWN result for it would
+write a fake outage into InfluxDB on every deploy.
 
 There is no configuration reload. Change the YAML, restart the process.
 
