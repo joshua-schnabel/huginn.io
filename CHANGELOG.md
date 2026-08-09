@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The image has a `HEALTHCHECK`, and a `huginn healthcheck` subcommand behind it.** An orchestrator could previously see that the process existed and nothing more, so a huginn whose runtime had stopped scheduling kept its container `running` indefinitely — for a monitor, the failure that matters most is the one where it stops measuring and says nothing. Distroless carries no shell and no `curl`, so the check has to be the binary itself, and that needs an endpoint to ask. The debug UI's `/health` could not serve: it is off by default, so a `HEALTHCHECK` built on it would report unhealthy on every stock deployment, which is worse than no check because it teaches operators to ignore the status column. So there is a third listener, `health`, **on by default** on `127.0.0.1:9115`, serving `GET /health` and nothing else — no probe names, no targets, no errors. It has deliberately **no `bind` key**: Docker runs `HEALTHCHECK` inside the container, where loopback is exactly right, while a published port reaches the bridge IP and never this socket, so it cannot be exposed by configuration at all. Liveness, not readiness — it ignores whether probes are succeeding and whether InfluxDB is reachable, because an orchestrator that restarted huginn over a monitored host going down would remove the monitor precisely when it is needed. Startup fails, naming the port, if the listener cannot bind; the port is fixed, so several huginns outside containers need one each. Running the binary with no subcommand still starts the daemon, which the binary suite now asserts — the ENTRYPOINT carries no subcommand, and a required one would have broken every deployment at once. [ADR-0008](docs/adr/0008-liveness-listener-on-by-default.md)
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed
