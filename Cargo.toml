@@ -104,10 +104,21 @@ chrono = { version = "0.4", features = ["serde"] }
 # 0.26 required: 0.24 pulls hickory-proto <0.26.1 (RUSTSEC-2026-0119, O(n²) name compression)
 hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
 
-# X.509 parsing — reads a certificate's notAfter for the TLS-expiry probe. The
-# TLS handshake itself uses rustls/tokio-rustls (already in the tree via reqwest);
-# only the certificate introspection needs this.
+# X.509 parsing — reads a certificate's notAfter for the TLS-expiry probe.
 x509-parser = "0.18"
+
+# The TLS-expiry probe's handshake. Both were already in the tree under reqwest,
+# so declaring them adds nothing to the supply chain — it only names what is
+# there (the same situation as hyper-util in huginn-web). `ring` rather than
+# aws-lc-rs because that is the provider reqwest already pulls in; two crypto
+# backends in one binary would be a real addition.
+#
+# Needed because the probe cannot go through reqwest: an HTTP client only
+# reaches the certificate by making an HTTP request, which restricts the probe
+# to endpoints that speak HTTP over TLS. IMAPS, SMTPS and LDAPS present
+# certificates that expire exactly like any other — see ADR-0006.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 
 # Test helpers (available workspace-wide)
 tempfile = "3"

@@ -172,13 +172,14 @@ later in a way that looks like an outage:
 ```yaml
 - name: my-cert
   type: tls
-  target: "example.com:443"   # must speak HTTPS on this port
+  target: "example.com:443"   # any TLS port: 443, 993, 465, 636, …
   interval_secs: 3600         # certificates change slowly — probe rarely
   tls_expiry_fail_days: 14    # DOWN once fewer than 14 days remain
 ```
 
-The probe completes a TLS handshake and reports the days until the server
-certificate expires as the `tls_cert_expiry_days` metric (negative once
+The probe completes a TLS handshake — and nothing more; no application-protocol
+request is made — then reports the days until the server certificate expires as
+the `tls_cert_expiry_days` metric (negative once
 expired; kept on DOWN results too, so alerts can see how far gone it is).
 Certificate **verification is intentionally skipped** — the point is to read
 the certificate, self-signed and expired ones included, not to trust it. See
@@ -193,8 +194,11 @@ the certificate, self-signed and expired ones included, not to trust it. See
   TCP/DoT/DoH transport.
 - **`udp` sends a DNS-shaped payload** and counts any reply as UP — it is a
   reachability check, best suited to DNS-like services.
-- **`tls` requires an HTTPS endpoint** — the certificate is read from the HTTP
-  response's TLS info, so raw-TLS ports (IMAPS, SMTPS, LDAPS) are unsupported.
+- **`tls` works on any TLS port.** The certificate comes from the handshake
+  itself, so IMAPS (`:993`), SMTPS (`:465`), LDAPS (`:636`) and HTTPS are all
+  probeable. It does *not* speak STARTTLS: a port that begins in plaintext and
+  upgrades on command is not a TLS port until the command is sent, so probe the
+  implicit-TLS port instead.
 
 ## App-level settings
 

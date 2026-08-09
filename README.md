@@ -167,8 +167,10 @@ with findings, reproductions and accepted risks, in
 - **The retry queue is in memory.** A backend outage that outlives the process
   loses what was buffered, and a long one drops the oldest batches by design.
   [ADR-0004](docs/adr/0004-bounded-retry-queue.md)
-- **The TLS probe only covers HTTPS ports.** IMAPS, SMTPS and other raw TLS
-  ports are out of scope. [R3](docs/risks.md)
+- **The TLS probe does not speak STARTTLS.** It reads the certificate from the
+  handshake, so any implicit-TLS port works (443, 993, 465, 636) — but a port
+  that starts in plaintext and upgrades on command is not a TLS port until that
+  command is sent. [ADR-0006](docs/adr/0006-tls-probe-skips-verification.md)
 
 ## Development
 

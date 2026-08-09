@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The `tls` probe works on any TLS port, not only HTTPS ones.** It read the certificate out of an HTTPS *response* via a `reqwest` client, so the endpoint had to speak HTTP over TLS — which put IMAPS (`:993`), SMTPS (`:465`) and LDAPS (`:636`) out of scope, despite their certificates expiring exactly like any other and being rather more likely to do so unnoticed. That was R3. The probe now performs the TLS handshake itself with `tokio-rustls` and takes the peer certificate from the session; no application-protocol request is made, which is what makes a server-speaks-first protocol probeable at all — the certificate is presented during the handshake, before either side says anything. `rustls` and `tokio-rustls` become direct dependencies and add nothing to the supply chain: both were already in the tree under `reqwest`, `Cargo.lock` grows by three lines and no new crate, and `ring` stays the one crypto provider. Verification is still deliberately skipped, but now through huginn's own `ServerCertVerifier` rather than a flag on someone else's client, which is more explicit about what is being given up and confines it to one connector — [ADR-0006](docs/adr/0006-tls-probe-skips-verification.md) carries the amendment. **STARTTLS remains out of scope** and is now the only gap: a port that starts in plaintext and upgrades on command is not a TLS port until that command is sent.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed
