@@ -29,6 +29,8 @@ services:
         condition: service_healthy
       tls-endpoint:
         condition: service_started
+      mail-endpoint:
+        condition: service_started
 
   # Self-signed HTTPS endpoint for the TLS certificate-expiry probe — the cert
   # comes from Caddy's internal CA (see config/Caddyfile.integration), so the
@@ -38,6 +40,44 @@ services:
     image: caddy:2-alpine
     volumes:
       - ./config/Caddyfile.integration:/etc/caddy/Caddyfile:ro
+
+  # Plaintext SMTP and IMAP greeters for those two probe types, which had no
+  # end-to-end coverage at all — the only probes that read a protocol banner,
+  # and therefore the only ones whose greeting handling could regress unseen.
+  #
+  # A handful of lines of Python rather than a real mail server: huginn reads
+  # the opening line and closes, so anything beyond sending it is surface this
+  # test does not need. Each connection gets the banner and is closed, which is
+  # what a probe every two seconds looks like.
+  mail-endpoint:
+    image: python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+    command:
+      - python
+      - -u
+      - -c
+      - |
+        import socket, threading
+
+        def serve(port, banner):
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("0.0.0.0", port))
+            srv.listen(16)
+            while True:
+                conn, _ = srv.accept()
+                try:
+                    conn.sendall(banner)
+                except OSError:
+                    pass
+                finally:
+                    conn.close()
+
+        threading.Thread(
+            target=serve,
+            args=(25, b"220 mail.test ESMTP ready\r\n"),
+            daemon=True,
+        ).start()
+        serve(143, b"* OK [CAPABILITY IMAP4rev1] mail.test ready\r\n")
 
   influxdb:
     image: influxdb:2.7-alpine

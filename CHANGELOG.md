@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The system integration suite covers every advertised probe type.** It ran tcp, http, dns, udp and tls; `https` as its own configured type, `smtp` and `imap` had no end-to-end coverage at all — and smtp/imap are the only probes that parse a protocol banner, so the code most recently found to have a real bug was the code with the least coverage. A `mail-endpoint` sidecar (twenty lines of Python answering an SMTP banner on 25 and an IMAP greeting on 143) closes that. The suite also runs the container's own `HEALTHCHECK` — both `huginn healthcheck` inside the container and Docker's verdict, polled rather than read once, since `starting` is a legitimate transient state.
+
+### Changed
+
+- **The InfluxDB assertion checks what was actually written.** It asked only whether *some* `probe_result` measurement existed, which a single probe writing a single field would satisfy — so the schema `docs/influxdb.md` calls a stable surface was effectively untested. It now waits until every expected probe has its own series and asserts the documented fields by name, including `tls_cert_expiry_days`, whose absence would mean the whole `ProbeResult.metrics` path was not arriving rather than one number being missing. Series names are parsed out of Flux's CSV rather than grepped: the response uses CRLF, so an anchored pattern is fragile, and an unanchored one would let `docker-dns` match `docker-dns-udp` and overcount.
+- **The last fixed `sleep` in the suite is gone.** `sleep 5` before the InfluxDB query was both slower than necessary on a fast machine and too short on a loaded runner. It polls now, which is what `docs/testing.md` has always required and this file was the one place not doing.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed

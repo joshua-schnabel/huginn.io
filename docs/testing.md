@@ -186,12 +186,30 @@ Tests the complete production stack in Docker:
 - Image builds without errors
 - `huginn` connects to InfluxDB and writes data
 - `/health` returns `OK`, `/metrics/latest` returns probe results
+- **Every advertised probe type runs through the shipped container** — all eight,
+  each against a service in the stack rather than anything on the internet
+- The container's own `HEALTHCHECK` passes, both as `huginn healthcheck` and as
+  Docker's verdict
+- InfluxDB holds **every** expected probe series and the documented fields, not
+  merely some `probe_result`
 
 ```
-docker-compose.integration.yml   – InfluxDB + huginn
-config/config.integration.yaml   – 2-second probes
+docker-compose.integration.yml   – InfluxDB + huginn + tls/mail sidecars
+config/config.integration.yaml   – 2-second probes, one per type
 scripts/integration-test.sh      – curl assertions
 ```
+
+The sidecars exist because a probe type with no service to point at is a probe
+type with no coverage. `tls-endpoint` is Caddy with a short-lived self-signed
+certificate; `mail-endpoint` is twenty lines of Python that answer an SMTP
+banner on 25 and an IMAP greeting on 143 and close. Neither is a real server —
+huginn reads the opening line and hangs up, so anything more would be surface
+the test does not need.
+
+**Keep `EXPECTED_PROBE_NAMES` in `scripts/integration-test.sh` in step with
+`config/config.integration.yaml`.** That list is what the readiness polls count,
+so a probe added to the config but not to the list is simply never checked —
+which looks exactly like a passing test.
 
 **Run locally:**
 
