@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release is built once, and the Release says which build it is.** `ci.yml` ran on `v*.*.*` tags as well as branches, and `publish` pushes the release tag as its last step — so every release built twice, and the second run re-pointed `:x.y.z` at a rebuild. `v0.3.0` went out that way: `release.yml` finished writing notes and an SBOM about the first build before the tag run had republished over it, leaving release assets that described bytes the version tag no longer served. The tag trigger is gone, so the tag is the pipeline's output rather than a second entry into it. `publish` now annotates the tag with the manifest digest, and `release.yml` refuses to release if `:x.y.z` no longer resolves to it — the divergence is caught rather than merely made unlikely. The SBOM is generated from that digest instead of from the mutable tag, because an SBOM is the document people believe when asked what shipped.
+- **A tag and a changelog that disagree stop the release.** `release.yml` fell back to a bare "Release vX.Y.Z" note when no `## [X.Y.Z]` section existed, which turned the one case worth stopping for — a tag nobody wrote release notes for — into a Release with empty notes that looked deliberate. It fails now. The version gate also requires `CHANGELOG.md` and `[workspace.package].version` in `Cargo.toml` to agree: the image is tagged from the changelog while the binary reports the manifest, so a half-stamped release branch would ship an image whose `--version` contradicted its own tag.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed

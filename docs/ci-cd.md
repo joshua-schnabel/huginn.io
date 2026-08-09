@@ -71,23 +71,32 @@ every `github.ref == 'refs/heads/dev'` check silently reads false. A job with
 
 | Job | any PR | push dev | push main | push tag `v*` |
 |---|:---:|:---:|:---:|:---:|
-| Format & Lint | yes | yes | yes | yes |
-| Tests (stable) | yes 🚫 | yes | yes | yes |
-| Tests (beta, canary) | yes | yes | yes | yes |
-| Supply-chain (cargo-deny) | yes 🚫 | yes | yes | yes |
-| Coverage ≥ 80 % | yes 🚫 | yes | yes | yes |
-| Version gate | yes 🚫† | ➖ | yes 🚫 | ➖ |
+| Format & Lint | yes | yes | yes | — |
+| Tests (stable) | yes 🚫 | yes | yes | — |
+| Tests (beta, canary) | yes | yes | yes | — |
+| Supply-chain (cargo-deny) | yes 🚫 | yes | yes | — |
+| Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
+| Version gate | yes 🚫† | ➖ | yes 🚫 | — |
 | Semgrep · ShellCheck · actionlint | yes 🚫* | yes | yes | — |
-| Build image (per arch, native) | yes | yes | yes | yes |
-| Trivy SARIF + SBOM | yes | yes | yes | yes |
-| Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | yes 🚫 |
-| System integration test | yes | yes | yes | yes |
-| Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | semver tags |
+| Build image (per arch, native) | yes | yes | yes | — |
+| Trivy SARIF + SBOM | yes | yes | yes | — |
+| Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | — |
+| System integration test | yes | yes | yes | — |
+| Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | — |
 | GitHub Release + housekeeping PR | — | — | — | yes |
 
 🚫 blocks · 🚫* blocks only on ERROR-severity findings · 🚫† enforced only on a
 PR whose base is `main` · ➖ runs as a deliberate no-op, so it can gate `build`
 without skipping it.
+
+**`ci.yml` does not run on tags at all** — the whole `v*` column is
+`release.yml`'s. It used to run there, and that is what made every release build
+twice: `publish` pushes the tag, the tag started `ci.yml` again, and the second
+run republished `:x.y.z` from a rebuild while `release.yml` was already writing
+notes and an SBOM about the first. The tag is the pipeline's output. Whatever
+`main` built, scanned and integration-tested is what ships, and `release.yml`
+checks the tag's recorded digest against the registry before it publishes
+anything.
 
 ## What can reach a credential
 
@@ -165,11 +174,14 @@ so both registries carry byte-identical images from one build.
 The full runbook, both paths, is [`releasing.md`](releasing.md). The shape:
 
 1. The version comes from `CHANGELOG.md`. The **version gate** enforces valid
-   SemVer, strictly greater than the last `v*` tag, on any PR whose base is
-   `main`.
+   SemVer, agreement with `Cargo.toml`'s workspace version, and strictly greater
+   than the last `v*` tag, on any PR whose base is `main`.
 2. Merging into `main` publishes the image and creates the tag `vX.Y.Z` — no new
-   bytes, only tags on already-scanned digests.
-3. The tag push starts `release.yml`: GitHub Release, SBOM, test report, and an
+   bytes, only tags on already-scanned digests. The tag is annotated with the
+   manifest digest.
+3. The tag push starts `release.yml` — and **only** `release.yml`; `ci.yml`
+   ignores tags, so nothing rebuilds. It verifies the recorded digest against the
+   registry, then creates the GitHub Release, SBOM, test report, and an
    auto-merging housekeeping PR into `dev`.
 
 **Never hand-push a `v*` tag.** The pipeline creates them after every gate.
