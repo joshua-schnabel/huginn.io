@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`smtp` and `imap` no longer report a healthy server as DOWN when its greeting is split across TCP segments.** Both probes took whatever a single `read()` returned and tested its prefix. TCP is a byte stream and may split anywhere, so a perfectly valid `220 mail.example.com ESMTP` arriving as `22` and then the rest failed the check — while the server was fine. It is timing-dependent, which makes it worse than a constant bug: it shows up as a monitor that occasionally invents outages, which is the least believable kind of alert. Both now read until the line is complete, the peer closes, or 512 bytes (the RFC 5321 line limit) have arrived, so a peer that never sends a newline cannot make the probe hold an unbounded buffer.
+- **`timeout_secs` is the budget for a whole probe, not for each step in it.** `smtp` and `imap` applied it once to the connect and again to the greeting read, so the real worst case was twice the configured value — and a probe could hold its loop for that long after a shutdown signal. Both steps now share one deadline.
+
+### Changed
+
+- **The HTTP latency boundary is documented rather than merely implemented.** `response_ms` for `http`/`https` ends when the response headers arrive; the body is never read. Including it would make the measurement depend on the size of whatever the endpoint returns, so a page that grew by a megabyte would be indistinguishable from a server getting slower. This was already the behaviour; it is now stated, and `docs/versioning.md` treats probe semantics as a stable surface.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed
