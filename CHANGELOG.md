@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A probe still running at shutdown no longer costs the buffered results.** Every probe loop holds its own `Arc<EventHub>`, and `run()` dropped only its own clone before starting the drain — so a probe inside a slow read kept the hub's `Sender` alive, the batcher never observed `Closed`, and the partial batch it was holding was never queued. The drain then spent its full timeout and reported an unreachable InfluxDB that had been reachable the whole time. Shutdown is staged now: the probe loops are joined first, then the hub closes, then the writer drains. Each loop also watches the shutdown channel *during* a probe rather than only between two of them — SMTP and IMAP can spend one full `timeout_secs` connecting and another being read from, so a loop could previously hold the process open for twice that after the signal. Anything still running when the two-second grace period ends is aborted, and the drain's timeout message now names the stage that overran, because "the backend is down" and "a probe would not stop" call for opposite responses. An interrupted probe publishes nothing: a synthetic DOWN result would write a fake outage into InfluxDB on every deploy. The regression test blocks a probe against a silent listener with a batch that can only flush when the hub closes, and it fails against the previous code with the drain timing out exactly as described.
+
 ## [0.3.0] - 2026-08-08
 
 ### Fixed
