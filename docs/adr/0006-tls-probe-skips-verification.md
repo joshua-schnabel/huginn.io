@@ -37,17 +37,44 @@ the address configured.
 - The probe reports the *number*, so an operator can distinguish "expires in
   three days" from "expired last week" from "host unreachable" — a plain DOWN
   cannot.
-- This client trusts nothing about the peer and sends nothing to it beyond a
-  handshake and a bare request. There are no credentials on the connection and
-  no response body is used, so accepting an invalid certificate carries no
-  confidentiality risk in this narrow, read-only context.
-- Semgrep flags `reqwest-accept-invalid` on the builder line. The suppression is
-  a `// nosemgrep:` comment sitting on that exact line with the reasoning above,
+- This client trusts nothing about the peer and sends nothing to it at all: the
+  handshake completes, the certificate is read, the socket is closed. There are
+  no credentials on the connection and no application data in either direction,
+  so accepting an invalid certificate carries no confidentiality risk in this
+  narrow, read-only context.
+- Semgrep flags the dangerous-verifier construction. The suppression is a
+  `// nosemgrep:` comment sitting on that exact line with the reasoning above,
   which is also why `security.yml` strips suppressed findings from the SARIF
   upload rather than leaving them open in the Security tab forever.
-- The probe reads the certificate from an HTTPS response, so raw non-HTTP TLS
-  ports (IMAPS, SMTPS) are out of scope. Recorded in
-  [`risks.md`](../risks.md).
+
+### Amendment, 2026-08-09 — how the certificate is obtained
+
+The decision above is unchanged; what changed is the transport it applies to.
+
+The probe originally read the certificate out of an HTTPS **response**, using a
+`reqwest` client with `danger_accept_invalid_certs`. That worked, and it meant
+the endpoint had to speak HTTP over TLS — so IMAPS, SMTPS and LDAPS were out of
+scope, even though their certificates expire exactly like any other and are
+rather more likely to do so unnoticed. It was recorded as R3 in `risks.md`.
+
+The probe now performs the TLS handshake directly (`tokio-rustls`) and takes the
+peer certificate from the session. No application-protocol request is made,
+which is precisely what makes any TLS port probeable: a server presents its
+certificate during the handshake, before either side says anything, so a
+protocol where the *server* speaks first is no obstacle.
+
+Two consequences worth stating:
+
+- **The verifier is now huginn's own code**, a `ServerCertVerifier` that returns
+  `assertion()`, rather than a flag on someone else's client. That is more
+  explicit about what is being skipped, and it is confined to one connector.
+- **STARTTLS is still out of scope**, and now that is the only gap. A port that
+  begins in plaintext and upgrades on command is not a TLS port until the
+  command is sent, and sending it would mean teaching this probe each
+  application protocol's upgrade handshake. Probe the implicit-TLS port instead.
+
+R3 is removed from [`risks.md`](../risks.md) rather than marked done, which is
+that file's own rule.
 
 ## Alternatives considered
 

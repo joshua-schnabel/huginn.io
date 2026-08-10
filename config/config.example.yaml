@@ -48,6 +48,23 @@ metrics:
   port: 9464
   # api_key_file: "/run/secrets/metrics_api_key"
 
+# Liveness endpoint — the one listener that is ON by default.
+#
+# It serves GET /health and nothing else: no probe names, no targets, no errors.
+# `huginn healthcheck` asks it, and that is what the image's HEALTHCHECK runs —
+# distroless has no shell and no curl, so the binary has to check itself.
+#
+# There is deliberately no `bind` key. It is fixed to 127.0.0.1, which is what
+# makes "on by default" safe: a published port reaches the container's bridge IP
+# and never this socket, so it cannot be exposed by accident. Docker runs
+# HEALTHCHECK inside the container, so loopback is exactly where it needs to be.
+#
+# Change `port` only if something else on this host already uses it — running
+# several huginns outside containers is the case that needs it. See ADR-0008.
+health:
+  enabled: true
+  port: 9115
+
 # Logging
 log:
   format: pretty  # "pretty" (coloured) or "json"

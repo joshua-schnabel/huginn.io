@@ -2,7 +2,7 @@
 # Keep in sync with rust-version in the workspace Cargo.toml.
 # 1.88 is the floor set by hickory-resolver 0.26, which is required for
 # RUSTSEC-2026-0119 — 0.24 pins a vulnerable hickory-proto.
-FROM rust:1.96-slim AS builder
+FROM rust:1.97-slim AS builder
 
 WORKDIR /build
 
@@ -37,7 +37,24 @@ COPY config/config.example.yaml /etc/huginn/config.yaml
 # Run as non-root
 USER nonroot:nonroot
 
-# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default)
+# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default).
+# The liveness listener (health.port, 9115 by default) is deliberately NOT
+# exposed: it is bound to 127.0.0.1 and is only ever reached from inside this
+# container's network namespace, which is where HEALTHCHECK runs.
 EXPOSE 9116 9464
+
+# The binary checks itself. Distroless has no shell and no curl, so there is
+# nothing else here that could make an HTTP request — which is why `healthcheck`
+# is a subcommand rather than a CMD wrapping some tool.
+#
+# Exec form, so no shell is required to parse it. It reads the same config as
+# the daemon (HUGINN_CONFIG, or the ENTRYPOINT's path by default), so the two
+# cannot disagree about which port to use.
+#
+# start-period covers config load and the bind; the check itself only ever waits
+# on loopback, so the timeout is short on purpose — a slow answer here means the
+# runtime has stopped scheduling, which is the thing worth reporting.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml"]
