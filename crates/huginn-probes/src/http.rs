@@ -14,13 +14,20 @@ use async_trait::async_trait;
 /// tick, and it no longer has to be threaded through probe loops that don't
 /// speak HTTP.
 pub struct HttpProbe {
-    client: Client,
+    /// An error rather than a panic when the client cannot be built.
+    ///
+    /// `ProbeRegistry::new()` runs during startup, and the `Probe` contract is
+    /// that a failure is *data* — a `ProbeResult` saying what went wrong — not
+    /// something that takes the process down. A monitor that dies while being
+    /// constructed has told nobody anything, and it would take every other
+    /// probe with it.
+    client: Result<Client, String>,
 }
 
 impl HttpProbe {
     pub fn new() -> Self {
         Self {
-            client: build_client(),
+            client: build_client().map_err(|e| format!("could not build an HTTP client: {e}")),
         }
     }
 }
@@ -34,7 +41,16 @@ impl Default for HttpProbe {
 #[async_trait]
 impl Probe for HttpProbe {
     async fn probe(&self, cfg: &ProbeConfig) -> ProbeResult {
-        probe(cfg, &self.client).await
+        match &self.client {
+            Ok(client) => probe(cfg, client).await,
+            Err(msg) => ProbeResult::failure(
+                &cfg.name,
+                cfg.probe_type.to_string(),
+                &cfg.target,
+                0.0,
+                msg.clone(),
+            ),
+        }
     }
 }
 
@@ -81,7 +97,11 @@ pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
 }
 
 /// Build a shared reqwest client.
-pub fn build_client() -> Client {
+///
+/// Returns a `Result`: this is a startup-time failure with a cause worth
+/// reporting (a broken TLS backend, an unreadable root store), not an
+/// unreachable invariant, so it does not belong behind an `expect`.
+pub fn build_client() -> Result<Client, reqwest::Error> {
     Client::builder()
         .use_rustls_tls()
         // Don't follow redirects: an uptime check must judge the URL it was
@@ -90,7 +110,6 @@ pub fn build_client() -> Client {
         // extra round-trips into the measured response time.
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .expect("Failed to build HTTP client")
 }
 
 #[cfg(test)]
@@ -120,7 +139,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = build_client();
+        let client = build_client().expect("test client");
         let cfg = http_cfg(&server.uri(), Some(200));
         let result = probe(&cfg, &client).await;
 
@@ -136,7 +155,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = build_client();
+        let client = build_client().expect("test client");
         let cfg = http_cfg(&server.uri(), Some(200));
         let result = probe(&cfg, &client).await;
 
@@ -152,7 +171,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = build_client();
+        let client = build_client().expect("test client");
         // No expected_status set → defaults to 200
         let cfg = http_cfg(&server.uri(), None);
         let result = probe(&cfg, &client).await;
@@ -162,7 +181,7 @@ mod tests {
 
     #[tokio::test]
     async fn fails_on_unreachable_host() {
-        let client = build_client();
+        let client = build_client().expect("test client");
         let cfg = ProbeConfig {
             timeout_secs: 1,
             ..http_cfg("http://127.0.0.1:19999", Some(200))
@@ -179,7 +198,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = build_client();
+        let client = build_client().expect("test client");
         let cfg = http_cfg(&server.uri(), Some(200));
         let result = probe(&cfg, &client).await;
         assert!(!result.up);
@@ -194,7 +213,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = build_client();
+        let client = build_client().expect("test client");
         let cfg = http_cfg(&server.uri(), Some(200));
         let result = probe(&cfg, &client).await;
         assert!(!result.up);
@@ -211,7 +230,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = build_client();
+        let client = build_client().expect("test client");
         let cfg = http_cfg(&server.uri(), Some(200));
         let result = probe(&cfg, &client).await;
 
@@ -231,7 +250,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = build_client();
+        let client = build_client().expect("test client");
         let cfg = ProbeConfig {
             probe_type: ProbeType::Https,
             ..http_cfg(&server.uri(), Some(200))
