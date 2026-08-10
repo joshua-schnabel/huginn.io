@@ -214,7 +214,7 @@ agent, read [`AGENTS.md`](AGENTS.md) first.
 | [Versioning](docs/versioning.md) | SemVer policy and the stable surface |
 | [Roadmap](docs/roadmap.md) | What is still open |
 | [Risks](docs/risks.md) | Open risks and questions |
-| [Decisions](docs/adr/) | Seven ADRs |
+| [Decisions](docs/adr/) | Eight ADRs |
 
 `CONTRIBUTING.md` and `SECURITY.md` keep GitHub's ALL-CAPS names so GitHub
 surfaces them; every other guide is lowercase.
