@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
-use tokio::io::AsyncReadExt;
+
 use tokio::net::TcpStream;
 
 use crate::{with_probe_timeout, Probe};
@@ -19,53 +19,35 @@ impl Probe for SmtpProbe {
 }
 
 /// Connect to an SMTP port, read the 220 banner line and measure response time.
+///
+/// Connect and banner share **one** deadline, and the banner is read until the
+/// line is complete — see [`with_probe_timeout`] and
+/// [`read_greeting_line`](crate::read_greeting_line) for why each of those is
+/// the way it is.
 pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let start = Instant::now();
     let elapsed_ms = || start.elapsed().as_secs_f64() * 1000.0;
 
-    let mut stream = match with_probe_timeout(
+    let outcome = with_probe_timeout(
         cfg.timeout(),
         &format!("timeout after {}s", cfg.timeout_secs),
-        TcpStream::connect(&cfg.target),
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(msg) => return ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed_ms(), msg),
-    };
-
-    let mut buf = [0u8; 512];
-    let read = with_probe_timeout(
-        cfg.timeout(),
-        "timeout reading banner",
-        stream.read(&mut buf),
+        async {
+            let mut stream = TcpStream::connect(&cfg.target).await?;
+            crate::read_greeting_line(&mut stream).await
+        },
     )
     .await;
     let elapsed = elapsed_ms();
 
-    match read {
-        Ok(n) if n > 0 => {
-            let banner = String::from_utf8_lossy(&buf[..n]);
-            if banner.starts_with("220") {
-                ProbeResult::success(&cfg.name, "smtp", &cfg.target, elapsed, None)
-            } else {
-                ProbeResult::failure(
-                    &cfg.name,
-                    "smtp",
-                    &cfg.target,
-                    elapsed,
-                    format!("unexpected banner: {}", banner.trim()),
-                )
-            }
+    let fail = |msg: String| ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, msg);
+
+    match outcome {
+        Ok(banner) if banner.starts_with("220") => {
+            ProbeResult::success(&cfg.name, "smtp", &cfg.target, elapsed, None)
         }
-        Ok(_) => ProbeResult::failure(
-            &cfg.name,
-            "smtp",
-            &cfg.target,
-            elapsed,
-            "empty banner".to_string(),
-        ),
-        Err(msg) => ProbeResult::failure(&cfg.name, "smtp", &cfg.target, elapsed, msg),
+        Ok(banner) if banner.is_empty() => fail("empty banner".to_string()),
+        Ok(banner) => fail(format!("unexpected banner: {}", banner.trim())),
+        Err(msg) => fail(msg),
     }
 }
 
@@ -117,6 +99,66 @@ mod tests {
     async fn fails_when_port_closed() {
         let result = probe(&smtp_cfg("127.0.0.1:1")).await;
         assert!(!result.up);
+    }
+
+    /// A banner split across TCP segments must still be recognised.
+    ///
+    /// This is the regression, end to end. TCP is a byte stream and may split
+    /// anywhere; the probe used to take one `read()` and test its prefix, so a
+    /// server whose banner arrived as `22` + the rest was reported DOWN while
+    /// being entirely healthy. Timing-dependent, so in production it looked like
+    /// a monitor inventing occasional outages.
+    #[tokio::test]
+    async fn succeeds_on_a_banner_split_across_segments() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                // Deliberately split inside the status code, and flush between
+                // the halves so they cannot coalesce into one segment.
+                let _ = socket.write_all(b"22").await;
+                let _ = socket.flush().await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let _ = socket.write_all(b"0 mail.example.com ESMTP\r\n").await;
+            }
+        });
+
+        let result = probe(&smtp_cfg(&addr.to_string())).await;
+        assert!(
+            result.up,
+            "a split banner must be reassembled, got error: {:?}",
+            result.error
+        );
+    }
+
+    /// Connect and banner share one deadline, so the probe's worst case is
+    /// `timeout_secs` — not twice it, which is what two separately-timed steps
+    /// produced.
+    #[tokio::test]
+    async fn one_deadline_covers_connect_and_banner() {
+        // Accepts, then never speaks: the connect succeeds instantly and the
+        // read is what runs out the clock.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+
+        let mut cfg = smtp_cfg(&addr.to_string());
+        cfg.timeout_secs = 1;
+
+        let started = std::time::Instant::now();
+        let result = probe(&cfg).await;
+        let elapsed = started.elapsed();
+
+        assert!(!result.up);
+        assert!(
+            elapsed < std::time::Duration::from_millis(1_800),
+            "the probe took {elapsed:?} for a 1s timeout — connect and read are not sharing a deadline"
+        );
     }
 
     #[tokio::test]
