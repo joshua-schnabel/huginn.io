@@ -41,12 +41,6 @@ already get ([ADR-0002](adr/0002-secrets-from-files-only.md)).
 binary, because distroless has no shell and no `curl` — so it is a small feature
 rather than a one-liner. muninn.io has one and it is worth matching.
 
-**Raw TLS ports for the certificate probe.** The `tls` probe reads the
-certificate from an HTTPS response, so IMAPS, SMTPS and other non-HTTP TLS ports
-are out of scope. Doing it properly means a handshake-only client rather than a
-`reqwest` client. [R3](risks.md),
-[ADR-0006](adr/0006-tls-probe-skips-verification.md).
-
 **Re-run the security audit** after any change to the probe result path, the HTTP
 listeners, or the container definition. The last pass is dated 2026-08-02 and its
 scope and method are written down, so a repeat is a repeat rather than a fresh
