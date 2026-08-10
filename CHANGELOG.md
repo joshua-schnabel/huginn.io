@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-10
+
 ### Added
 
 - **The system integration suite covers every advertised probe type.** It ran tcp, http, dns, udp and tls; `https` as its own configured type, `smtp` and `imap` had no end-to-end coverage at all — and smtp/imap are the only probes that parse a protocol banner, so the code most recently found to have a real bug was the code with the least coverage. A `mail-endpoint` sidecar (twenty lines of Python answering an SMTP banner on 25 and an IMAP greeting on 143) closes that. The suite also runs the container's own `HEALTHCHECK` — both `huginn healthcheck` inside the container and Docker's verdict, polled rather than read once, since `starting` is a legitimate transient state.
@@ -181,7 +183,8 @@ Fixes the tail of the release path. huginn's own code is untouched — the image
 - Documentation: `README.md`, `docs/getting-started.md`, `docs/configuration.md`, `docs/influxdb.md`, `docs/security.md`, `docs/troubleshooting.md`
 - `CONTRIBUTING.md` with branching workflow, PR process, Conventional Commits, release process
 
-[Unreleased]: https://github.com/joshua-schnabel/huginn.io/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/joshua-schnabel/huginn.io/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v1.0.0
 [0.3.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.3.0
 [0.2.1]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.2.1
 [0.2.0]: https://github.com/joshua-schnabel/huginn.io/releases/tag/v0.2.0
