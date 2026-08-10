@@ -1,4 +1,5 @@
 pub mod headers;
+pub mod health;
 pub mod prometheus;
 mod serve;
 pub mod server;

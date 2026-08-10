@@ -48,6 +48,12 @@ old results rather than the process.
 `WebState`, which subscribes to the hub once, so enabling neither, either or both
 makes no difference to the hub's fan-out.
 
+A third listener sits outside that picture: the liveness endpoint, on by default,
+fixed to `127.0.0.1`, serving `GET /health` and nothing else. It does not
+subscribe to the hub and holds no probe data — it exists so the distroless image
+can carry a `HEALTHCHECK`, which needs an endpoint that is there without
+configuration. [ADR-0008](adr/0008-liveness-listener-on-by-default.md)
+
 ## Crates
 
 | Crate | Responsibility |
@@ -183,6 +189,7 @@ There is no configuration reload. Change the YAML, restart the process.
 | [0005](adr/0005-distroless-nonroot.md) | A distroless, nonroot runtime image |
 | [0006](adr/0006-tls-probe-skips-verification.md) | The TLS probe skips certificate verification |
 | [0007](adr/0007-debug-ui-has-no-cli-flag.md) | The debug UI is enabled by config or ENV, never by a CLI flag |
+| [0008](adr/0008-liveness-listener-on-by-default.md) | A liveness listener, on by default, fixed to loopback |
 
 ## Related
 

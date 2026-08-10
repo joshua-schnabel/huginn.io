@@ -124,7 +124,7 @@ async fn execute_probe(cfg: &ProbeConfig, registry: &ProbeRegistry) -> ProbeResu
 mod tests {
     use super::*;
     use huginn_core::config::{
-        InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType, UiConfig,
+        HealthConfig, InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType, UiConfig,
     };
     use huginn_core::event::{EventHub, ProbeEvent};
     use std::time::Duration;
@@ -145,6 +145,13 @@ mod tests {
             probes,
             ui: UiConfig::default(),
             metrics: MetricsConfig::default(),
+            // Off: these tests drive the scheduler directly and never bind it,
+            // but leaving it on would have every parallel test in this binary
+            // contend for the one fixed health port.
+            health: HealthConfig {
+                enabled: false,
+                ..Default::default()
+            },
             log: LogConfig::default(),
             event_hub_capacity: 256,
         })

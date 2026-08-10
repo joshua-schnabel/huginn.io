@@ -33,6 +33,16 @@ type Shutdown = broadcast::Sender<()>;
     about = "Uptime & response-time monitor — InfluxDB backend"
 )]
 struct Args {
+    /// What to do. Omit it to run the monitor.
+    ///
+    /// `Option`, and that is load-bearing: the image's ENTRYPOINT is
+    /// `huginn --config /etc/huginn/config.yaml` with no subcommand, and
+    /// `/etc/huginn/config.yaml` plus nonroot plus "running it starts the
+    /// daemon" is the container contract in `docs/versioning.md`. A required
+    /// subcommand would break every existing deployment at once.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Path to the YAML config file
     #[arg(
         short,
@@ -51,6 +61,30 @@ struct Args {
     output: Option<String>,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Ask a running huginn on this host whether it is alive; exit 0 if it is.
+    ///
+    /// This is what the image's `HEALTHCHECK` runs. It exists as a subcommand
+    /// because the runtime image is distroless — no shell, no `curl`, nothing
+    /// else that could make an HTTP request — so the binary has to be able to
+    /// check itself.
+    ///
+    /// Liveness only: it reports whether the process is answering, not whether
+    /// probes are succeeding or InfluxDB is reachable. A monitor that lets its
+    /// orchestrator restart it because a monitored host went down would take
+    /// itself out exactly when it is needed.
+    Healthcheck,
+}
+
+/// How long `healthcheck` waits for an answer.
+///
+/// The listener does nothing but write four bytes, over loopback, so anything
+/// slower than this means the runtime is not scheduling — which is the condition
+/// worth reporting. Kept below Docker's own default `--timeout` of 30s so the
+/// failure is huginn's, with a message, rather than the daemon's silent kill.
+const HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -64,6 +98,15 @@ async fn main() -> anyhow::Result<()> {
     // very config — so anything logged here would be discarded.
     let (cfg, mut warnings) = AppConfig::load_with_warnings(&args.config)
         .with_context(|| format!("Failed to load config from '{}'", args.config))?;
+
+    // Before tracing is initialised, and before anything is spawned: this
+    // subcommand is a short-lived second process that Docker runs every
+    // interval for the life of the container, so it does as little as it can.
+    // It reads the config only to learn the port — the same config the daemon
+    // read, so the two cannot disagree about where to look.
+    if let Some(Command::Healthcheck) = args.command {
+        return run_healthcheck(&cfg).await;
+    }
 
     let use_json = resolve_output_format(args.output.as_deref(), &cfg.log.format, &mut warnings);
 
@@ -86,6 +129,22 @@ async fn main() -> anyhow::Result<()> {
     });
 
     run(Arc::new(cfg), use_json, shutdown_tx).await
+}
+
+/// The `healthcheck` subcommand: exit 0 if a huginn on this host is answering.
+///
+/// Prints to stderr rather than logging — `tracing` is deliberately not
+/// initialised on this path, because a health check that emits a log line every
+/// interval turns the container's log into a heartbeat and buries everything
+/// that matters.
+async fn run_healthcheck(cfg: &AppConfig) -> anyhow::Result<()> {
+    if !cfg.health.enabled {
+        anyhow::bail!(
+            "health.enabled is false in this config, so there is nothing to ask. \
+             Either enable it, or drop the HEALTHCHECK from your deployment."
+        );
+    }
+    huginn_web::health::check_health(cfg.health.port, HEALTHCHECK_TIMEOUT).await
 }
 
 /// Resolve when the OS asks the process to stop.
@@ -175,8 +234,31 @@ pub(crate) async fn run(
     use_json: bool,
     shutdown_tx: Shutdown,
 ) -> anyhow::Result<()> {
+    // Liveness listener, bound before anything else is started. Binding here
+    // rather than inside the spawned task makes a taken port a startup failure
+    // with a message, instead of a line in the log of a detached task while the
+    // process carries on without the endpoint its own HEALTHCHECK depends on.
+    // On by default, fixed to loopback — see ADR-0008.
+    let health_listener = if cfg.health.enabled {
+        Some(
+            huginn_web::health::bind_health(huginn_core::config::HEALTH_BIND, cfg.health.port)
+                .await
+                .context("Failed to start the health listener")?,
+        )
+    } else {
+        None
+    };
+
     // Central event hub — all components subscribe here
     let hub = Arc::new(EventHub::new(cfg.event_hub_capacity));
+
+    if let Some(listener) = health_listener {
+        tokio::spawn(async move {
+            if let Err(e) = huginn_web::health::serve_health(listener).await {
+                error!("Health listener error: {e}");
+            }
+        });
+    }
 
     // Console output subscriber. Subscribe *before* spawning: a broadcast
     // receiver only sees events sent after it subscribed, so subscribing inside
@@ -400,7 +482,8 @@ fn print_result(r: &ProbeResult, json: bool) {
 mod tests {
     use super::*;
     use huginn_core::config::{
-        AppConfig, InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType, UiConfig,
+        AppConfig, HealthConfig, InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType,
+        UiConfig,
     };
     use huginn_core::types::ProbeResult;
     use std::sync::Arc;
@@ -472,6 +555,15 @@ mod tests {
                 port: 9900,
             },
             metrics: MetricsConfig::default(),
+            // Off by default *in tests only*, and for a reason that does not
+            // apply in production: the health port is deliberately fixed, so
+            // every `run()` test in this binary would race for the same socket
+            // and fail on whichever lost. The listener gets its own test below,
+            // on a port the OS hands out.
+            health: HealthConfig {
+                enabled: false,
+                ..Default::default()
+            },
             log: LogConfig::default(),
             event_hub_capacity: 256,
         }
@@ -669,6 +761,83 @@ mod tests {
         assert!(ok.is_ok(), "/health did not return 200 within 10s");
     }
 
+    /// The liveness listener comes up with the daemon, and `healthcheck`'s own
+    /// probe answers against it — the two halves of what the image's
+    /// `HEALTHCHECK` does, end to end.
+    #[tokio::test]
+    async fn health_listener_answers_the_healthcheck_probe() {
+        let tf = tempfile_with("mytoken");
+        let mut cfg = minimal_config(&tf);
+        // A port from the OS rather than the fixed 9115: this test runs in
+        // parallel with the others in this binary.
+        cfg.health = HealthConfig {
+            enabled: true,
+            port: free_port(),
+        };
+        let port = cfg.health.port;
+        let cfg = Arc::new(cfg);
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
+
+        let ok = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if huginn_web::health::check_health(port, Duration::from_secs(2))
+                    .await
+                    .is_ok()
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+
+        shutdown_tx.send(()).ok();
+        assert!(ok.is_ok(), "the health listener never answered");
+    }
+
+    /// A taken health port must stop startup. It is on by default, so it is the
+    /// listener nobody remembers enabling — a bind failure logged from a
+    /// detached task would leave the process running without the endpoint its
+    /// own HEALTHCHECK depends on, and the container would flap for a reason
+    /// nothing in the log connects to a port.
+    #[tokio::test]
+    async fn run_fails_when_the_health_port_is_taken() {
+        let tf = tempfile_with("mytoken");
+        let port = free_port();
+        // Hold the port for the duration of the test.
+        let _squatter = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+
+        let mut cfg = minimal_config(&tf);
+        cfg.health = HealthConfig {
+            enabled: true,
+            port,
+        };
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        let result = run(Arc::new(cfg), false, shutdown_tx).await;
+        assert!(
+            result.is_err(),
+            "a health listener that cannot bind must stop startup"
+        );
+    }
+
+    /// With the listener off, `healthcheck` has to say so rather than report a
+    /// connection failure that reads like a dead process.
+    #[tokio::test]
+    async fn healthcheck_explains_itself_when_health_is_disabled() {
+        let tf = tempfile_with("mytoken");
+        let cfg = minimal_config(&tf); // health.enabled = false
+        let err = run_healthcheck(&cfg)
+            .await
+            .expect_err("a disabled health listener must not report healthy");
+        assert!(
+            err.to_string().contains("health.enabled"),
+            "the error should name the setting, got: {err}"
+        );
+    }
+
     /// A TCP listener that accepts and then says nothing, holding the connection
     /// open. An `smtp` probe pointed at it blocks in its banner read for the
     /// whole of `timeout_secs` — a deterministic, local stand-in for the slow
@@ -776,6 +945,12 @@ mod tests {
             ],
             ui: UiConfig::default(),
             metrics: MetricsConfig::default(),
+            // Same reason as `minimal_config`: the health port is fixed, and
+            // this test runs alongside every other `run()` test in the binary.
+            health: HealthConfig {
+                enabled: false,
+                ..Default::default()
+            },
             log: LogConfig::default(),
             event_hub_capacity: 256,
         });
