@@ -128,29 +128,35 @@ asserts the headers on the wire for `/`, `/metrics/latest`, `/health` and
 
 ### F-03 — No connection cap or request timeout {#f-03}
 
-**Severity:** Low · **Status:** Mitigated and documented — not fixed in code
+**Severity:** Low · **Status:** Fixed
 
-Both listeners are `axum::serve` with no timeout or concurrency layer. A client
-that opens a socket and sends a partial request line holds the connection, and
+Both listeners were `axum::serve` with no timeout or concurrency layer. A client
+that opened a socket and sent a partial request line held the connection, and
 its task, indefinitely.
 
-**Measured** on the shipped image: 4 000 idle half-open connections were opened
-without any being refused; container RSS rose from **29.5 MiB to 113.3 MiB**
-(≈21 KiB per connection) and both listeners kept answering normally
-(`/health` in 2 ms). Nothing observed caps the count, so growth continues until
-memory runs out.
+**Measured** on the shipped image at the time: 4 000 idle half-open connections
+were opened without any being refused; container RSS rose from **29.5 MiB to
+113.3 MiB** (≈21 KiB per connection) and both listeners kept answering normally
+(`/health` in 2 ms). Nothing observed capped the count.
 
-**Why it is not fixed in code.** A header-read timeout means either a
-`tower-http` `TimeoutLayer` — a new direct dependency, which needs Joshua's
-approval — or replacing `axum::serve` with a hand-rolled hyper accept loop, which
-is a large change to make on the strength of a Low finding. **Open decision for
-the maintainer**; recommendation is the `tower-http` layer (the crate is already
-in the dependency tree transitively via reqwest).
+**Fix.** A 256-connection cap per listener and a 10-second header-read timeout,
+in `crates/huginn-web/src/serve.rs`.
 
-**Mitigated by** `mem_limit: 256m` and `pids_limit: 128` in compose (the process
-is restarted by `restart: unless-stopped` rather than taking the host with it),
-and by both listeners binding loopback by default. Documented in
-[`hardening.md`](hardening.md#no-request-limits-on-the-http-listeners).
+**Not the fix this report originally recommended**, and the difference is worth
+keeping: it suggested a `tower-http` `TimeoutLayer`, which would not have
+worked. A `tower` layer wraps the *service*, and the service is not reached
+until hyper has parsed a request — a request head that never completes never
+arrives, so the layer never runs. Both limits had to sit below the service: the
+cap is a semaphore permit taken before `accept`, so peers wait in the kernel
+backlog rather than each costing a task, and the deadline is hyper's own
+`header_read_timeout`. It bounds the head and not the connection, so the SSE
+stream on `/events` is unaffected.
+
+`hyper-util` became a direct dependency and added nothing to the supply chain —
+it was already in the tree under axum.
+
+**Verified.** Unit tests in `serve.rs`: a half-open connection is closed by the
+server (`read` returns 0), and a well-formed request is still answered.
 
 ---
 
@@ -321,9 +327,7 @@ Recorded deliberately, not hidden — these are open by decision.
 Not done in this pass, in rough priority order:
 
 1. ~~Decide on [F-03](#f-03)~~ — **done**, and not the way this recommendation
-   suggested. A `tower-http` layer would not have helped: it wraps the service,
-   which a never-completed request head never reaches. The fix is a connection
-   cap and hyper's `header_read_timeout`, below the service.
+   suggested; the finding above records why.
 2. ~~Consider warning at startup when a secret file is group- or world-readable~~
    — **done**. Raised again as M-01 of muninn.io's own review, where the same
    gap is sharper because that image carries a shell; the fix landed in both.

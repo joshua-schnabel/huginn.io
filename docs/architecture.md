@@ -190,6 +190,7 @@ There is no configuration reload. Change the YAML, restart the process.
 | [0006](adr/0006-tls-probe-skips-verification.md) | The TLS probe skips certificate verification |
 | [0007](adr/0007-debug-ui-has-no-cli-flag.md) | The debug UI is enabled by config or ENV, never by a CLI flag |
 | [0008](adr/0008-liveness-listener-on-by-default.md) | A liveness listener, on by default, fixed to loopback |
+| [0009](adr/0009-debug-ui-stays-unauthenticated.md) | The debug UI stays unauthenticated, deliberately |
 
 ## Related
 

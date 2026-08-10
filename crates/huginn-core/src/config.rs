@@ -152,7 +152,7 @@ impl InfluxConfig {
 
 /// Warn when a secret file is readable by anyone but its owner.
 ///
-/// A warning, not a refusal — R5 of `docs/risks.md`. The documentation
+/// A warning, not a refusal. The documentation
 /// prescribes `0600` for `influx.token_file` and `metrics.api_key_file` and
 /// nothing checked it, so a file left `0644` in an image or a mount said
 /// nothing at all. Refusing to start would be worse than the risk: a read-only
@@ -1889,7 +1889,7 @@ probes:
     /// A loose mode is warned about, never fatal.
     ///
     /// The assertion is the behaviour: refusing would take down a deployment
-    /// whose token works, which is the wrong trade for a mode bit (R5).
+    /// whose token works, which is the wrong trade for a mode bit.
     #[cfg(unix)]
     #[test]
     fn a_world_readable_token_file_still_loads() {
