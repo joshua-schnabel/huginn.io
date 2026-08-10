@@ -114,6 +114,11 @@ impl RetryQueue {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match inner.batches.front() {
             Some(front) if std::sync::Arc::ptr_eq(front, written) => {
+                // `front()` returned `Some` one line up, under a lock this
+                // function holds for its whole body — nothing can empty the
+                // queue in between. A genuinely unreachable invariant, kept as a
+                // panic rather than an error branch that no test could reach and
+                // no reader could verify.
                 let b = inner.batches.pop_front().expect("front was just checked");
                 inner.bytes -= b.len();
                 true
