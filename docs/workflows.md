@@ -9,7 +9,7 @@ The pipeline's rationale is [`ci-cd.md`](ci-cd.md); cutting a release is
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | every PR · push to `dev`/`main` · `v*.*.*` tags | Quality gates, build-once image, publish to Docker Hub + ghcr |
+| `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
@@ -22,7 +22,13 @@ Dependabot config, not a workflow.
 
 ## `ci.yml` — quality gates and publish
 
-**Runs on** every pull request, pushes to `dev`/`main`, and `v*.*.*` tags.
+**Runs on** every pull request and pushes to `dev`/`main` — **not** on tags.
+
+That exclusion is load-bearing. `publish` creates the release tag as its final
+act, so a `v*.*.*` trigger here meant every release built twice: the tag started
+this workflow again, and its `publish` re-pointed `:x.y.z` at the second build
+while `release.yml` was already describing the first. v0.3.0 shipped that way.
+The release tag is this pipeline's output, never an entry into it.
 
 Each job has one responsibility; later jobs depend on earlier ones via `needs`.
 
@@ -38,12 +44,15 @@ Each job has one responsibility; later jobs depend on earlier ones via `needs`.
    records. The `cargo-llvm-cov` binary is pinned and cached; `cargo-deny` is
    deliberately left on the latest release so it keeps picking up new advisory
    classes.
-5. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer and
+5. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer,
+   must match `[workspace.package].version` in `Cargo.toml`, and must be
    strictly greater than the last `v*` tag. Enforces **only** in a release
    context (a PR whose base is `main`, or a push to `main`) and is a no-op pass
    otherwise. It must always *run*: a skipped `needs` job would skip `build` too.
    `build` lists it, so an invalid release version fails before the expensive
-   image build.
+   image build. The `Cargo.toml` check exists because the image is tagged from
+   the changelog while the binary reports its manifest version — without it a
+   half-stamped release branch ships `huginn:0.4.0` that says `0.3.0` when asked.
 6. **`build`** (matrix, per architecture, **native** runner) — builds the image
    exactly once into `image.tar` and uploads it as an artefact. Native runners
    replaced QEMU, which had made the arm64 build the pipeline's dominant cost.
@@ -58,7 +67,10 @@ Each job has one responsibility; later jobs depend on earlier ones via `needs`.
    Skipped on PRs, so registry credentials are never reachable there.
 10. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
     digests, mirrors it to ghcr with `skopeo copy --all`, deletes the staging
-    tags, and creates the git tag `vX.Y.Z`. It publishes **no new bytes**.
+    tags, and creates the git tag `vX.Y.Z`, **annotated with the manifest
+    digest**. It publishes **no new bytes**. The annotation is what lets
+    `release.yml` prove which build it is describing — see its
+    "Resolve and verify the released image digest" step.
 
 **Gotchas**
 

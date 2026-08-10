@@ -9,9 +9,9 @@ if you know which surfaces it protects.
 | Surface | What is covered |
 |---|---|
 | **Config schema** | Every YAML key and `HUGINN_*`/`INFLUX_*` ENV override in [`configuration.md`](configuration.md), including defaults and validation rules. A config that loads today loads on every later 1.x. |
-| **CLI** | The `huginn` binary's flags (`--config`, `--output`) and their semantics. |
+| **CLI** | The `huginn` binary's flags (`--config`, `--output`), the `healthcheck` subcommand and its exit status, and the fact that running the binary with **no** subcommand starts the monitor. |
 | **InfluxDB schema** | The `probe_result` measurement: tag names, field names/types, timestamp precision (`ms`) as documented in [`influxdb.md`](influxdb.md). New *optional* fields (e.g. a new probe's metric) may appear in a minor release — InfluxDB is schemaless, so additions break nothing. |
-| **Container contract** | Image config path `/etc/huginn/config.yaml`, token path `/run/secrets/influx_token`, nonroot runtime, port `9116`. |
+| **Container contract** | Image config path `/etc/huginn/config.yaml`, token path `/run/secrets/influx_token`, nonroot runtime, ports `9116` (debug UI) and `9464` (Prometheus), and the image's `HEALTHCHECK` reporting liveness without extra configuration. |
 | **Probe semantics** | What UP/DOWN means per probe type, as documented in `configuration.md`. A change that flips existing results (like a stricter default) is breaking. |
 | **Prometheus metrics** | The `/metrics` endpoint's metric names, label names (`probe`, `type`, `target`) and units as documented in `configuration.md`. New metric families may appear in a minor release; renaming or removing one is breaking. |
 
@@ -19,8 +19,8 @@ if you know which surfaces it protects.
 
 - **The debug web UI** — its HTML/JS/CSS, and the exact JSON shape of
   `/metrics/latest` and `/events`. It is a debug tool, not an API. (`/health`
-  returning `200 OK` when alive *is* stable — it's made for probes and
-  orchestrators.)
+  returning `200 OK` when alive *is* stable, on the UI listener and on the
+  liveness listener alike — it's made for probes and orchestrators.)
 - **The Rust crate APIs** (`huginn-core`, `huginn-probes`, `huginn-influx`,
   `huginn-web`) — the workspace crates are internal structure, not a published
   library.

@@ -4,8 +4,9 @@
 
 ```yaml
 influx:          # InfluxDB connection (required)
-ui:              # Debug web UI (optional)
-metrics:         # Prometheus /metrics endpoint (optional)
+ui:              # Debug web UI (optional, off by default)
+metrics:         # Prometheus /metrics endpoint (optional, off by default)
+health:          # Liveness endpoint (optional, ON by default)
 log:             # Logging settings (optional)
 probes:          # List of probes (required)
 ```
@@ -114,6 +115,48 @@ scrape_configs:
     static_configs:
       - targets: ["huginn-host:9464"]
 ```
+
+## `health` section
+
+The liveness listener — **the only one that is on by default.**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Serve `GET /health` on loopback |
+| `port` | int | `9115` | Listening port on `127.0.0.1` |
+
+There is **no `bind` key**, and that is the point. The listener is fixed to
+`127.0.0.1` and cannot be widened, which is what makes an on-by-default listener
+defensible: Docker runs `HEALTHCHECK` *inside* the container, so loopback is
+where the check needs it, while a published port reaches the container's bridge
+IP and never this socket. It serves the string `OK` and nothing else — no probe
+names, no targets, no errors — so unlike the debug UI it discloses nothing about
+what is monitored. [ADR-0008](adr/0008-liveness-listener-on-by-default.md)
+
+It exists so the image can carry a `HEALTHCHECK`. Distroless has no shell and no
+`curl`, so the check is the binary itself:
+
+```bash
+huginn --config /etc/huginn/config.yaml healthcheck   # exit 0 = alive
+```
+
+**Liveness, not readiness.** A 200 means the process is running and its runtime
+is still scheduling work. It says nothing about whether probes are succeeding or
+InfluxDB is reachable, deliberately: an orchestrator that restarted huginn
+because a monitored host went down would remove the monitor exactly when it is
+needed. Probe health is what `/metrics` and the probe results are for.
+
+Two things follow from the port being fixed rather than chosen:
+
+- **Several huginns on one host collide.** In containers this never comes up —
+  each has its own network namespace. Outside them, or under
+  `network_mode: host`, give each instance its own `health.port`.
+- **A `ui` or `metrics` listener on the same loopback port is rejected at
+  load**, rather than one of the two silently losing the bind at runtime.
+
+With `enabled: false` there is no listener, and `huginn healthcheck` says so
+instead of reporting a connection error that reads like a dead process. Drop the
+`HEALTHCHECK` from your deployment if you turn it off.
 
 ## `log` section
 

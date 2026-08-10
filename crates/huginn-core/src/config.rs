@@ -19,6 +19,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub metrics: MetricsConfig,
     #[serde(default)]
+    pub health: HealthConfig,
+    #[serde(default)]
     pub log: LogConfig,
     /// Capacity of the central EventHub broadcast channel (default 256).
     #[serde(default = "default_hub_capacity")]
@@ -295,6 +297,68 @@ fn default_metrics_bind() -> String {
 fn default_metrics_port() -> u16 {
     9464
 }
+
+// ---------------------------------------------------------------------------
+// Liveness endpoint
+// ---------------------------------------------------------------------------
+
+/// The liveness listener, and the only one that is **on by default**.
+///
+/// It exists so the container can have a `HEALTHCHECK`. Distroless carries no
+/// shell and no `curl`, so the check has to be the binary itself
+/// (`huginn healthcheck`), and that subcommand needs something to ask. The
+/// obvious candidate was the debug UI's `/health` — but the UI is off by
+/// default, so a `HEALTHCHECK` built on it would report *unhealthy* on every
+/// stock deployment. A health check that is wrong out of the box is worse than
+/// none: it trains operators to ignore the status column.
+///
+/// **There is deliberately no `bind` key.** Every other listener has one and
+/// defaults to loopback; this one is fixed to `127.0.0.1` and cannot be widened.
+/// That is what makes "on by default" defensible — the listener is reachable
+/// from inside the container's network namespace, which is exactly where Docker
+/// runs `HEALTHCHECK`, and from nowhere else. Publishing a port cannot expose
+/// it, because a published port reaches the container's bridge IP and this
+/// socket is not on it.
+///
+/// It serves `GET /health` and nothing else, with no probe data in the response
+/// — so unlike the debug UI it discloses nothing about what is monitored. See
+/// ADR-0008.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthConfig {
+    /// On by default — see the type's documentation. Turning it off is
+    /// supported (some orchestrators supply their own liveness mechanism and
+    /// would rather not have the socket), and then `huginn healthcheck` says so
+    /// rather than failing obscurely.
+    #[serde(default = "default_health_enabled")]
+    pub enabled: bool,
+    /// Port on `127.0.0.1`. Distinct from `ui.port` and `metrics.port` so that
+    /// enabling either of those never collides with a listener the operator did
+    /// not ask for.
+    #[serde(default = "default_health_port")]
+    pub port: u16,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_health_enabled(),
+            port: default_health_port(),
+        }
+    }
+}
+
+fn default_health_enabled() -> bool {
+    true
+}
+
+fn default_health_port() -> u16 {
+    9115
+}
+
+/// The address the liveness listener binds. Not configurable — see
+/// [`HealthConfig`].
+pub const HEALTH_BIND: &str = "127.0.0.1";
 
 // ---------------------------------------------------------------------------
 // Log / output config
@@ -694,6 +758,33 @@ impl AppConfig {
                 "ui and metrics are both enabled on {}:{} — give metrics its own port (metrics.port)",
                 self.ui.bind, self.ui.port
             )));
+        }
+        // The health listener is on by default, so it is the one most likely to
+        // be collided with by a port someone chose on purpose — and the least
+        // likely to be suspected, precisely because nobody enabled it. Say which
+        // listener is in the way rather than letting one of them lose the bind
+        // at runtime with only a logged error.
+        //
+        // A configurable listener only clashes when it is actually bound to
+        // loopback: `ui.bind: 0.0.0.0` and `health` share a port number without
+        // sharing a socket.
+        if self.health.enabled {
+            for (name, enabled, bind, port) in [
+                ("ui", self.ui.enabled, &self.ui.bind, self.ui.port),
+                (
+                    "metrics",
+                    self.metrics.enabled,
+                    &self.metrics.bind,
+                    self.metrics.port,
+                ),
+            ] {
+                if enabled && port == self.health.port && bind == HEALTH_BIND {
+                    return Err(HuginError::Config(format!(
+                        "{name} is enabled on {bind}:{port}, which the health listener already binds \
+                         — give {name} another port, or set health.enabled: false"
+                    )));
+                }
+            }
         }
 
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -1162,6 +1253,31 @@ metric:
         assert!(
             serde_yaml_ng::from_str::<AppConfig>(yaml).is_err(),
             "an unknown section must not be accepted"
+        );
+    }
+
+    /// `health` is the section where a swallowed typo lasts longest, because it
+    /// is the only listener that is on by default: a misspelled `enabled` leaves
+    /// the socket open on a deployment whose config plainly says it was turned
+    /// off, and nothing contradicts the operator. It also arrived on a different
+    /// branch from the strict-loading rule, so it is the one section that could
+    /// have kept the old behaviour without anything failing.
+    #[test]
+    fn loading_rejects_an_unknown_key_in_the_health_section() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+health:
+  enabld: false
+"#;
+        let err = serde_yaml_ng::from_str::<AppConfig>(yaml)
+            .expect_err("an unknown key under health must not be accepted");
+        assert!(
+            err.to_string().contains("enabld"),
+            "the error must name the offending key: {err}"
         );
     }
 
