@@ -184,7 +184,16 @@ Each probe entry:
 ### Validation
 
 The config is checked at startup and huginn refuses to run rather than fail
-later in a way that looks like an outage:
+later in a way that looks like an outage.
+
+**Unknown keys are an error.** A misspelled key used to be ignored in silence,
+which is the worst outcome available: you believe you set something, the default
+applies, and nothing anywhere disagrees. `batch_sizes` instead of `batch_size`
+now fails at load and names the key; so does a mistyped *section*, where
+`metric:` for `metrics:` would otherwise have quietly disabled the endpoint it
+was meant to configure.
+
+The rest:
 
 - `name` must be **unique** and non-empty. Names key the web UI's map and the
   InfluxDB tag series, so duplicates silently overwrite each other's history.
@@ -194,10 +203,31 @@ later in a way that looks like an outage:
   `http`/`https` need an absolute URL. The URL scheme does **not** have to match
   the probe type — `type: http` with an `https://` target is fine.
 - `interval_secs`, `timeout_secs`, `batch_size`, `batch_timeout_ms`,
-  `max_buffered_bytes` and `event_hub_capacity` must be greater than 0.
-- `tls_expiry_fail_days` must be ≥ 0; `ui.bind` and `metrics.bind` must be IP
-  addresses; `ui` and `metrics` must not both be enabled on the same
-  `bind:port`.
+  `max_buffered_bytes`, `event_hub_capacity`, `retry_initial_backoff_ms` and
+  `retry_max_backoff_ms` must be greater than 0, and the retry ceiling must not
+  be below the first delay — a maximum under the initial value is not a smaller
+  maximum, it is a setting that never applies.
+- `influx.url` must be an absolute URL. Without a scheme it parses as a string
+  and fails only when the first batch is written, looking like an unreachable
+  server.
+- `tls_expiry_fail_days` must be ≥ 0 **and finite**. YAML accepts `.nan`, and
+  `NaN < 0` is false — so a NaN threshold passed the sign check and then made
+  every expiry comparison false too, reporting UP however close the certificate
+  was to expiring.
+- `expected_status` must be a real HTTP status (100–599), and `dns_expected_ip`
+  must parse as an IP address. Neither could ever match otherwise, so the probe
+  would report DOWN on every tick while the target was healthy.
+- `ui.bind` and `metrics.bind` must be IP addresses, and an enabled listener's
+  port must not be `0` — port 0 asks the OS for an arbitrary free port, giving a
+  service nothing can be configured to reach.
+- `ui` and `metrics` must not both be enabled on the same `bind:port`. The
+  comparison is on the **parsed** addresses, so `::1` and `0:0:0:0:0:0:0:1` are
+  recognised as one socket.
+- An enabled listener that **cannot bind** stops startup. Both are bound before
+  the scheduler starts rather than inside their own tasks, where a taken port
+  produced one logged line while the daemon ran on without the service. For
+  `metrics` that matters twice over: Prometheus reports a scrape target that
+  never answers as the *monitored* host being down.
 
 ### DNS probe example
 

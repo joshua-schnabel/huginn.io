@@ -44,10 +44,31 @@ pub async fn run_server_with_state(
     port: u16,
     state: Arc<WebState>,
 ) -> anyhow::Result<()> {
+    let listener = bind_ui(bind, port).await?;
+    serve_ui(listener, state).await
+}
+
+/// Bind the UI's socket, returning it before anything is served.
+///
+/// Split from [`serve_ui`] so the caller can bind on the main task and fail
+/// startup on a taken port. Binding inside the spawned task meant a port clash
+/// produced one logged error while the process carried on without the UI the
+/// operator had explicitly enabled — a service that is configured on, reports
+/// nothing wrong, and is not there.
+pub async fn bind_ui(bind: &str, port: u16) -> anyhow::Result<tokio::net::TcpListener> {
     let addr: IpAddr = bind
         .parse()
         .with_context(|| format!("ui.bind '{bind}' is not a valid IP address"))?;
+    tokio::net::TcpListener::bind((addr, port))
+        .await
+        .with_context(|| format!("could not bind the debug UI on {bind}:{port}"))
+}
 
+/// Serve the debug UI on an already-bound listener.
+pub async fn serve_ui(
+    listener: tokio::net::TcpListener,
+    state: Arc<WebState>,
+) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/", get(handle_index))
         .route("/events", get(sse_handler))
@@ -58,8 +79,9 @@ pub async fn run_server_with_state(
         .layer(axum::middleware::from_fn(crate::headers::security_headers))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind((addr, port)).await?;
-    info!("Web UI listening on http://{addr}:{port}");
+    if let Ok(addr) = listener.local_addr() {
+        info!("Web UI listening on http://{addr}");
+    }
     crate::serve::serve_with_limits(listener, app).await?;
     Ok(())
 }
