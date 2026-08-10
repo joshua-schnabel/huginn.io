@@ -25,7 +25,8 @@ would have told them something.
 So the endpoint the check depends on has to be available without configuration —
 which means a listener that is on by default, in a project whose stated posture
 is that both existing listeners are off by default and bind loopback
-([`hardening.md`](../hardening.md), [R2](../risks.md)).
+([`hardening.md`](../hardening.md),
+[ADR-0009](0009-debug-ui-stays-unauthenticated.md)).
 
 ## Decision
 

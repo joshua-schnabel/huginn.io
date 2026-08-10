@@ -145,7 +145,9 @@ rather than softened:
 - **The debug UI is unauthenticated**, and `metrics.api_key_file` protects only
   the Prometheus listener — the UI serves the same probe inventory without a
   key. Off by default, loopback by default, and published on `127.0.0.1` by the
-  shipped compose file. [R2](docs/risks.md)
+  shipped compose file. Deliberately so, and not an oversight:
+  [ADR-0009](docs/adr/0009-debug-ui-stays-unauthenticated.md) records why, and
+  what was rejected.
 - **The TLS probe deliberately accepts invalid certificates**, because reading an
   expired certificate is the entire point. One narrowly scoped client, no
   credentials on the connection, verification on everywhere else.
@@ -214,7 +216,7 @@ agent, read [`AGENTS.md`](AGENTS.md) first.
 | [Versioning](docs/versioning.md) | SemVer policy and the stable surface |
 | [Roadmap](docs/roadmap.md) | What is still open |
 | [Risks](docs/risks.md) | Open risks and questions |
-| [Decisions](docs/adr/) | Eight ADRs |
+| [Decisions](docs/adr/) | Nine ADRs |
 
 `CONTRIBUTING.md` and `SECURITY.md` keep GitHub's ALL-CAPS names so GitHub
 surfaces them; every other guide is lowercase.

@@ -30,7 +30,8 @@ ui:
   # The UI has no authentication and publishes every probe target, so it binds
   # loopback only. In a container set 0.0.0.0 (or HUGINN_UI_BIND=0.0.0.0) —
   # published ports reach the container's bridge IP, not its loopback — and put
-  # it on a trusted network. See docs/SECURITY.md.
+  # it on a trusted network. See docs/hardening.md, and ADR-0009 for why it
+  # has no authentication of its own.
   bind: "127.0.0.1"
   port: 9116  # http://localhost:9116
 
