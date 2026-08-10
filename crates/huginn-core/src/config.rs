@@ -360,6 +360,34 @@ fn default_health_port() -> u16 {
 /// [`HealthConfig`].
 pub const HEALTH_BIND: &str = "127.0.0.1";
 
+/// The same address, parsed, for the collision check in [`AppConfig::validate`].
+///
+/// A `const` rather than a parse at validation time: parsing cannot fail here,
+/// and the alternative would be an `expect` in non-test code for an error that
+/// cannot happen. `health_bind_and_health_addr_describe_one_address` keeps the
+/// two spellings from drifting apart.
+pub const HEALTH_ADDR: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+/// Whether listeners bound to `a` and `b` would contend for the same port.
+///
+/// Equal addresses obviously do. So does a wildcard against anything in its
+/// family: `0.0.0.0` covers every IPv4 address on the host, `127.0.0.1`
+/// included, so the second bind fails with "address in use" — it does not
+/// quietly get a socket of its own. `::` is treated as covering IPv4 as well,
+/// because Linux accepts IPv4-mapped connections on it unless
+/// `net.ipv6.bindv6only` is set, and the bind fails accordingly. Being wrong in
+/// that direction costs a config that is rejected for a clash it might have got
+/// away with; being wrong in the other costs a listener that never starts, on
+/// a host whose sysctl nobody thought to check.
+///
+/// Two *different* specific addresses never contend: `127.0.0.1` and `::1` are
+/// separate sockets, and so are two addresses of one host's several interfaces.
+fn addresses_contend(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
+    a == b
+        || (a.is_unspecified() && (a.is_ipv6() || b.is_ipv4()))
+        || (b.is_unspecified() && (b.is_ipv6() || a.is_ipv4()))
+}
+
 // ---------------------------------------------------------------------------
 // Log / output config
 // ---------------------------------------------------------------------------
@@ -748,10 +776,13 @@ impl AppConfig {
         }
         // Two listeners on one address can't both bind; the second would lose
         // at runtime with only a logged error. Compared as parsed addresses —
-        // see above for why the string comparison this replaced was not enough.
+        // see above for why the string comparison this replaced was not enough,
+        // and `addresses_contend` for why equality alone is not enough either:
+        // `0.0.0.0` and `127.0.0.1` are not the same address and still cannot
+        // both have the port.
         if self.ui.enabled
             && self.metrics.enabled
-            && ui_addr == metrics_addr
+            && addresses_contend(ui_addr, metrics_addr)
             && self.ui.port == self.metrics.port
         {
             return Err(HuginError::Config(format!(
@@ -765,23 +796,27 @@ impl AppConfig {
         // listener is in the way rather than letting one of them lose the bind
         // at runtime with only a logged error.
         //
-        // A configurable listener only clashes when it is actually bound to
-        // loopback: `ui.bind: 0.0.0.0` and `health` share a port number without
-        // sharing a socket.
+        // Not only when the listener is bound to loopback itself. `ui.bind:
+        // 0.0.0.0` on the health port does not get a socket of its own — it
+        // covers `127.0.0.1` too, so the bind fails. Reported here, naming the
+        // health listener, rather than at startup as a bare "address in use"
+        // about a port nobody remembers enabling.
         if self.health.enabled {
-            for (name, enabled, bind, port) in [
-                ("ui", self.ui.enabled, &self.ui.bind, self.ui.port),
+            for (name, enabled, bind, addr, port) in [
+                ("ui", self.ui.enabled, &self.ui.bind, ui_addr, self.ui.port),
                 (
                     "metrics",
                     self.metrics.enabled,
                     &self.metrics.bind,
+                    metrics_addr,
                     self.metrics.port,
                 ),
             ] {
-                if enabled && port == self.health.port && bind == HEALTH_BIND {
+                if enabled && port == self.health.port && addresses_contend(addr, HEALTH_ADDR) {
                     return Err(HuginError::Config(format!(
-                        "{name} is enabled on {bind}:{port}, which the health listener already binds \
-                         — give {name} another port, or set health.enabled: false"
+                        "{name} is enabled on {bind}:{port}, which cannot be bound while the health \
+                         listener holds {HEALTH_BIND}:{port} — give {name} another port, or set \
+                         health.enabled: false"
                     )));
                 }
             }
@@ -1456,6 +1491,100 @@ metrics:
             .validate()
             .expect_err("the same address written two ways is still one socket");
         assert!(err.to_string().contains("metrics.port"), "got: {err}");
+    }
+
+    /// A wildcard is not equal to a loopback address and still cannot share its
+    /// port: `0.0.0.0` covers `127.0.0.1`. Equality alone waved this through.
+    #[test]
+    fn validation_rejects_a_wildcard_listener_against_a_loopback_one() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+ui:
+  enabled: true
+  bind: "0.0.0.0"
+  port: 9500
+metrics:
+  enabled: true
+  bind: "127.0.0.1"
+  port: 9500
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a wildcard covers the loopback address on that port");
+        assert!(err.to_string().contains("metrics.port"), "got: {err}");
+    }
+
+    /// The health listener is fixed to loopback, so a listener someone put on
+    /// `0.0.0.0` and the health port cannot bind either — and this is the one
+    /// worth catching, because the operator never enabled the listener that is
+    /// in the way and has no reason to suspect it.
+    #[test]
+    fn validation_rejects_a_wildcard_listener_on_the_health_port() {
+        let yaml = format!(
+            "{MINIMAL_YAML}\nui:\n  enabled: true\n  bind: \"0.0.0.0\"\n  port: {}\n",
+            default_health_port()
+        );
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        let err = cfg
+            .validate()
+            .expect_err("a wildcard on the health port cannot bind");
+        assert!(
+            err.to_string().contains("health") && err.to_string().contains("ui"),
+            "the error must name both listeners: {err}"
+        );
+    }
+
+    /// The other direction, so the check is not simply "reject the health
+    /// port". `::1` and `127.0.0.1` are separate sockets, and a config that
+    /// uses both is legal.
+    #[test]
+    fn an_ipv6_loopback_listener_may_use_the_health_port() {
+        let yaml = format!(
+            "{MINIMAL_YAML}\nui:\n  enabled: true\n  bind: \"::1\"\n  port: {}\n",
+            default_health_port()
+        );
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        cfg.validate()
+            .expect("::1 and 127.0.0.1 do not contend for a port");
+    }
+
+    /// `HEALTH_BIND` is what the listener binds; `HEALTH_ADDR` is what the
+    /// collision check compares. Two spellings of one fact, so they are
+    /// asserted to agree rather than trusted to.
+    #[test]
+    fn health_bind_and_health_addr_describe_one_address() {
+        assert_eq!(
+            HEALTH_BIND.parse::<std::net::IpAddr>().unwrap(),
+            HEALTH_ADDR
+        );
+    }
+
+    #[test]
+    fn addresses_contend_covers_wildcards_without_merging_distinct_addresses() {
+        use std::net::IpAddr;
+        let v4_any: IpAddr = "0.0.0.0".parse().unwrap();
+        let v6_any: IpAddr = "::".parse().unwrap();
+        let v4_local: IpAddr = "127.0.0.1".parse().unwrap();
+        let v6_local: IpAddr = "::1".parse().unwrap();
+        let v4_other: IpAddr = "192.0.2.1".parse().unwrap();
+
+        assert!(addresses_contend(v4_local, v4_local));
+        assert!(addresses_contend(v4_any, v4_local));
+        assert!(addresses_contend(v4_local, v4_any));
+        // `::` reaches IPv4 too on a dual-stack host — see `addresses_contend`.
+        assert!(addresses_contend(v6_any, v4_local));
+        assert!(addresses_contend(v6_any, v6_local));
+
+        // An IPv4 wildcard says nothing about IPv6, and two specific addresses
+        // are two sockets however alike they look.
+        assert!(!addresses_contend(v4_any, v6_local));
+        assert!(!addresses_contend(v4_local, v6_local));
+        assert!(!addresses_contend(v4_local, v4_other));
     }
 
     #[test]
