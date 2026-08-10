@@ -48,6 +48,12 @@ old results rather than the process.
 `WebState`, which subscribes to the hub once, so enabling neither, either or both
 makes no difference to the hub's fan-out.
 
+A third listener sits outside that picture: the liveness endpoint, on by default,
+fixed to `127.0.0.1`, serving `GET /health` and nothing else. It does not
+subscribe to the hub and holds no probe data — it exists so the distroless image
+can carry a `HEALTHCHECK`, which needs an endpoint that is there without
+configuration. [ADR-0008](adr/0008-liveness-listener-on-by-default.md)
+
 ## Crates
 
 | Crate | Responsibility |
@@ -133,16 +139,34 @@ actually send, and catching only SIGINT meant the drain below never ran under
 either — every buffered result was lost on each deploy.
 
 1. The signal fires; `run()` stops waiting.
-2. The hub is dropped, which closes every subscriber's receiver.
-3. The batcher takes `Closed` as its cue to queue what it still holds and close
+2. **Every probe loop stops and is joined.** Each holds its own
+   `Arc<EventHub>`, so this has to complete before step 3 means anything.
+3. The hub is dropped, which closes every subscriber's receiver.
+4. The batcher takes `Closed` as its cue to queue what it still holds and close
    the queue.
-4. The writer drains, bounded by `influx.shutdown_drain_timeout_ms`.
-5. The process exits.
+5. The writer drains, bounded by `influx.shutdown_drain_timeout_ms`.
+6. The process exits.
 
-The bound in step 4 matters as much as the wait itself: retries are unbounded in
+**Step 2 is not a formality, and its position is the whole point.** The loops
+were once detached: `run()` dropped only its own hub clone and went straight to
+the drain. A probe still inside a slow read — an SMTP or IMAP peer can consume a
+full timeout connecting and another one being read from — kept the hub's
+`Sender` alive, so the batcher never observed `Closed` and never queued the
+partial batch it was holding. The drain then ran its full timeout and logged
+that InfluxDB was unreachable, while InfluxDB had been reachable throughout.
+Each loop therefore also selects on the shutdown channel *during* a probe, not
+only between two of them, and anything still running when the grace period ends
+is aborted so it cannot hold the hub open indefinitely. The drain's timeout
+message names which stage overran, because "the backend is down" and "a probe
+would not stop" call for opposite responses.
+
+The bound in step 5 matters as much as the wait itself: retries are unbounded in
 attempts, so an InfluxDB that is down at shutdown would otherwise keep the
 process alive forever. On timeout the buffered results are discarded and a
 warning says so.
+
+An interrupted probe publishes nothing. Inventing a DOWN result for it would
+write a fake outage into InfluxDB on every deploy.
 
 There is no configuration reload. Change the YAML, restart the process.
 
@@ -165,6 +189,7 @@ There is no configuration reload. Change the YAML, restart the process.
 | [0005](adr/0005-distroless-nonroot.md) | A distroless, nonroot runtime image |
 | [0006](adr/0006-tls-probe-skips-verification.md) | The TLS probe skips certificate verification |
 | [0007](adr/0007-debug-ui-has-no-cli-flag.md) | The debug UI is enabled by config or ENV, never by a CLI flag |
+| [0008](adr/0008-liveness-listener-on-by-default.md) | A liveness listener, on by default, fixed to loopback |
 
 ## Related
 

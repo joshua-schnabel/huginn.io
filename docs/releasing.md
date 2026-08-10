@@ -76,8 +76,13 @@ heading, keeping the accumulated entries under it:
 Get that change onto `dev` the normal way (a `feature/*` or `chore/*` PR, or as
 part of the release PR itself). The version **must** be:
 
-- **valid SemVer**, and
-- **strictly greater** than the latest `vX.Y.Z` git tag.
+- **valid SemVer**,
+- **strictly greater** than the latest `vX.Y.Z` git tag, and
+- **equal to `[workspace.package].version` in `Cargo.toml`** — the image is
+  tagged from the changelog, the binary reports the manifest, and a release that
+  stamps one without the other ships an image whose `--version` contradicts its
+  tag. Both release paths write them together via
+  `scripts/set-workspace-version.sh`; the gate is what makes that a rule.
 
 ### 2. Open the release PR: `dev → main`
 
@@ -105,10 +110,12 @@ merge dev → main
 ci.yml (main push)                          → DockerHub  :latest  :0.2.0
       ├─ builds nothing new — tags the already-scanned digests
       ├─ mirrors the exact image to ghcr.io → ghcr.io/.../huginn :latest :0.2.0
-      └─ creates the git tag                → v0.2.0
+      └─ creates the git tag, annotated
+         with the manifest digest           → v0.2.0
                                                  │
-                                                 ▼ (tag push)
+                                                 ▼ (tag push — ci.yml ignores it)
 release.yml
+      ├─ checks the tag's digest still matches what :0.2.0 resolves to
       ├─ re-runs the full test suite with coverage on the tagged commit
       ├─ GitHub Release v0.2.0
       │    • notes: CHANGELOG section + container-image pull commands and
@@ -121,15 +128,23 @@ release.yml
 ```
 
 - The published image is **byte-identical** to the one that was scanned and
-  integration-tested — it is never rebuilt for publishing.
+  integration-tested — it is never rebuilt for publishing. `ci.yml` does not run
+  on tags, so the tag it creates cannot start a second build; before v0.3.0 it
+  did, and `:0.3.0` ended up pointing at a rebuild that the release notes and
+  SBOM did not describe.
 - `0.x` versions and any pre-release (`-rc.1`, `-beta`, …) are flagged as a
   **pre-release** on GitHub.
 - The dev housekeeping PR **auto-merges** once its checks pass.
 - The Release ships with proof of what was tested: `test-report.md`
   (per-suite results + coverage, built by `scripts/test-report.sh`) is attached
   as an asset, and the notes carry a compact test summary plus the image
-  digests. A registry hiccup while resolving the digest only omits that line —
-  it never blocks the release.
+  digests. The SBOM is generated from the **digest**, not from `:x.y.z`, so the
+  document names bytes rather than a mutable pointer to them.
+- **A digest mismatch stops the release.** If `:x.y.z` no longer resolves to the
+  digest recorded in the tag, something republished it and the notes would be
+  describing an image nobody gated — `release.yml` fails instead. (Tags from
+  before the annotation existed, up to and including `v0.3.0`, warn rather than
+  fail: there is nothing recorded to compare against.)
 
 ---
 
