@@ -24,7 +24,13 @@ fn free_port() -> u16 {
 /// Write a config that probes a closed local port every second, so a probe
 /// result appears quickly without touching the network. InfluxDB points at a
 /// dead port on purpose — write failures must not take the process down.
-fn write_config(dir: &std::path::Path, ui_port: u16) -> std::path::PathBuf {
+/// `health.port` is written explicitly, and every caller passes a free one.
+/// The default is a *fixed* port because the liveness listener is on by default
+/// and must be findable without configuration — which is right for a container
+/// with its own network namespace, and wrong for several huginns sharing a host.
+/// These tests are the second case: they run in parallel, so without this they
+/// race for one socket and whichever loses exits at startup.
+fn write_config(dir: &std::path::Path, ui_port: u16, health_port: u16) -> std::path::PathBuf {
     let token = dir.join("token.txt");
     std::fs::write(&token, "test-token").unwrap();
 
@@ -43,6 +49,9 @@ influx:
 ui:
   enabled: true
   port: {ui_port}
+health:
+  enabled: true
+  port: {health_port}
 log:
   format: json
   level: info
@@ -55,6 +64,7 @@ probes:
 "#,
         token = token.display().to_string().replace('\\', "/"),
         ui_port = ui_port,
+        health_port = health_port,
     )
     .unwrap();
     cfg_path
@@ -96,7 +106,7 @@ where
 #[tokio::test]
 async fn binary_stays_alive_after_startup() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(dir.path(), free_port());
+    let cfg = write_config(dir.path(), free_port(), free_port());
     let mut child = spawn_huginn(&cfg);
 
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -120,7 +130,7 @@ async fn binary_stays_alive_after_startup() {
 async fn binary_serves_health_endpoint() {
     let dir = tempfile::tempdir().unwrap();
     let port = free_port();
-    let cfg = write_config(dir.path(), port);
+    let cfg = write_config(dir.path(), port, free_port());
     let mut child = spawn_huginn(&cfg);
 
     let url = format!("http://127.0.0.1:{port}/health");
@@ -137,6 +147,86 @@ async fn binary_serves_health_endpoint() {
     );
 }
 
+/// `huginn healthcheck` against a running huginn — exactly what the image's
+/// `HEALTHCHECK` runs, as a second process, which is the only way this can be
+/// tested honestly.
+///
+/// Both directions matter. Against a live daemon it must exit 0, or the
+/// container is marked unhealthy while it is working. Against nothing at all it
+/// must exit non-zero, or the check reports healthy for a process that is gone —
+/// which is worse than having no check, because it looks like one.
+#[tokio::test]
+async fn healthcheck_subcommand_reports_liveness_of_a_running_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let health_port = free_port();
+    let cfg = write_config(dir.path(), free_port(), health_port);
+
+    // Nothing running yet: the check must fail.
+    let before = Command::new(env!("CARGO_BIN_EXE_huginn"))
+        .arg("--config")
+        .arg(&cfg)
+        .arg("healthcheck")
+        .output()
+        .await
+        .expect("failed to run the healthcheck subcommand");
+    assert!(
+        !before.status.success(),
+        "healthcheck reported success with no huginn running: {}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+
+    let mut child = spawn_huginn(&cfg);
+
+    // Poll the subcommand itself rather than the socket — the thing under test
+    // is the command the container runs, not the port it happens to use.
+    let healthy = wait_until(Duration::from_secs(15), || {
+        let cfg = cfg.clone();
+        async move {
+            Command::new(env!("CARGO_BIN_EXE_huginn"))
+                .arg("--config")
+                .arg(&cfg)
+                .arg("healthcheck")
+                .output()
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+    })
+    .await;
+
+    child.kill().await.ok();
+
+    assert!(
+        healthy,
+        "healthcheck never reported a running huginn as healthy"
+    );
+}
+
+/// Running the binary with no subcommand must still start the daemon.
+///
+/// The image's ENTRYPOINT carries no subcommand, so if adding one had made it
+/// required, every existing deployment would fail at once — and the failure
+/// would be a usage message, which reads nothing like "your monitor is down".
+#[tokio::test]
+async fn binary_without_a_subcommand_still_runs_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let cfg = write_config(dir.path(), port, free_port());
+    let mut child = spawn_huginn(&cfg); // no subcommand — the ENTRYPOINT shape
+
+    let url = format!("http://127.0.0.1:{port}/health");
+    let serving = wait_until(Duration::from_secs(10), || async {
+        matches!(reqwest::get(&url).await, Ok(r) if r.status().is_success())
+    })
+    .await;
+
+    child.kill().await.ok();
+    assert!(
+        serving,
+        "the bare binary did not start the daemon — the container contract is broken"
+    );
+}
+
 /// The binary must actually execute probes and expose the result.
 ///
 /// Liveness alone is not enough: a process that stays up but never probes is
@@ -145,7 +235,7 @@ async fn binary_serves_health_endpoint() {
 async fn binary_executes_probes_and_reports_them() {
     let dir = tempfile::tempdir().unwrap();
     let port = free_port();
-    let cfg = write_config(dir.path(), port);
+    let cfg = write_config(dir.path(), port, free_port());
     let mut child = spawn_huginn(&cfg);
 
     let url = format!("http://127.0.0.1:{port}/metrics/latest");

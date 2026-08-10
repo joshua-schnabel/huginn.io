@@ -14,19 +14,40 @@ use crate::Shutdown;
 /// Run all probes from the config, each on its own tokio interval.
 /// Results are published to the given `EventHub` as `ProbeEvent::ProbeCompleted`.
 /// Each probe loop listens on its own shutdown receiver and exits cleanly.
-pub async fn run(cfg: Arc<AppConfig>, hub: Arc<EventHub>, shutdown_tx: Shutdown) {
+///
+/// Returns a handle per probe loop. The caller **must** wait on these before it
+/// drops its `Arc<EventHub>`, because each loop holds one too: dropping only the
+/// caller's clone leaves the hub's `Sender` alive, the batcher never observes
+/// `Closed`, and the partial batch it is holding is never queued. The shutdown
+/// drain would then time out and blame an InfluxDB that was reachable all along.
+/// The handles are what make "every publisher has stopped" observable rather
+/// than assumed.
+#[must_use = "the caller must join these before dropping its EventHub clone, or \
+              the batcher never sees the hub close"]
+pub async fn run(
+    cfg: Arc<AppConfig>,
+    hub: Arc<EventHub>,
+    shutdown_tx: Shutdown,
+) -> Vec<tokio::task::JoinHandle<()>> {
     // One registry for every loop. It owns the shared HTTP client (and whatever
     // future probes need), so loops that don't speak HTTP no longer carry one.
     let registry = Arc::new(ProbeRegistry::new());
 
+    let mut handles = Vec::with_capacity(cfg.probes.len());
     for probe_cfg in &cfg.probes {
         let probe_cfg = probe_cfg.clone();
         let hub = Arc::clone(&hub);
         let registry = Arc::clone(&registry);
         let shutdown_rx = shutdown_tx.subscribe();
 
-        tokio::spawn(run_probe_loop(probe_cfg, hub, registry, shutdown_rx));
+        handles.push(tokio::spawn(run_probe_loop(
+            probe_cfg,
+            hub,
+            registry,
+            shutdown_rx,
+        )));
     }
+    handles
 }
 
 async fn run_probe_loop(
@@ -39,13 +60,36 @@ async fn run_probe_loop(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        // Two sequential `select!`s rather than one wrapping the probe, so that
+        // shutdown is observed *during* a probe and not only between two of
+        // them. It used to be one: the timer arm was chosen, and the loop then
+        // awaited the whole probe before it looked at the shutdown channel
+        // again. An SMTP or IMAP probe can spend a full timeout connecting and
+        // another reading, so a loop could hold the process — and the hub —
+        // open for twice `timeout_secs` after the signal.
+        //
+        // Sequential also because they cannot be nested: both arms need
+        // `&mut shutdown_rx`, and inside a `select!` body the borrow taken by
+        // its own arms is still live. Splitting them ends the first borrow
+        // before the second begins.
         tokio::select! {
-            _ = ticker.tick() => {
-                let result = execute_probe(&cfg, &registry).await;
-                hub.publish(ProbeEvent::ProbeCompleted(result));
-            }
+            _ = ticker.tick() => {}
             _ = shutdown_rx.recv() => {
                 info!(probe = %cfg.name, "probe loop shutting down");
+                break;
+            }
+        }
+
+        tokio::select! {
+            result = execute_probe(&cfg, &registry) => {
+                hub.publish(ProbeEvent::ProbeCompleted(result));
+            }
+            // The in-flight probe is dropped at its next await point. Nothing is
+            // published for it, which is right: an interrupted probe measured
+            // nothing, and inventing a DOWN result here would write a fake
+            // outage into InfluxDB on every deploy.
+            _ = shutdown_rx.recv() => {
+                info!(probe = %cfg.name, "probe loop shutting down mid-probe");
                 break;
             }
         }
@@ -80,7 +124,7 @@ async fn execute_probe(cfg: &ProbeConfig, registry: &ProbeRegistry) -> ProbeResu
 mod tests {
     use super::*;
     use huginn_core::config::{
-        InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType, UiConfig,
+        HealthConfig, InfluxConfig, LogConfig, MetricsConfig, ProbeConfig, ProbeType, UiConfig,
     };
     use huginn_core::event::{EventHub, ProbeEvent};
     use std::time::Duration;
@@ -101,6 +145,13 @@ mod tests {
             probes,
             ui: UiConfig::default(),
             metrics: MetricsConfig::default(),
+            // Off: these tests drive the scheduler directly and never bind it,
+            // but leaving it on would have every parallel test in this binary
+            // contend for the one fixed health port.
+            health: HealthConfig {
+                enabled: false,
+                ..Default::default()
+            },
             log: LogConfig::default(),
             event_hub_capacity: 256,
         })
@@ -131,7 +182,7 @@ mod tests {
         let hub = Arc::new(EventHub::new(256));
         let mut rx = hub.subscribe();
         let (shutdown_tx, _) = broadcast::channel(1);
-        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+        let _handles = run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
         let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -151,7 +202,7 @@ mod tests {
         let hub = Arc::new(EventHub::new(256));
         let mut rx = hub.subscribe();
         let (shutdown_tx, _) = broadcast::channel(1);
-        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+        let _handles = run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
         // Shut down immediately without waiting for any probe to fire
         tokio::task::yield_now().await;
@@ -187,7 +238,7 @@ mod tests {
         let hub = Arc::new(EventHub::new(256));
         let mut rx = hub.subscribe();
         let (shutdown_tx, _) = broadcast::channel(1);
-        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+        let _handles = run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
         let _ = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
@@ -235,7 +286,7 @@ mod tests {
         let hub = Arc::new(EventHub::new(256));
         let mut rx = hub.subscribe();
         let (shutdown_tx, _) = broadcast::channel(1);
-        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+        let _handles = run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
         let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -276,7 +327,7 @@ mod tests {
         let hub = Arc::new(EventHub::new(256));
         let mut rx = hub.subscribe();
         let (shutdown_tx, _) = broadcast::channel(1);
-        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+        let _handles = run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
         let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -345,7 +396,7 @@ mod tests {
         let hub = Arc::new(EventHub::new(256));
         let mut rx = hub.subscribe();
         let (shutdown_tx, _) = broadcast::channel(1);
-        run(cfg, hub.clone(), shutdown_tx.clone()).await;
+        let _handles = run(cfg, hub.clone(), shutdown_tx.clone()).await;
 
         let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await

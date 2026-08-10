@@ -2,7 +2,15 @@
 # Keep in sync with rust-version in the workspace Cargo.toml.
 # 1.88 is the floor set by hickory-resolver 0.26, which is required for
 # RUSTSEC-2026-0119 — 0.24 pins a vulnerable hickory-proto.
-FROM rust:1.96-slim AS builder
+#
+# Pinned by digest, with the tag kept in front of it. Every GitHub Action in
+# this repository is pinned to a 40-character SHA because a tag is movable and a
+# compromised upstream would otherwise reach CI with no Dependabot PR; a base
+# image tag is movable in exactly the same way, and it is the one that ends up
+# inside the artefact people run. The `tag@digest` form keeps the version
+# readable — and Dependabot updates both halves together, so this does not
+# freeze the builder in place.
+FROM rust:1.97-slim@sha256:3b2879047d42784ca9403ad20c51ed3df361a50f1df96f5777d39b4e33aa65cd AS builder
 
 WORKDIR /build
 
@@ -29,7 +37,13 @@ COPY . .
 RUN find . -name "*.rs" -exec touch {} \; && cargo build --release --locked
 
 # ── Stage 2: Runtime (distroless — no shell, no package manager) ──────────
-FROM gcr.io/distroless/cc-debian12
+# Digest-pinned for the same reason as the builder, and it matters more here:
+# these bytes ship. `cc-debian12` has no version tag to speak of, so before this
+# the runtime layer was whatever the tag pointed at on the day of the build, and
+# two builds of one commit could differ. R4 in docs/risks.md makes keeping this
+# current an operational duty; Dependabot moves the digest, and the Trivy gate
+# is what says when it must.
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36
 
 COPY --from=builder /build/target/release/huginn /usr/local/bin/huginn
 COPY config/config.example.yaml /etc/huginn/config.yaml
@@ -37,7 +51,24 @@ COPY config/config.example.yaml /etc/huginn/config.yaml
 # Run as non-root
 USER nonroot:nonroot
 
-# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default)
+# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default).
+# The liveness listener (health.port, 9115 by default) is deliberately NOT
+# exposed: it is bound to 127.0.0.1 and is only ever reached from inside this
+# container's network namespace, which is where HEALTHCHECK runs.
 EXPOSE 9116 9464
+
+# The binary checks itself. Distroless has no shell and no curl, so there is
+# nothing else here that could make an HTTP request — which is why `healthcheck`
+# is a subcommand rather than a CMD wrapping some tool.
+#
+# Exec form, so no shell is required to parse it. It reads the same config as
+# the daemon (HUGINN_CONFIG, or the ENTRYPOINT's path by default), so the two
+# cannot disagree about which port to use.
+#
+# start-period covers config load and the bind; the check itself only ever waits
+# on loopback, so the timeout is short on purpose — a slow answer here means the
+# runtime has stopped scheduling, which is the thing worth reporting.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml"]
