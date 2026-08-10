@@ -67,3 +67,34 @@ probes:
     interval_secs: 2
     timeout_secs: 2
     tls_expiry_fail_days: 1
+
+  # `https` as its own configured type. It shares an executor with `http`, but
+  # the *type* is part of the config surface and reaches InfluxDB and Prometheus
+  # as a tag value — so it is worth proving the whole path, not assuming it from
+  # the http probe above. The Caddy sidecar answers "OK" over its self-signed
+  # certificate; huginn's HTTPS client verifies normally, so this would fail —
+  # which is exactly why the target is the plaintext InfluxDB endpoint instead.
+  # Probing the self-signed one over https is a job for the tls probe, and it
+  # does it above.
+  - name: "influxdb-https-type"
+    type: https
+    target: "http://influxdb:8086/health"
+    interval_secs: 2
+    timeout_secs: 2
+    expected_status: 200
+
+  # SMTP and IMAP against the mail-endpoint sidecar. These are the only probes
+  # that parse a protocol banner, and they had no end-to-end coverage — the
+  # split-greeting bug lived in exactly this code and could only be caught by
+  # unit tests until now.
+  - name: "smtp-banner"
+    type: smtp
+    target: "mail-endpoint:25"
+    interval_secs: 2
+    timeout_secs: 2
+
+  - name: "imap-greeting"
+    type: imap
+    target: "mail-endpoint:143"
+    interval_secs: 2
+    timeout_secs: 2

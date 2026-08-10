@@ -4,8 +4,9 @@
 
 ```yaml
 influx:          # InfluxDB connection (required)
-ui:              # Debug web UI (optional)
-metrics:         # Prometheus /metrics endpoint (optional)
+ui:              # Debug web UI (optional, off by default)
+metrics:         # Prometheus /metrics endpoint (optional, off by default)
+health:          # Liveness endpoint (optional, ON by default)
 log:             # Logging settings (optional)
 probes:          # List of probes (required)
 ```
@@ -115,6 +116,48 @@ scrape_configs:
       - targets: ["huginn-host:9464"]
 ```
 
+## `health` section
+
+The liveness listener — **the only one that is on by default.**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `true` | Serve `GET /health` on loopback |
+| `port` | int | `9115` | Listening port on `127.0.0.1` |
+
+There is **no `bind` key**, and that is the point. The listener is fixed to
+`127.0.0.1` and cannot be widened, which is what makes an on-by-default listener
+defensible: Docker runs `HEALTHCHECK` *inside* the container, so loopback is
+where the check needs it, while a published port reaches the container's bridge
+IP and never this socket. It serves the string `OK` and nothing else — no probe
+names, no targets, no errors — so unlike the debug UI it discloses nothing about
+what is monitored. [ADR-0008](adr/0008-liveness-listener-on-by-default.md)
+
+It exists so the image can carry a `HEALTHCHECK`. Distroless has no shell and no
+`curl`, so the check is the binary itself:
+
+```bash
+huginn --config /etc/huginn/config.yaml healthcheck   # exit 0 = alive
+```
+
+**Liveness, not readiness.** A 200 means the process is running and its runtime
+is still scheduling work. It says nothing about whether probes are succeeding or
+InfluxDB is reachable, deliberately: an orchestrator that restarted huginn
+because a monitored host went down would remove the monitor exactly when it is
+needed. Probe health is what `/metrics` and the probe results are for.
+
+Two things follow from the port being fixed rather than chosen:
+
+- **Several huginns on one host collide.** In containers this never comes up —
+  each has its own network namespace. Outside them, or under
+  `network_mode: host`, give each instance its own `health.port`.
+- **A `ui` or `metrics` listener on the same loopback port is rejected at
+  load**, rather than one of the two silently losing the bind at runtime.
+
+With `enabled: false` there is no listener, and `huginn healthcheck` says so
+instead of reporting a connection error that reads like a dead process. Drop the
+`HEALTHCHECK` from your deployment if you turn it off.
+
 ## `log` section
 
 | Key | Type | Default | Description |
@@ -141,7 +184,16 @@ Each probe entry:
 ### Validation
 
 The config is checked at startup and huginn refuses to run rather than fail
-later in a way that looks like an outage:
+later in a way that looks like an outage.
+
+**Unknown keys are an error.** A misspelled key used to be ignored in silence,
+which is the worst outcome available: you believe you set something, the default
+applies, and nothing anywhere disagrees. `batch_sizes` instead of `batch_size`
+now fails at load and names the key; so does a mistyped *section*, where
+`metric:` for `metrics:` would otherwise have quietly disabled the endpoint it
+was meant to configure.
+
+The rest:
 
 - `name` must be **unique** and non-empty. Names key the web UI's map and the
   InfluxDB tag series, so duplicates silently overwrite each other's history.
@@ -151,10 +203,31 @@ later in a way that looks like an outage:
   `http`/`https` need an absolute URL. The URL scheme does **not** have to match
   the probe type — `type: http` with an `https://` target is fine.
 - `interval_secs`, `timeout_secs`, `batch_size`, `batch_timeout_ms`,
-  `max_buffered_bytes` and `event_hub_capacity` must be greater than 0.
-- `tls_expiry_fail_days` must be ≥ 0; `ui.bind` and `metrics.bind` must be IP
-  addresses; `ui` and `metrics` must not both be enabled on the same
-  `bind:port`.
+  `max_buffered_bytes`, `event_hub_capacity`, `retry_initial_backoff_ms` and
+  `retry_max_backoff_ms` must be greater than 0, and the retry ceiling must not
+  be below the first delay — a maximum under the initial value is not a smaller
+  maximum, it is a setting that never applies.
+- `influx.url` must be an absolute URL. Without a scheme it parses as a string
+  and fails only when the first batch is written, looking like an unreachable
+  server.
+- `tls_expiry_fail_days` must be ≥ 0 **and finite**. YAML accepts `.nan`, and
+  `NaN < 0` is false — so a NaN threshold passed the sign check and then made
+  every expiry comparison false too, reporting UP however close the certificate
+  was to expiring.
+- `expected_status` must be a real HTTP status (100–599), and `dns_expected_ip`
+  must parse as an IP address. Neither could ever match otherwise, so the probe
+  would report DOWN on every tick while the target was healthy.
+- `ui.bind` and `metrics.bind` must be IP addresses, and an enabled listener's
+  port must not be `0` — port 0 asks the OS for an arbitrary free port, giving a
+  service nothing can be configured to reach.
+- `ui` and `metrics` must not both be enabled on the same `bind:port`. The
+  comparison is on the **parsed** addresses, so `::1` and `0:0:0:0:0:0:0:1` are
+  recognised as one socket.
+- An enabled listener that **cannot bind** stops startup. Both are bound before
+  the scheduler starts rather than inside their own tasks, where a taken port
+  produced one logged line while the daemon ran on without the service. For
+  `metrics` that matters twice over: Prometheus reports a scrape target that
+  never answers as the *monitored* host being down.
 
 ### DNS probe example
 
@@ -172,17 +245,33 @@ later in a way that looks like an outage:
 ```yaml
 - name: my-cert
   type: tls
-  target: "example.com:443"   # must speak HTTPS on this port
+  target: "example.com:443"   # any TLS port: 443, 993, 465, 636, …
   interval_secs: 3600         # certificates change slowly — probe rarely
   tls_expiry_fail_days: 14    # DOWN once fewer than 14 days remain
 ```
 
-The probe completes a TLS handshake and reports the days until the server
-certificate expires as the `tls_cert_expiry_days` metric (negative once
+The probe completes a TLS handshake — and nothing more; no application-protocol
+request is made — then reports the days until the server certificate expires as
+the `tls_cert_expiry_days` metric (negative once
 expired; kept on DOWN results too, so alerts can see how far gone it is).
 Certificate **verification is intentionally skipped** — the point is to read
 the certificate, self-signed and expired ones included, not to trust it. See
 [`hardening.md`](hardening.md) for the security reasoning.
+
+### What `timeout_secs` and `response_ms` mean
+
+- **`timeout_secs` is the budget for the whole probe**, not for each step inside
+  it. An `smtp` or `imap` probe spends it on the connect *and* the greeting
+  together; it used to apply once to each, so the real worst case was twice the
+  configured value.
+- **`response_ms` for `http`/`https` ends at the response headers.** The body is
+  never read. Including it would make the number depend on the size of whatever
+  the endpoint returns, so a page that grew by a megabyte would be
+  indistinguishable from a server getting slower.
+- **`smtp` and `imap` read a complete greeting line** (bounded to 512 bytes)
+  rather than whatever one `read()` happens to return. TCP is a byte stream and
+  may split anywhere, so a valid `220 …` arriving as `22` + the rest used to be
+  reported DOWN — occasionally, depending on timing.
 
 ### Known protocol limits
 
@@ -193,8 +282,11 @@ the certificate, self-signed and expired ones included, not to trust it. See
   TCP/DoT/DoH transport.
 - **`udp` sends a DNS-shaped payload** and counts any reply as UP — it is a
   reachability check, best suited to DNS-like services.
-- **`tls` requires an HTTPS endpoint** — the certificate is read from the HTTP
-  response's TLS info, so raw-TLS ports (IMAPS, SMTPS, LDAPS) are unsupported.
+- **`tls` works on any TLS port.** The certificate comes from the handshake
+  itself, so IMAPS (`:993`), SMTPS (`:465`), LDAPS (`:636`) and HTTPS are all
+  probeable. It does *not* speak STARTTLS: a port that begins in plaintext and
+  upgrades on command is not a TLS port until the command is sent, so probe the
+  implicit-TLS port instead.
 
 ## App-level settings
 
@@ -204,7 +296,10 @@ the certificate, self-signed and expired ones included, not to trust it. See
 
 ## Environment overrides
 
-All values can be overridden without editing the YAML file:
+A defined subset can be overridden without editing the YAML file — not every
+key. Probe entries, `event_hub_capacity`, the whole `health` section and the
+`influx` batching and retry keys have no ENV form; the table below is the whole
+list:
 
 | Variable | Overrides |
 |---|---|

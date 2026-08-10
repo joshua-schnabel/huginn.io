@@ -9,6 +9,7 @@ use crate::error::{HuginError, Result};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub influx: InfluxConfig,
     #[serde(default)]
@@ -17,6 +18,8 @@ pub struct AppConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub health: HealthConfig,
     #[serde(default)]
     pub log: LogConfig,
     /// Capacity of the central EventHub broadcast channel (default 256).
@@ -33,6 +36,7 @@ fn default_hub_capacity() -> usize {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InfluxConfig {
     pub url: String,
     pub org: String,
@@ -148,7 +152,7 @@ impl InfluxConfig {
 
 /// Warn when a secret file is readable by anyone but its owner.
 ///
-/// A warning, not a refusal — R5 of `docs/risks.md`. The documentation
+/// A warning, not a refusal. The documentation
 /// prescribes `0600` for `influx.token_file` and `metrics.api_key_file` and
 /// nothing checked it, so a file left `0644` in an image or a mount said
 /// nothing at all. Refusing to start would be worse than the risk: a read-only
@@ -190,6 +194,7 @@ fn warn_if_readable_by_others(_path: &str) {}
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UiConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -228,6 +233,7 @@ fn default_ui_port() -> u16 {
 /// Prometheus `/metrics` listener, gated independently of the debug UI so
 /// scraping doesn't require exposing the UI (and vice versa).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -293,6 +299,96 @@ fn default_metrics_port() -> u16 {
 }
 
 // ---------------------------------------------------------------------------
+// Liveness endpoint
+// ---------------------------------------------------------------------------
+
+/// The liveness listener, and the only one that is **on by default**.
+///
+/// It exists so the container can have a `HEALTHCHECK`. Distroless carries no
+/// shell and no `curl`, so the check has to be the binary itself
+/// (`huginn healthcheck`), and that subcommand needs something to ask. The
+/// obvious candidate was the debug UI's `/health` — but the UI is off by
+/// default, so a `HEALTHCHECK` built on it would report *unhealthy* on every
+/// stock deployment. A health check that is wrong out of the box is worse than
+/// none: it trains operators to ignore the status column.
+///
+/// **There is deliberately no `bind` key.** Every other listener has one and
+/// defaults to loopback; this one is fixed to `127.0.0.1` and cannot be widened.
+/// That is what makes "on by default" defensible — the listener is reachable
+/// from inside the container's network namespace, which is exactly where Docker
+/// runs `HEALTHCHECK`, and from nowhere else. Publishing a port cannot expose
+/// it, because a published port reaches the container's bridge IP and this
+/// socket is not on it.
+///
+/// It serves `GET /health` and nothing else, with no probe data in the response
+/// — so unlike the debug UI it discloses nothing about what is monitored. See
+/// ADR-0008.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthConfig {
+    /// On by default — see the type's documentation. Turning it off is
+    /// supported (some orchestrators supply their own liveness mechanism and
+    /// would rather not have the socket), and then `huginn healthcheck` says so
+    /// rather than failing obscurely.
+    #[serde(default = "default_health_enabled")]
+    pub enabled: bool,
+    /// Port on `127.0.0.1`. Distinct from `ui.port` and `metrics.port` so that
+    /// enabling either of those never collides with a listener the operator did
+    /// not ask for.
+    #[serde(default = "default_health_port")]
+    pub port: u16,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_health_enabled(),
+            port: default_health_port(),
+        }
+    }
+}
+
+fn default_health_enabled() -> bool {
+    true
+}
+
+fn default_health_port() -> u16 {
+    9115
+}
+
+/// The address the liveness listener binds. Not configurable — see
+/// [`HealthConfig`].
+pub const HEALTH_BIND: &str = "127.0.0.1";
+
+/// The same address, parsed, for the collision check in [`AppConfig::validate`].
+///
+/// A `const` rather than a parse at validation time: parsing cannot fail here,
+/// and the alternative would be an `expect` in non-test code for an error that
+/// cannot happen. `health_bind_and_health_addr_describe_one_address` keeps the
+/// two spellings from drifting apart.
+pub const HEALTH_ADDR: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+
+/// Whether listeners bound to `a` and `b` would contend for the same port.
+///
+/// Equal addresses obviously do. So does a wildcard against anything in its
+/// family: `0.0.0.0` covers every IPv4 address on the host, `127.0.0.1`
+/// included, so the second bind fails with "address in use" — it does not
+/// quietly get a socket of its own. `::` is treated as covering IPv4 as well,
+/// because Linux accepts IPv4-mapped connections on it unless
+/// `net.ipv6.bindv6only` is set, and the bind fails accordingly. Being wrong in
+/// that direction costs a config that is rejected for a clash it might have got
+/// away with; being wrong in the other costs a listener that never starts, on
+/// a host whose sysctl nobody thought to check.
+///
+/// Two *different* specific addresses never contend: `127.0.0.1` and `::1` are
+/// separate sockets, and so are two addresses of one host's several interfaces.
+fn addresses_contend(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
+    a == b
+        || (a.is_unspecified() && (a.is_ipv6() || b.is_ipv4()))
+        || (b.is_unspecified() && (b.is_ipv6() || a.is_ipv4()))
+}
+
+// ---------------------------------------------------------------------------
 // Log / output config
 // ---------------------------------------------------------------------------
 
@@ -305,6 +401,7 @@ pub enum LogFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogConfig {
     #[serde(default)]
     pub format: LogFormat,
@@ -359,6 +456,7 @@ impl std::fmt::Display for ProbeType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProbeConfig {
     pub name: String,
     #[serde(rename = "type")]
@@ -563,6 +661,16 @@ impl AppConfig {
         if self.influx.url.is_empty() {
             return Err(HuginError::Config("influx.url must not be empty".into()));
         }
+        // The URL is only ever used to build the write endpoint, and reqwest
+        // does not parse it until the first batch is ready to go — so a typo
+        // like `localhost:8086` with no scheme surfaced as a transport error on
+        // every write, minutes in, looking exactly like an unreachable server.
+        if !(self.influx.url.starts_with("http://") || self.influx.url.starts_with("https://")) {
+            return Err(HuginError::Config(format!(
+                "influx.url '{}' must be an absolute URL starting with http:// or https://",
+                self.influx.url
+            )));
+        }
         if self.influx.org.is_empty() {
             return Err(HuginError::Config("influx.org must not be empty".into()));
         }
@@ -592,28 +700,71 @@ impl AppConfig {
                     .into(),
             ));
         }
+        // A zero initial backoff makes the writer retry in a tight loop against a
+        // server that is already struggling; a zero ceiling caps every wait at
+        // zero and does the same thing however large the initial value is.
+        if self.influx.retry_initial_backoff_ms == 0 {
+            return Err(HuginError::Config(
+                "influx.retry_initial_backoff_ms must be > 0 (0 retries in a tight loop against a failing server)"
+                    .into(),
+            ));
+        }
+        if self.influx.retry_max_backoff_ms == 0 {
+            return Err(HuginError::Config(
+                "influx.retry_max_backoff_ms must be > 0 (0 caps every retry wait at zero)".into(),
+            ));
+        }
+        // The ceiling below the first delay is not a smaller ceiling, it is a
+        // contradiction: the backoff starts above its own maximum, so the value
+        // an operator wrote as "wait at most this long" never applies.
+        if self.influx.retry_max_backoff_ms < self.influx.retry_initial_backoff_ms {
+            return Err(HuginError::Config(format!(
+                "influx.retry_max_backoff_ms ({}) is below influx.retry_initial_backoff_ms ({}) — \
+                 the ceiling must not be lower than the first delay",
+                self.influx.retry_max_backoff_ms, self.influx.retry_initial_backoff_ms
+            )));
+        }
         // tokio::sync::broadcast::channel panics on a capacity of 0, so without
         // this the process dies at startup with no hint about which key is wrong.
         if self.event_hub_capacity == 0 {
             return Err(HuginError::Config("event_hub_capacity must be > 0".into()));
         }
-        // Caught here rather than at bind time: the UI is spawned into its own
-        // task, so a parse failure there would only surface as a logged error
-        // while the daemon keeps running without a UI.
-        if self.ui.bind.parse::<std::net::IpAddr>().is_err() {
-            return Err(HuginError::Config(format!(
+        // Caught here rather than at bind time: each listener is spawned into
+        // its own task, so a parse failure there would only surface as a logged
+        // error while the daemon keeps running without the service.
+        //
+        // The parsed values are kept, because the collision check below has to
+        // compare addresses rather than the strings they were written as: `::1`
+        // and `0:0:0:0:0:0:0:1` are the same socket and were not the same
+        // `String`, so two listeners could be configured onto one address and
+        // the check would wave them through.
+        let ui_addr = self.ui.bind.parse::<std::net::IpAddr>().map_err(|_| {
+            HuginError::Config(format!(
                 "ui.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
                 self.ui.bind
-            )));
-        }
-        // Same reasoning as ui.bind: the metrics server runs in its own task,
-        // so anything decidable here would otherwise surface only as a logged
-        // error while the daemon keeps running without metrics.
-        if self.metrics.bind.parse::<std::net::IpAddr>().is_err() {
-            return Err(HuginError::Config(format!(
+            ))
+        })?;
+        let metrics_addr = self.metrics.bind.parse::<std::net::IpAddr>().map_err(|_| {
+            HuginError::Config(format!(
                 "metrics.bind '{}' must be an IP address, e.g. '127.0.0.1', '0.0.0.0' or '::1'",
                 self.metrics.bind
-            )));
+            ))
+        })?;
+        // Port 0 asks the OS for an arbitrary free port. For a listener whose
+        // whole purpose is to be connected to by something else — a browser, a
+        // Prometheus scrape config — that produces a service on an address
+        // nobody can predict, and a config that appears to work while nothing
+        // can reach it.
+        for (name, enabled, port) in [
+            ("ui", self.ui.enabled, self.ui.port),
+            ("metrics", self.metrics.enabled, self.metrics.port),
+        ] {
+            if enabled && port == 0 {
+                return Err(HuginError::Config(format!(
+                    "{name}.port must not be 0 — port 0 asks the OS for an arbitrary free port, \
+                     so nothing could be configured to reach it"
+                )));
+            }
         }
         // An empty path is a config bug — the operator meant to set a file.
         if let Some(path) = &self.metrics.api_key_file {
@@ -624,16 +775,51 @@ impl AppConfig {
             }
         }
         // Two listeners on one address can't both bind; the second would lose
-        // at runtime with only a logged error.
+        // at runtime with only a logged error. Compared as parsed addresses —
+        // see above for why the string comparison this replaced was not enough,
+        // and `addresses_contend` for why equality alone is not enough either:
+        // `0.0.0.0` and `127.0.0.1` are not the same address and still cannot
+        // both have the port.
         if self.ui.enabled
             && self.metrics.enabled
-            && self.ui.bind == self.metrics.bind
+            && addresses_contend(ui_addr, metrics_addr)
             && self.ui.port == self.metrics.port
         {
             return Err(HuginError::Config(format!(
                 "ui and metrics are both enabled on {}:{} — give metrics its own port (metrics.port)",
                 self.ui.bind, self.ui.port
             )));
+        }
+        // The health listener is on by default, so it is the one most likely to
+        // be collided with by a port someone chose on purpose — and the least
+        // likely to be suspected, precisely because nobody enabled it. Say which
+        // listener is in the way rather than letting one of them lose the bind
+        // at runtime with only a logged error.
+        //
+        // Not only when the listener is bound to loopback itself. `ui.bind:
+        // 0.0.0.0` on the health port does not get a socket of its own — it
+        // covers `127.0.0.1` too, so the bind fails. Reported here, naming the
+        // health listener, rather than at startup as a bare "address in use"
+        // about a port nobody remembers enabling.
+        if self.health.enabled {
+            for (name, enabled, bind, addr, port) in [
+                ("ui", self.ui.enabled, &self.ui.bind, ui_addr, self.ui.port),
+                (
+                    "metrics",
+                    self.metrics.enabled,
+                    &self.metrics.bind,
+                    metrics_addr,
+                    self.metrics.port,
+                ),
+            ] {
+                if enabled && port == self.health.port && addresses_contend(addr, HEALTH_ADDR) {
+                    return Err(HuginError::Config(format!(
+                        "{name} is enabled on {bind}:{port}, which cannot be bound while the health \
+                         listener holds {HEALTH_BIND}:{port} — give {name} another port, or set \
+                         health.enabled: false"
+                    )));
+                }
+            }
         }
 
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -671,10 +857,49 @@ impl AppConfig {
             }
             // A negative threshold would mean "stay UP for a while after the
             // certificate has expired" — surely a sign error, never intent.
+            //
+            // The finiteness check is not pedantry: YAML accepts `.nan` and
+            // `.inf`, and `NaN < 0.0` is false, so a NaN threshold passed this
+            // check and then made every later comparison false too — the probe
+            // reported UP whatever the certificate said, which is the one
+            // outcome a certificate-expiry probe must never produce silently.
+            // `.inf` passes for the opposite reason and reports DOWN forever.
             if let Some(days) = probe.tls_expiry_fail_days {
+                if !days.is_finite() {
+                    return Err(HuginError::Config(format!(
+                        "probe '{}': tls_expiry_fail_days must be a finite number (got {days}) — \
+                         NaN makes every expiry comparison false, so the probe would report UP \
+                         however close the certificate is to expiring",
+                        probe.name
+                    )));
+                }
                 if days < 0.0 {
                     return Err(HuginError::Config(format!(
                         "probe '{}': tls_expiry_fail_days must be >= 0 (omit it to fail only once the certificate has expired)",
+                        probe.name
+                    )));
+                }
+            }
+            // A status code outside the HTTP range can never be returned, so the
+            // probe would report DOWN on every tick for ever — the exact failure
+            // shape this whole function exists to prevent.
+            if let Some(status) = probe.expected_status {
+                if !(100..=599).contains(&status) {
+                    return Err(HuginError::Config(format!(
+                        "probe '{}': expected_status {status} is not a valid HTTP status code \
+                         (100-599), so the probe could never match it",
+                        probe.name
+                    )));
+                }
+            }
+            // Compared against the resolved answer as an IpAddr by the probe, so
+            // an unparseable value never matches: the probe reports DOWN on every
+            // tick and the resolver was working perfectly.
+            if let Some(ip) = &probe.dns_expected_ip {
+                if ip.parse::<std::net::IpAddr>().is_err() {
+                    return Err(HuginError::Config(format!(
+                        "probe '{}': dns_expected_ip '{ip}' is not an IP address — it is compared \
+                         against the resolved address, so nothing would ever match it",
                         probe.name
                     )));
                 }
@@ -1018,6 +1243,348 @@ probes:
             err.to_string().contains("tls_expiry_fail_days"),
             "error must name the key: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Strict loading: unknown keys, and values that could never work
+    // -----------------------------------------------------------------------
+
+    /// A misspelled key used to be swallowed in silence, which is the worst
+    /// possible outcome for a config: the operator believes they set something,
+    /// the default applies, and nothing anywhere says otherwise. `batch_sizes`
+    /// here is the shape of a real typo.
+    #[test]
+    fn loading_rejects_an_unknown_key() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+  batch_sizes: 10
+"#;
+        let err = serde_yaml_ng::from_str::<AppConfig>(yaml)
+            .expect_err("an unknown key must not be accepted");
+        assert!(
+            err.to_string().contains("batch_sizes"),
+            "the error must name the offending key: {err}"
+        );
+    }
+
+    /// Same rule one level up, where a mistyped *section* would otherwise mean
+    /// the whole block is ignored — `metric:` instead of `metrics:` silently
+    /// disables the endpoint it was meant to configure.
+    #[test]
+    fn loading_rejects_an_unknown_section() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+metric:
+  enabled: true
+"#;
+        assert!(
+            serde_yaml_ng::from_str::<AppConfig>(yaml).is_err(),
+            "an unknown section must not be accepted"
+        );
+    }
+
+    /// `health` is the section where a swallowed typo lasts longest, because it
+    /// is the only listener that is on by default: a misspelled `enabled` leaves
+    /// the socket open on a deployment whose config plainly says it was turned
+    /// off, and nothing contradicts the operator. It also arrived on a different
+    /// branch from the strict-loading rule, so it is the one section that could
+    /// have kept the old behaviour without anything failing.
+    #[test]
+    fn loading_rejects_an_unknown_key_in_the_health_section() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+health:
+  enabld: false
+"#;
+        let err = serde_yaml_ng::from_str::<AppConfig>(yaml)
+            .expect_err("an unknown key under health must not be accepted");
+        assert!(
+            err.to_string().contains("enabld"),
+            "the error must name the offending key: {err}"
+        );
+    }
+
+    /// A scheme-less InfluxDB URL parses fine as a string and fails only when
+    /// the first batch is written, minutes later, looking like an unreachable
+    /// server.
+    #[test]
+    fn validation_rejects_influx_url_without_a_scheme() {
+        let yaml = r#"
+influx:
+  url: "localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a scheme-less URL must be rejected");
+        assert!(err.to_string().contains("influx.url"), "got: {err}");
+    }
+
+    /// The regression this check exists for: `NaN < 0.0` is false, so a NaN
+    /// threshold passed the sign check and then made every expiry comparison
+    /// false as well — the probe reported UP whatever the certificate said.
+    #[test]
+    fn validation_rejects_non_finite_tls_expiry_fail_days() {
+        for value in [".nan", ".inf"] {
+            let yaml = format!(
+                r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+probes:
+  - name: "cert"
+    type: tls
+    target: "example.com:443"
+    tls_expiry_fail_days: {value}
+"#
+            );
+            let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+            let err = cfg
+                .validate()
+                .expect_err(&format!("{value} must be rejected"));
+            assert!(
+                err.to_string().contains("tls_expiry_fail_days"),
+                "error must name the key for {value}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_rejects_an_impossible_expected_status() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+probes:
+  - name: "web"
+    type: http
+    target: "https://example.com"
+    expected_status: 1000
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a status outside 100-599 must be rejected");
+        assert!(err.to_string().contains("expected_status"), "got: {err}");
+    }
+
+    #[test]
+    fn validation_rejects_an_unparseable_dns_expected_ip() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+probes:
+  - name: "dns"
+    type: dns
+    target: "1.1.1.1:53"
+    dns_expected_ip: "example.com"
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a hostname is not an IP address and could never match");
+        assert!(err.to_string().contains("dns_expected_ip"), "got: {err}");
+    }
+
+    #[test]
+    fn validation_rejects_a_retry_ceiling_below_the_first_delay() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+  retry_initial_backoff_ms: 5000
+  retry_max_backoff_ms: 100
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a ceiling below the first delay must be rejected");
+        assert!(
+            err.to_string().contains("retry_max_backoff_ms"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validation_rejects_zero_retry_backoffs() {
+        for key in ["retry_initial_backoff_ms", "retry_max_backoff_ms"] {
+            let yaml = format!(
+                r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+  {key}: 0
+"#
+            );
+            let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert!(cfg.validate().is_err(), "{key}: 0 must be rejected");
+        }
+    }
+
+    /// Port 0 asks the OS for an arbitrary free port — a listener nothing can be
+    /// configured to reach.
+    #[test]
+    fn validation_rejects_port_zero_on_an_enabled_listener() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+ui:
+  enabled: true
+  port: 0
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg.validate().expect_err("port 0 must be rejected");
+        assert!(err.to_string().contains("ui.port"), "got: {err}");
+    }
+
+    /// The collision check compares parsed addresses, so two spellings of the
+    /// same IPv6 address are caught. As raw strings they differ, and both
+    /// listeners were allowed onto one socket.
+    #[test]
+    fn validation_rejects_equivalent_ipv6_addresses_on_one_port() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+ui:
+  enabled: true
+  bind: "::1"
+  port: 9500
+metrics:
+  enabled: true
+  bind: "0:0:0:0:0:0:0:1"
+  port: 9500
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("the same address written two ways is still one socket");
+        assert!(err.to_string().contains("metrics.port"), "got: {err}");
+    }
+
+    /// A wildcard is not equal to a loopback address and still cannot share its
+    /// port: `0.0.0.0` covers `127.0.0.1`. Equality alone waved this through.
+    #[test]
+    fn validation_rejects_a_wildcard_listener_against_a_loopback_one() {
+        let yaml = r#"
+influx:
+  url: "http://localhost:8086"
+  org: "o"
+  bucket: "b"
+  token_file: "/tmp/t"
+ui:
+  enabled: true
+  bind: "0.0.0.0"
+  port: 9500
+metrics:
+  enabled: true
+  bind: "127.0.0.1"
+  port: 9500
+"#;
+        let cfg: AppConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = cfg
+            .validate()
+            .expect_err("a wildcard covers the loopback address on that port");
+        assert!(err.to_string().contains("metrics.port"), "got: {err}");
+    }
+
+    /// The health listener is fixed to loopback, so a listener someone put on
+    /// `0.0.0.0` and the health port cannot bind either — and this is the one
+    /// worth catching, because the operator never enabled the listener that is
+    /// in the way and has no reason to suspect it.
+    #[test]
+    fn validation_rejects_a_wildcard_listener_on_the_health_port() {
+        let yaml = format!(
+            "{MINIMAL_YAML}\nui:\n  enabled: true\n  bind: \"0.0.0.0\"\n  port: {}\n",
+            default_health_port()
+        );
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        let err = cfg
+            .validate()
+            .expect_err("a wildcard on the health port cannot bind");
+        assert!(
+            err.to_string().contains("health") && err.to_string().contains("ui"),
+            "the error must name both listeners: {err}"
+        );
+    }
+
+    /// The other direction, so the check is not simply "reject the health
+    /// port". `::1` and `127.0.0.1` are separate sockets, and a config that
+    /// uses both is legal.
+    #[test]
+    fn an_ipv6_loopback_listener_may_use_the_health_port() {
+        let yaml = format!(
+            "{MINIMAL_YAML}\nui:\n  enabled: true\n  bind: \"::1\"\n  port: {}\n",
+            default_health_port()
+        );
+        let cfg: AppConfig = serde_yaml_ng::from_str(&yaml).expect("parse failed");
+        cfg.validate()
+            .expect("::1 and 127.0.0.1 do not contend for a port");
+    }
+
+    /// `HEALTH_BIND` is what the listener binds; `HEALTH_ADDR` is what the
+    /// collision check compares. Two spellings of one fact, so they are
+    /// asserted to agree rather than trusted to.
+    #[test]
+    fn health_bind_and_health_addr_describe_one_address() {
+        assert_eq!(
+            HEALTH_BIND.parse::<std::net::IpAddr>().unwrap(),
+            HEALTH_ADDR
+        );
+    }
+
+    #[test]
+    fn addresses_contend_covers_wildcards_without_merging_distinct_addresses() {
+        use std::net::IpAddr;
+        let v4_any: IpAddr = "0.0.0.0".parse().unwrap();
+        let v6_any: IpAddr = "::".parse().unwrap();
+        let v4_local: IpAddr = "127.0.0.1".parse().unwrap();
+        let v6_local: IpAddr = "::1".parse().unwrap();
+        let v4_other: IpAddr = "192.0.2.1".parse().unwrap();
+
+        assert!(addresses_contend(v4_local, v4_local));
+        assert!(addresses_contend(v4_any, v4_local));
+        assert!(addresses_contend(v4_local, v4_any));
+        // `::` reaches IPv4 too on a dual-stack host — see `addresses_contend`.
+        assert!(addresses_contend(v6_any, v4_local));
+        assert!(addresses_contend(v6_any, v6_local));
+
+        // An IPv4 wildcard says nothing about IPv6, and two specific addresses
+        // are two sockets however alike they look.
+        assert!(!addresses_contend(v4_any, v6_local));
+        assert!(!addresses_contend(v4_local, v6_local));
+        assert!(!addresses_contend(v4_local, v4_other));
     }
 
     #[test]
@@ -1451,7 +2018,7 @@ probes:
     /// A loose mode is warned about, never fatal.
     ///
     /// The assertion is the behaviour: refusing would take down a deployment
-    /// whose token works, which is the wrong trade for a mode bit (R5).
+    /// whose token works, which is the wrong trade for a mode bit.
     #[cfg(unix)]
     #[test]
     fn a_world_readable_token_file_still_loads() {

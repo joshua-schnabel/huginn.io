@@ -11,46 +11,36 @@ debug UI, an optional Prometheus endpoint, a distroless nonroot image built for
 `linux/amd64` and `linux/arm64`, and a pipeline that builds, scans,
 integration-tests and publishes one artefact.
 
-**Nothing has been released yet.** There is no `v*` tag and no GitHub Release;
-`CHANGELOG.md` carries a large `## [Unreleased]` section — the Prometheus
-endpoint, the TLS probe, the retry queue and the 2026-08-02 security audit are
-all in it. Cutting the first release is the next thing that happens, either
-through Actions → **Release (dispatch)** or the manual `dev → main` flow;
-[`releasing.md`](releasing.md) has both.
+**Several releases have shipped.** The current version is the topmost
+`## [x.y.z]` heading in [`CHANGELOG.md`](../CHANGELOG.md) — read it there rather
+than from a number written into this sentence, which would be wrong the morning
+after the next release. The image is published to Docker Hub and mirrored
+byte-identically to ghcr.
 
-The release path itself was repaired before that could work: the tag is now
-pushed with `RELEASE_PAT` so `release.yml` actually fires, and the version bump
-writes `Cargo.toml` and `Cargo.lock` together so `--locked` jobs do not fail on
-the release PR. See [`ci-cd.md`](ci-cd.md).
+The release path was repaired along the way: the tag is pushed with
+`RELEASE_PAT` so `release.yml` actually fires, the version bump writes
+`Cargo.toml` and `Cargo.lock` together so `--locked` jobs do not fail on the
+release PR, and `ci.yml` no longer runs on tags — which is what stopped every
+release building twice. See [`ci-cd.md`](ci-cd.md).
+
+**What is left is 1.0 itself**: the surfaces below have to stop moving before a
+version number can promise they will not. [`versioning.md`](versioning.md) says
+what 1.0 would cover.
 
 ## Next
 
-**Authentication for the debug UI, or a decision not to have it.** `metrics.api_key_file`
-protects only the Prometheus listener; the UI serves the same probe inventory
-unauthenticated. Today the answer is "off by default, loopback by default,
-published on `127.0.0.1` by compose", which is a deployment answer to an
-application question. [R2](risks.md),
-[ADR-0007](adr/0007-debug-ui-has-no-cli-flag.md).
+**Self-monitoring for the write path.** Retry-queue evictions, permanently
+rejected batches and writer health are invisible from outside the process: the
+probe gauges cannot show that measurements were taken and then dropped, which is
+exactly the failure mode huginn is built around. If this lands before 1.0, the
+metric names join the stable surface in [`versioning.md`](versioning.md).
 
-**Warn when a secret file is group- or world-readable.** The documentation
-prescribes mode `0600` and nothing checks it. A stat at startup and a warning is
-a small change with a real payoff, and it fits the fail-closed handling secrets
-already get ([ADR-0002](adr/0002-secrets-from-files-only.md)).
-
-**A `HEALTHCHECK` in the Dockerfile.** It needs a `healthcheck` subcommand on the
-binary, because distroless has no shell and no `curl` — so it is a small feature
-rather than a one-liner. muninn.io has one and it is worth matching.
-
-**Raw TLS ports for the certificate probe.** The `tls` probe reads the
-certificate from an HTTPS response, so IMAPS, SMTPS and other non-HTTP TLS ports
-are out of scope. Doing it properly means a handshake-only client rather than a
-`reqwest` client. [R3](risks.md),
-[ADR-0006](adr/0006-tls-probe-skips-verification.md).
-
-**Re-run the security audit** after any change to the probe result path, the HTTP
-listeners, or the container definition. The last pass is dated 2026-08-02 and its
-scope and method are written down, so a repeat is a repeat rather than a fresh
-invention. [`security-audit.md`](security-audit.md).
+**Re-run the security audit.** Listener handling, secret-file behaviour, the
+shutdown path and the TLS transport have all changed since the 2026-08-02 pass,
+and that pass's own closing recommendation was to repeat it after exactly these
+kinds of change. Scope and method are written down in
+[`security-audit.md`](security-audit.md), so it is a repeat rather than a fresh
+invention.
 
 ## Not planned
 

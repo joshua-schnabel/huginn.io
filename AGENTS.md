@@ -17,9 +17,12 @@ UI streams live results over SSE, and a separately gated Prometheus endpoint
 exposes the same data as gauges. It ships as a **distroless, nonroot** multi-arch
 container image, from a Cargo workspace of five crates.
 
-**Status: not released yet.** There is no `v*` tag; `CHANGELOG.md` carries a
-large `## [Unreleased]`. [`docs/roadmap.md`](docs/roadmap.md) carries what is
-still open and is the one place it is tracked — do not restate it here, it goes
+**Status: released, pre-1.0.** `v0.2.0`, `v0.2.1` and `v0.3.0` are tagged and
+published; the image is on Docker Hub and mirrored to ghcr. Read the current
+version from `CHANGELOG.md`'s topmost `## [x.y.z]` heading rather than from any
+sentence here — a version written into prose is wrong the morning after a
+release (§7). [`docs/roadmap.md`](docs/roadmap.md) carries what is still open
+for 1.0 and is the one place it is tracked — do not restate it here, it goes
 stale. Start with [`docs/architecture.md`](docs/architecture.md).
 
 Sibling project: [muninn.io](https://github.com/joshua-schnabel/muninn.io), same
@@ -276,7 +279,8 @@ workflow permissions must be reasoned about explicitly and flagged in the PR.
   `no-new-privileges`. Never `--privileged` or `--cap-add`.
 - **Both listeners are off by default and bind loopback**, and the debug UI is
   unauthenticated — `metrics.api_key_file` protects only the Prometheus
-  listener. [R2](docs/risks.md)
+  listener, which is a decided trade rather than an open gap —
+  [ADR-0009](docs/adr/0009-debug-ui-stays-unauthenticated.md).
 - **Untrusted data from monitored hosts is escaped** before it leaves the
   process: a remote SMTP/IMAP banner reached the console, InfluxDB and every HTTP
   consumer with control bytes intact. `ProbeResult::failure` escapes the whole

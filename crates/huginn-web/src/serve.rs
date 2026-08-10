@@ -77,6 +77,12 @@ async fn serve_with(
         // would already exist, which is the cost being avoided. Waiting here
         // leaves the peer in the listen backlog, and the kernel refuses it once
         // that fills, which is the behaviour we want at capacity.
+        // `acquire_owned` fails only if the semaphore has been closed, and
+        // `close()` is never called on it: it is created here, moved nowhere,
+        // and lives as long as this loop. A genuinely unreachable invariant, so
+        // it is one of the few places a panic is the right expression of "this
+        // cannot happen" — the alternative would be an error branch no test
+        // could ever reach and no reader could ever check.
         let permit = Arc::clone(&permits)
             .acquire_owned()
             .await

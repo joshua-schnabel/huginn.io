@@ -46,10 +46,31 @@ pub async fn run_metrics_server(
     state: Arc<WebState>,
     api_key: Option<String>,
 ) -> anyhow::Result<()> {
+    let listener = bind_metrics(bind, port).await?;
+    serve_metrics(listener, state, api_key).await
+}
+
+/// Bind the metrics socket, returning it before anything is served.
+///
+/// Split from [`serve_metrics`] for the same reason as the UI's: bound on the
+/// main task, a taken port stops startup instead of leaving a scrape target
+/// that is configured on and silently absent — which Prometheus reports as the
+/// *monitored* host being down.
+pub async fn bind_metrics(bind: &str, port: u16) -> anyhow::Result<tokio::net::TcpListener> {
     let addr: IpAddr = bind
         .parse()
         .with_context(|| format!("metrics.bind '{bind}' is not a valid IP address"))?;
+    tokio::net::TcpListener::bind((addr, port))
+        .await
+        .with_context(|| format!("could not bind the metrics listener on {bind}:{port}"))
+}
 
+/// Serve `/metrics` on an already-bound listener.
+pub async fn serve_metrics(
+    listener: tokio::net::TcpListener,
+    state: Arc<WebState>,
+    api_key: Option<String>,
+) -> anyhow::Result<()> {
     let authed = api_key.is_some();
     let app = Router::new()
         .route("/metrics", get(handle_prometheus))
@@ -59,11 +80,12 @@ pub async fn run_metrics_server(
             api_key: api_key.map(Arc::from),
         });
 
-    let listener = tokio::net::TcpListener::bind((addr, port)).await?;
-    info!(
-        "Prometheus metrics listening on http://{addr}:{port}/metrics (auth: {})",
-        if authed { "bearer" } else { "none" }
-    );
+    if let Ok(addr) = listener.local_addr() {
+        info!(
+            "Prometheus metrics listening on http://{addr}/metrics (auth: {})",
+            if authed { "bearer" } else { "none" }
+        );
+    }
     crate::serve::serve_with_limits(listener, app).await?;
     Ok(())
 }

@@ -1,8 +1,11 @@
 # docker-compose.integration.yml
 #
 # System Integration Test stack for CI.
-# Starts InfluxDB + huginn with a short-interval test config,
-# using inline env vars instead of secret files so no local setup is needed.
+# Starts InfluxDB + huginn with a short-interval test config. The InfluxDB
+# token and the metrics API key are mounted as files, exactly as in production —
+# the comment here used to claim inline env vars, which would have contradicted
+# the secrets-are-files rule this project is built on (ADR-0002). The files are
+# throwaway test credentials created by the caller; see Usage below.
 #
 # Usage (CI creates the secret files first):
 #   echo -n "integration-test-token-huginn-ci" > /tmp/influx_token.txt
@@ -21,13 +24,19 @@ services:
       - ./config/config.integration.yaml:/etc/huginn/config.yaml:ro
       - /tmp/influx_token.txt:/run/secrets/influx_token:ro
       - /tmp/metrics_api_key.txt:/run/secrets/metrics_api_key:ro
+    # Loopback only, like the shipped docker-compose.yml. These are the
+    # unauthenticated debug UI and a metrics endpoint whose key is a known test
+    # string, on a machine that may be a shared CI runner or a developer laptop
+    # — there is no reason for either to be reachable from the network.
     ports:
-      - "9116:9116"
-      - "9464:9464"
+      - "127.0.0.1:9116:9116"
+      - "127.0.0.1:9464:9464"
     depends_on:
       influxdb:
         condition: service_healthy
       tls-endpoint:
+        condition: service_started
+      mail-endpoint:
         condition: service_started
 
   # Self-signed HTTPS endpoint for the TLS certificate-expiry probe — the cert
@@ -35,12 +44,50 @@ services:
   # test never leaves the compose network. Not published to the host; huginn
   # reaches it by service name.
   tls-endpoint:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     volumes:
       - ./config/Caddyfile.integration:/etc/caddy/Caddyfile:ro
 
+  # Plaintext SMTP and IMAP greeters for those two probe types, which had no
+  # end-to-end coverage at all — the only probes that read a protocol banner,
+  # and therefore the only ones whose greeting handling could regress unseen.
+  #
+  # A handful of lines of Python rather than a real mail server: huginn reads
+  # the opening line and closes, so anything beyond sending it is surface this
+  # test does not need. Each connection gets the banner and is closed, which is
+  # what a probe every two seconds looks like.
+  mail-endpoint:
+    image: python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
+    command:
+      - python
+      - -u
+      - -c
+      - |
+        import socket, threading
+
+        def serve(port, banner):
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("0.0.0.0", port))
+            srv.listen(16)
+            while True:
+                conn, _ = srv.accept()
+                try:
+                    conn.sendall(banner)
+                except OSError:
+                    pass
+                finally:
+                    conn.close()
+
+        threading.Thread(
+            target=serve,
+            args=(25, b"220 mail.test ESMTP ready\r\n"),
+            daemon=True,
+        ).start()
+        serve(143, b"* OK [CAPABILITY IMAP4rev1] mail.test ready\r\n")
+
   influxdb:
-    image: influxdb:2.7-alpine
+    image: influxdb:2.7-alpine@sha256:991673dc2d237bd79b15d6627410d72de111387e7dac673dbb92cf3333ffcc8c
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
       DOCKER_INFLUXDB_INIT_ORG: testorg
@@ -48,8 +95,10 @@ services:
       DOCKER_INFLUXDB_INIT_USERNAME: admin
       DOCKER_INFLUXDB_INIT_PASSWORD: testpassword123
       DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: integration-test-token-huginn-ci
+    # Same reasoning, and stronger: this InfluxDB is initialised with a known
+    # admin token.
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     healthcheck:
       test: ["CMD", "influx", "ping"]
       interval: 5s
