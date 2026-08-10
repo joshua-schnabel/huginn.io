@@ -29,13 +29,6 @@ what 1.0 would cover.
 
 ## Next
 
-**Full system coverage for every advertised probe type.** The integration suite
-exercises tcp, http, dns, udp and tls through the shipped container; `https` as
-its own configured type, `smtp` and `imap` are not covered end to end, and the
-InfluxDB assertion checks only that *some* `probe_result` exists rather than
-every expected series and field. It also still contains one fixed `sleep`,
-against this project's own polling rule ([`testing.md`](testing.md)).
-
 **Self-monitoring for the write path.** Retry-queue evictions, permanently
 rejected batches and writer health are invisible from outside the process: the
 probe gauges cannot show that measurements were taken and then dropped, which is
