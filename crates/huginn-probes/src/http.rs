@@ -55,6 +55,15 @@ impl Probe for HttpProbe {
 }
 
 /// Perform an HTTP/HTTPS GET request and measure response time.
+///
+/// **The measurement ends at the response headers, not the body.** `send()`
+/// resolves once the status line and headers have arrived; the body is never
+/// read. That is deliberate and is part of the stable surface
+/// (`docs/versioning.md`): an uptime probe asks "did the server answer, and
+/// how quickly", and including the body would make `response_ms` depend on the
+/// size of whatever the endpoint happens to return — a page growing by a
+/// megabyte would look exactly like a server getting slower. It also means a
+/// large or slow body cannot occupy the probe.
 pub async fn probe(cfg: &ProbeConfig, client: &Client) -> ProbeResult {
     let expected = cfg.expected_status.unwrap_or(200);
     let start = Instant::now();

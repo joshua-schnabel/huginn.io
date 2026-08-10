@@ -10,7 +10,7 @@
 # inside the artefact people run. The `tag@digest` form keeps the version
 # readable — and Dependabot updates both halves together, so this does not
 # freeze the builder in place.
-FROM rust:1.96-slim@sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523 AS builder
+FROM rust:1.97-slim@sha256:3b2879047d42784ca9403ad20c51ed3df361a50f1df96f5777d39b4e33aa65cd AS builder
 
 WORKDIR /build
 
@@ -51,7 +51,24 @@ COPY config/config.example.yaml /etc/huginn/config.yaml
 # Run as non-root
 USER nonroot:nonroot
 
-# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default)
+# 9116 = debug UI, 9464 = Prometheus /metrics (both optional, off by default).
+# The liveness listener (health.port, 9115 by default) is deliberately NOT
+# exposed: it is bound to 127.0.0.1 and is only ever reached from inside this
+# container's network namespace, which is where HEALTHCHECK runs.
 EXPOSE 9116 9464
+
+# The binary checks itself. Distroless has no shell and no curl, so there is
+# nothing else here that could make an HTTP request — which is why `healthcheck`
+# is a subcommand rather than a CMD wrapping some tool.
+#
+# Exec form, so no shell is required to parse it. It reads the same config as
+# the daemon (HUGINN_CONFIG, or the ENTRYPOINT's path by default), so the two
+# cannot disagree about which port to use.
+#
+# start-period covers config load and the bind; the check itself only ever waits
+# on loopback, so the timeout is short on purpose — a slow answer here means the
+# runtime has stopped scheduling, which is the thing worth reporting.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml"]

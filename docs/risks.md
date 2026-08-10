@@ -31,21 +31,6 @@ question. A UI exposed on purpose is exposed to everyone.
 **Revisit if** anyone runs the UI outside loopback. Then it needs auth, not
 documentation.
 
-## R3 — The TLS probe only covers HTTPS ports
-
-**Severity: low · Status: known limit, documented**
-
-The `tls` probe reads the certificate out of an HTTPS response's TLS info, so the
-endpoint has to speak HTTP over TLS. Raw TLS ports — IMAPS 993, SMTPS 465,
-LDAPS — cannot be probed for expiry, even though they are exactly the kind of
-certificate that expires unnoticed.
-
-**Mitigation.** None. The limit is stated in the probe's documentation and in
-[`configuration.md`](configuration.md).
-
-**Fix.** A handshake-only client rather than a `reqwest` client. Bounded work,
-nobody has needed it yet — [`roadmap.md`](roadmap.md).
-
 ## R4 — Unfixable base-image CVEs stay open in the Security tab
 
 **Severity: low · Status: accepted, monitored**

@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use huginn_core::config::ProbeConfig;
 use huginn_core::types::ProbeResult;
-use tokio::io::AsyncReadExt;
+
 use tokio::net::TcpStream;
 
 use crate::{with_probe_timeout, Probe};
@@ -23,49 +23,26 @@ pub async fn probe(cfg: &ProbeConfig) -> ProbeResult {
     let start = Instant::now();
     let elapsed_ms = || start.elapsed().as_secs_f64() * 1000.0;
 
-    let mut stream = match with_probe_timeout(
+    let outcome = with_probe_timeout(
         cfg.timeout(),
         &format!("timeout after {}s", cfg.timeout_secs),
-        TcpStream::connect(&cfg.target),
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(msg) => return ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed_ms(), msg),
-    };
-
-    let mut buf = [0u8; 512];
-    let read = with_probe_timeout(
-        cfg.timeout(),
-        "timeout reading greeting",
-        stream.read(&mut buf),
+        async {
+            let mut stream = TcpStream::connect(&cfg.target).await?;
+            crate::read_greeting_line(&mut stream).await
+        },
     )
     .await;
     let elapsed = elapsed_ms();
 
-    match read {
-        Ok(n) if n > 0 => {
-            let greeting = String::from_utf8_lossy(&buf[..n]);
-            if greeting.starts_with("* OK") {
-                ProbeResult::success(&cfg.name, "imap", &cfg.target, elapsed, None)
-            } else {
-                ProbeResult::failure(
-                    &cfg.name,
-                    "imap",
-                    &cfg.target,
-                    elapsed,
-                    format!("unexpected greeting: {}", greeting.trim()),
-                )
-            }
+    let fail = |msg: String| ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed, msg);
+
+    match outcome {
+        Ok(greeting) if greeting.starts_with("* OK") => {
+            ProbeResult::success(&cfg.name, "imap", &cfg.target, elapsed, None)
         }
-        Ok(_) => ProbeResult::failure(
-            &cfg.name,
-            "imap",
-            &cfg.target,
-            elapsed,
-            "empty greeting".to_string(),
-        ),
-        Err(msg) => ProbeResult::failure(&cfg.name, "imap", &cfg.target, elapsed, msg),
+        Ok(greeting) if greeting.is_empty() => fail("empty greeting".to_string()),
+        Ok(greeting) => fail(format!("unexpected greeting: {}", greeting.trim())),
+        Err(msg) => fail(msg),
     }
 }
 

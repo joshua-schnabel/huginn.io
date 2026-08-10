@@ -40,6 +40,16 @@ services:
     # flood against a published UI port grows the process until the host OOMs.
     mem_limit: 256m
     pids_limit: 128
+    # The image already carries a HEALTHCHECK; this is here so the intervals are
+    # visible next to everything else that governs this container, and so the
+    # `read_only: true` above is demonstrably compatible with it — the check
+    # opens a loopback socket and writes nothing to the filesystem.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/huginn", "--config", "/etc/huginn/config.yaml", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     depends_on:
       influxdb:
         condition: service_healthy
