@@ -346,24 +346,45 @@ pub(crate) async fn run(
     let mut shutdown_rx = shutdown_tx.subscribe();
 
     // Start scheduler — publishes ProbeEvents to the hub
-    scheduler::run(Arc::clone(&cfg), Arc::clone(&hub), shutdown_tx).await;
+    let probe_handles = scheduler::run(Arc::clone(&cfg), Arc::clone(&hub), shutdown_tx).await;
 
     // Block until a shutdown signal arrives; this keeps all spawned tasks alive.
     let _ = shutdown_rx.recv().await;
 
-    // Drop hub — signals RecvError::Closed to all event subscribers. The batcher
-    // takes that as its cue to queue whatever it still holds and close the queue.
+    // ── Shutdown, in stages, because the order is what makes the drain work ──
+    //
+    // Stage 1: every publisher stops. Each probe loop holds its own
+    // `Arc<EventHub>`, so dropping only this task's clone (stage 2) would leave
+    // the hub's Sender alive, the batcher would never observe `Closed`, and the
+    // partial batch it is holding would never reach the queue. The drain in
+    // stage 3 would then run its full timeout and report an InfluxDB problem
+    // that did not exist.
+    let probes_stopped = stop_probes(probe_handles, PROBE_STOP_GRACE).await;
+
+    // Stage 2: drop the hub — signals RecvError::Closed to all event
+    // subscribers. The batcher takes that as its cue to queue whatever it still
+    // holds and close the queue. Only correct now that stage 1 has finished.
     drop(hub);
 
-    // Give the writer a bounded window to drain. Without this await, returning
-    // here tears the runtime down mid-drain and the buffered results — the ones
-    // the queue exists to protect — are lost at the last moment. The bound
-    // matters just as much: retries are unbounded, so an InfluxDB that is down
-    // at shutdown would otherwise keep the process alive forever.
+    // Stage 3: give the writer a bounded window to drain. Without this await,
+    // returning here tears the runtime down mid-drain and the buffered results —
+    // the ones the queue exists to protect — are lost at the last moment. The
+    // bound matters just as much: retries are unbounded, so an InfluxDB that is
+    // down at shutdown would otherwise keep the process alive forever.
     let drain = Duration::from_millis(cfg.influx.shutdown_drain_timeout_ms);
     match tokio::time::timeout(drain, writer_handle).await {
         Ok(Ok(())) => info!("InfluxDB writer drained cleanly"),
         Ok(Err(e)) => error!("InfluxDB writer task failed: {e}"),
+        // Name the stage that actually overran. A drain timeout means "InfluxDB
+        // is unreachable" only if everything upstream of it finished; when the
+        // probes had to be aborted, the queue may simply never have been closed,
+        // and blaming the backend would send whoever reads this log to the wrong
+        // system entirely.
+        Err(_) if !probes_stopped => warn!(
+            timeout_ms = cfg.influx.shutdown_drain_timeout_ms,
+            "shutdown drain timed out after probes had to be aborted — buffered results discarded; \
+             suspect a probe that outlived its timeout rather than InfluxDB"
+        ),
         Err(_) => warn!(
             timeout_ms = cfg.influx.shutdown_drain_timeout_ms,
             "InfluxDB unreachable at shutdown — discarding buffered results"
@@ -371,6 +392,57 @@ pub(crate) async fn run(
     }
 
     Ok(())
+}
+
+/// How long the probe loops get to notice the shutdown signal and return.
+///
+/// Generous for what they have to do — they select on the same broadcast the
+/// signal came from, and an in-flight probe is dropped at its next await — while
+/// staying well under the default drain timeout, so an unresponsive probe cannot
+/// eat the window the InfluxDB flush needs. Not configurable: a knob here would
+/// only ever be turned in response to a probe that is misbehaving in a way worth
+/// fixing instead.
+const PROBE_STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Wait for every probe loop to return, aborting whatever is still running when
+/// `grace` expires. Returns whether they all stopped on their own.
+///
+/// The abort is not belt-and-braces: a task that never returns keeps its
+/// `Arc<EventHub>`, and the hub would then never close no matter how long the
+/// caller waited. Aborting drops the task's Arc, so the pipeline can finish
+/// closing even in the case this function reports as a failure.
+async fn stop_probes(mut handles: Vec<tokio::task::JoinHandle<()>>, grace: Duration) -> bool {
+    if handles.is_empty() {
+        return true;
+    }
+
+    // One deadline across all of them, not one each: the loops shut down in
+    // parallel, so per-handle timeouts would multiply the worst case by the
+    // number of probes.
+    let deadline = tokio::time::Instant::now() + grace;
+    let mut all_stopped = true;
+
+    for handle in &mut handles {
+        // `&mut JoinHandle` is itself a Future, so a timeout here leaves the
+        // handle intact and still abortable — passing it by value would drop it
+        // instead, which detaches the task rather than stopping it.
+        if tokio::time::timeout_at(deadline, &mut *handle)
+            .await
+            .is_err()
+        {
+            all_stopped = false;
+            break;
+        }
+    }
+
+    if !all_stopped {
+        warn!("probe loops did not stop within the grace period — aborting them");
+        for handle in &handles {
+            handle.abort();
+        }
+    }
+
+    all_stopped
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +835,162 @@ mod tests {
         assert!(
             err.to_string().contains("health.enabled"),
             "the error should name the setting, got: {err}"
+        );
+    }
+
+    /// A TCP listener that accepts and then says nothing, holding the connection
+    /// open. An `smtp` probe pointed at it blocks in its banner read for the
+    /// whole of `timeout_secs` — a deterministic, local stand-in for the slow
+    /// peer this test is about. Returns the address and a counter of accepted
+    /// connections, so the test can poll for "the probe is now stuck" instead of
+    /// sleeping a guessed duration.
+    fn silent_listener() -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen_thread = Arc::clone(&seen);
+        // A blocking listener on its own thread: the accepted streams must stay
+        // alive and silent, and parking them in a Vec here is the shortest way
+        // to say that. Dropping one would close the socket and hand the probe an
+        // immediate EOF, which is the opposite of what is being tested.
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept() {
+                seen_thread.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                held.push(stream);
+            }
+        });
+        (addr, seen)
+    }
+
+    /// Shutdown must flush a partial batch even while a probe is still running.
+    ///
+    /// This is the bug the staged shutdown in `run()` exists for. Every probe
+    /// loop holds its own `Arc<EventHub>`. Before the fix, `run()` dropped only
+    /// *its* clone and started the drain immediately — so a probe still inside a
+    /// slow read kept the hub's Sender alive, the batcher never saw `Closed`,
+    /// and the results it was holding were never queued. The drain then ran its
+    /// full timeout and logged that InfluxDB was unreachable, which was untrue:
+    /// the server here answers every write instantly.
+    ///
+    /// The batch cannot flush by any other route — `batch_size` is far from
+    /// reached and the flush timer is ten minutes out — so a write proves the
+    /// hub actually closed.
+    #[tokio::test]
+    async fn shutdown_flushes_a_partial_batch_while_a_probe_is_still_running() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let influx = MockServer::start().await;
+        let writes = Arc::new(AtomicUsize::new(0));
+        let writes_mock = Arc::clone(&writes);
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                writes_mock.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(204)
+            })
+            .mount(&influx)
+            .await;
+
+        // One probe that answers at once, so the batch has something in it...
+        let quick = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let quick_addr = quick.local_addr().unwrap();
+        let quick_seen = Arc::new(AtomicUsize::new(0));
+        let quick_seen_thread = Arc::clone(&quick_seen);
+        std::thread::spawn(move || {
+            while let Ok((stream, _)) = quick.accept() {
+                quick_seen_thread.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+
+        // ...and one that blocks for far longer than the drain window.
+        let (silent_addr, silent_seen) = silent_listener();
+
+        let tf = tempfile_with("mytoken");
+        let cfg = Arc::new(AppConfig {
+            influx: InfluxConfig {
+                url: influx.uri(),
+                org: "o".into(),
+                bucket: "b".into(),
+                token_file: tf.path().to_string_lossy().into_owned(),
+                // Neither ordinary flush trigger can fire: the batch never
+                // fills, and the timer is far beyond this test's lifetime. The
+                // only thing left that can produce a write is the hub closing.
+                batch_size: 100,
+                batch_timeout_ms: 600_000,
+                shutdown_drain_timeout_ms: 5_000,
+                ..Default::default()
+            },
+            probes: vec![
+                ProbeConfig {
+                    name: "quick".into(),
+                    probe_type: ProbeType::Tcp,
+                    target: quick_addr.to_string(),
+                    interval_secs: 1,
+                    timeout_secs: 1,
+                    ..Default::default()
+                },
+                ProbeConfig {
+                    name: "blocked".into(),
+                    probe_type: ProbeType::Smtp,
+                    target: silent_addr.to_string(),
+                    interval_secs: 1,
+                    // Still inside its banner read when shutdown arrives, and
+                    // stays there well past the 5 s drain deadline.
+                    timeout_secs: 30,
+                    ..Default::default()
+                },
+            ],
+            ui: UiConfig::default(),
+            metrics: MetricsConfig::default(),
+            // Same reason as `minimal_config`: the health port is fixed, and
+            // this test runs alongside every other `run()` test in the binary.
+            health: HealthConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            log: LogConfig::default(),
+            event_hub_capacity: 256,
+        });
+
+        let (shutdown_tx, _) = broadcast::channel(1);
+        let handle = tokio::spawn(run(Arc::clone(&cfg), false, shutdown_tx.clone()));
+
+        // Poll for the precondition rather than sleeping: both probes have run
+        // (so the batch is non-empty) and the slow one is now parked in its
+        // read (so a publisher is genuinely in flight).
+        let ready = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if quick_seen.load(Ordering::SeqCst) >= 1 && silent_seen.load(Ordering::SeqCst) >= 1
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(ready.is_ok(), "probes never reached their targets");
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            0,
+            "nothing should have been written yet — the batch is not full and the timer has not fired"
+        );
+
+        shutdown_tx.send(()).ok();
+
+        // Comfortably inside the 30 s the blocked probe would otherwise hold:
+        // if run() only returns once that probe finishes, this times out.
+        tokio::time::timeout(Duration::from_secs(15), handle)
+            .await
+            .expect("run() did not return — a blocked probe held the shutdown")
+            .expect("run() task panicked")
+            .expect("run() returned an error");
+
+        assert!(
+            writes.load(Ordering::SeqCst) >= 1,
+            "the partial batch was never flushed: the hub did not close while a probe was still in flight"
         );
     }
 
