@@ -228,6 +228,21 @@ Certificate **verification is intentionally skipped** — the point is to read
 the certificate, self-signed and expired ones included, not to trust it. See
 [`hardening.md`](hardening.md) for the security reasoning.
 
+### What `timeout_secs` and `response_ms` mean
+
+- **`timeout_secs` is the budget for the whole probe**, not for each step inside
+  it. An `smtp` or `imap` probe spends it on the connect *and* the greeting
+  together; it used to apply once to each, so the real worst case was twice the
+  configured value.
+- **`response_ms` for `http`/`https` ends at the response headers.** The body is
+  never read. Including it would make the number depend on the size of whatever
+  the endpoint returns, so a page that grew by a megabyte would be
+  indistinguishable from a server getting slower.
+- **`smtp` and `imap` read a complete greeting line** (bounded to 512 bytes)
+  rather than whatever one `read()` happens to return. TCP is a byte stream and
+  may split anywhere, so a valid `220 …` arriving as `22` + the rest used to be
+  reported DOWN — occasionally, depending on timing.
+
 ### Known protocol limits
 
 - **`smtp` / `imap` expect a plaintext greeting** — probing implicit-TLS ports
