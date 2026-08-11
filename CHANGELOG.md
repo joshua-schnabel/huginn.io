@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The canonical documentation caught up with the major release, and the release runbook stopped describing a repository that no longer exists.** Three claims had gone stale within two days of the release, all of them the kind that nothing fails on. `AGENTS.md` still read "released, pre-1.0" and listed the three tags before it — in the same paragraph that tells the reader a version written into prose is wrong the morning after a release, which is exactly what had happened to it; the list is gone and the paragraph now only points at `CHANGELOG.md`. `docs/roadmap.md` still said "what is left is 1.0 itself", so the one file that is supposed to be the single answer to "what is open" was answering a question that had already been settled; it now says what a stable major version makes of the surfaces in `versioning.md`, and its two footer links no longer promise a *first* release and a version number that *will* promise something. `docs/releasing.md` was the one that could have cost time rather than credibility: a callout said the one-click release is unavailable because `release-dispatch.yml` "has never reached `main`", which stopped being true when it did — the recommended path was being talked out of on false grounds, and the callout's one substantive line duplicated the version-stamping rule that the manual flow already states. It is deleted rather than corrected.
+- **The debug UI's row-key collision is on the roadmap instead of nowhere.** Two probes whose names differ only outside `[A-Za-z0-9_-]` — `db.primary` and `db/primary` — derive one DOM id and overwrite each other, so one of them silently vanishes from the table while validation, which requires only non-empty and unique, accepts both. It was found during the pre-1.0 audit and then tracked in no file that survived it. Nothing is fixed here; it is written down, with the scope it deserves: `escape_label` and `escape_tag` escape rather than replace, so InfluxDB and Prometheus keep the names apart, and the UI is explicitly unstable.
+
 ## [1.0.0] - 2026-08-10
 
 ### Added
