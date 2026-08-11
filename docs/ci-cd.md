@@ -78,16 +78,20 @@ every `github.ref == 'refs/heads/dev'` check silently reads false. A job with
 | Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
 | Version gate | yes 🚫† | ➖ | yes 🚫 | — |
 | Semgrep · ShellCheck · actionlint | yes 🚫* | yes | yes | — |
-| Build image (per arch, native) | yes | yes | yes | — |
+| Build image (per arch, native) | yes 🚫 | yes | yes | — |
 | Trivy SARIF + SBOM | yes | yes | yes | — |
 | Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | — |
-| System integration test | yes | yes | yes | — |
+| System integration test | yes 🚫 | yes | yes | — |
 | Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | — |
 | GitHub Release + housekeeping PR | — | — | — | yes |
 
-🚫 blocks · 🚫* blocks only on ERROR-severity findings · 🚫† enforced only on a
-PR whose base is `main` · ➖ runs as a deliberate no-op, so it can gate `build`
-without skipping it.
+🚫 blocks · 🚫* Semgrep blocks only on ERROR-severity findings; ShellCheck and
+actionlint block on any finding · 🚫† enforced only on a PR whose base is `main`
+· ➖ runs as a deliberate no-op, so it can gate `build` without skipping it.
+
+**Everything marked 🚫 blocks through one of the three gates**, never by being
+named in the ruleset itself — "Repository settings" below says why, and which
+two jobs are deliberately in no gate.
 
 **`ci.yml` does not run on tags at all** — the whole `v*` column is
 `release.yml`'s. It used to run there, and that is what made every release build
@@ -211,35 +215,58 @@ outside what an agent does here (`AGENTS.md` §3), so this is the checklist.
 **Branch protection** on `main` and `dev`:
 
 - require a pull request before merging;
-- require these status checks — the names are the jobs' display names, and this
-  is the set actually configured today:
-  - `Format & Lint`
-  - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
-  - `Supply-Chain Security`
-  - `Code Coverage (≥ 80%)`
-  - `Semgrep SAST`
-  - `Trivy scan linux/amd64` · `Trivy scan linux/arm64`
-  - `Integration test linux/amd64` · `Integration test linux/arm64`
+- require exactly **three** status checks, each a fan-in job that runs no build
+  and no test of its own:
+  - `Source gate` — `check`, `test`, `supply-chain`, `coverage`, `version-gate`
+  - `Image gate` — `build`, `scan`, `integration`
+  - `Security gate` — `shellcheck`, `actionlint`, `semgrep`
 - require branches to be up to date before merging;
 - disallow force pushes and deletion.
 
-**The image jobs are required, deliberately.** It costs: they depend on `build`,
-so a documentation-only PR waits for two container builds, and an advisory
+**Why three names instead of nine.** A check that is not in the required set is
+an *indicator*: it runs, it goes visibly red, and it stops nobody. Keeping that
+set in step with `ci.yml` by hand is the failure this replaces, and it had
+already happened here — `ShellCheck` and `Actionlint` ran on every push and pull
+request for several releases while a PR could merge straight past them, and the
+fix was recorded in this very file as a one-line ruleset change that nobody
+made. `Version gate` was in the same position and merely got away with it,
+because `build` happens to list it in `needs`.
+
+Each gate derives its verdict from its own `needs` — the same list the pipeline
+must maintain anyway to order itself. A job added to `needs` is covered the
+moment it is added, rather than the moment somebody remembers to edit a
+repository setting that is invisible from the code.
+
+Three consequences worth knowing before anyone changes this:
+
+- **`if: always()` on each gate is load-bearing.** Without it, a gate whose
+  dependency failed is *skipped* rather than failed — and GitHub counts a
+  skipped required check as satisfied. The gate would be green by absence in
+  exactly the case it exists for.
+- **`Tests (beta)` still does not block.** Its leg carries `continue-on-error`,
+  so it reports `success` to `needs` even when it fails. It stays a canary.
+- **`push` and `publish` are deliberately in no gate.** Both are `push`-only, so
+  on a pull request they report `skipped`, and the gates treat anything that is
+  not `success` as a failure.
+
+> **Changing the ruleset is a manual step, and its order matters.** The gate
+> jobs must exist on the default branch and have reported once before they are
+> made required — a required check that never reports blocks every pull request
+> indefinitely. Merge first, then swap the required set.
+
+**The image jobs are required, deliberately.** `Image gate` waits on `build`, so
+a documentation-only PR waits for two container builds, and an advisory
 published that morning against something in the image blocks a branch that never
 touched the image — that happened on 2026-08-06. The decision is that this is
 the right way round: a finding that blocks is a finding someone looks at, and
 the alternative lets a fixable CRITICAL reach `dev` and be caught one step
 later, at `publish`.
 
-Two jobs are **not** required and it is worth knowing which:
-
-- `Version gate` is required only transitively — `build` lists it in `needs`, so
-  an invalid release version fails `build`, and the required image checks then
-  never report. The effect is the same; the mechanism is worth understanding
-  before anyone "simplifies" it.
-- `ShellCheck` and `Actionlint` live in `security.yml` and gate nothing. They
-  run on every push and PR and go red visibly, but a PR can merge past them.
-  Adding them is a one-line ruleset change and probably worth doing.
+**Everything else that runs, blocks.** That is new: `ShellCheck` and `Actionlint`
+now block through `Security gate`, and `Version gate` blocks directly through
+`Source gate` rather than only transitively via `build`'s `needs`. The transitive
+route still exists and still works — it is simply no longer the only thing
+standing between an invalid release version and `dev`.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
