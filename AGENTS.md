@@ -17,13 +17,13 @@ UI streams live results over SSE, and a separately gated Prometheus endpoint
 exposes the same data as gauges. It ships as a **distroless, nonroot** multi-arch
 container image, from a Cargo workspace of five crates.
 
-**Status: released, pre-1.0.** `v0.2.0`, `v0.2.1` and `v0.3.0` are tagged and
-published; the image is on Docker Hub and mirrored to ghcr. Read the current
-version from `CHANGELOG.md`'s topmost `## [x.y.z]` heading rather than from any
-sentence here — a version written into prose is wrong the morning after a
-release (§7). [`docs/roadmap.md`](docs/roadmap.md) carries what is still open
-for 1.0 and is the one place it is tracked — do not restate it here, it goes
-stale. Start with [`docs/architecture.md`](docs/architecture.md).
+**Status: released, with a stable major version out.** The image is on Docker Hub
+and mirrored to ghcr. Read the current version from `CHANGELOG.md`'s topmost
+`## [x.y.z]` heading rather than from any sentence here — a version written into
+prose is wrong the morning after a release (§7), as the list of tags that used to
+stand in this paragraph duly was. [`docs/roadmap.md`](docs/roadmap.md) carries
+what is still open and is the one place it is tracked — do not restate it here,
+it goes stale. Start with [`docs/architecture.md`](docs/architecture.md).
 
 Sibling project: [muninn.io](https://github.com/joshua-schnabel/muninn.io), same
 maintainer. It was built on huginn's conventions, and the two are kept aligned

@@ -11,18 +11,7 @@ the **manual PR flow**. Both end up in the same place.
 
 ---
 
-## One-click release (recommended — once it is available)
-
-> **Not available for the first release.** `workflow_dispatch` workflows are only
-> listed in the Actions UI when the file is on the **default branch**, and
-> `release-dispatch.yml` has never reached `main` — `main` still predates it.
-> The first release therefore goes through the manual flow below, which also
-> puts the workflow on `main` and makes the button appear for every release
-> after it.
->
-> The manual flow does one thing the dispatch would have done for you: stamp the
-> workspace version. Run `bash scripts/set-workspace-version.sh X.Y.Z` in the
-> release branch, so the released image reports the version its tag claims.
+## One-click release (recommended)
 
 Run the **Release (dispatch)** workflow and pick the bump type — that's it.
 
