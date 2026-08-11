@@ -46,20 +46,6 @@ kinds of change. Scope and method are written down in
 [`security-audit.md`](security-audit.md), so it is a repeat rather than a fresh
 invention — which is what makes it the largest return per hour of anything here.
 
-**The debug UI collapses distinct probe names into one row.** A row's DOM id is
-derived by replacing every character outside `[A-Za-z0-9_-]` with `_`, so
-`db.primary` and `db/primary` produce the same id and overwrite each other: two
-probes are configured, one row is shown, and nothing says so. Name validation
-requires only non-empty and unique, so both names are legal. It is confined to
-the UI — `escape_label` and `escape_tag` escape rather than replace, so
-Prometheus and InfluxDB keep the two apart — and the UI is explicitly unstable
-([`versioning.md`](versioning.md)), which is why this sits below the two above
-rather than in front of them. A collision-free row key fixes it, and that change
-is the moment to also reconcile the initial `/metrics/latest` snapshot with the
-`/events` subscription: the subscription is opened after the snapshot request,
-and `/events` does not replay, so a result landing between the two is not shown
-until the probe next runs.
-
 ## Not planned
 
 - **Persisting the retry queue to disk.** It would turn a stateless container
