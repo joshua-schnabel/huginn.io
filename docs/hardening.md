@@ -216,6 +216,6 @@ actionable in the Security tab.
 ## Related
 
 - [`SECURITY.md`](SECURITY.md) — reporting a vulnerability
-- [`security-audit.md`](security-audit.md) — the 2026-08-02 findings
+- [`security-audit.md`](security-audit.md) — every audit pass, newest first
 - [`risks.md`](risks.md) — what stays open, and why
 - [`ci-cd.md`](ci-cd.md) — the gates that enforce all of this

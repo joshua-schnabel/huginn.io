@@ -32,12 +32,35 @@ touches those surfaces.
 
 ## Next
 
-**Re-run the security audit.** Listener handling, secret-file behaviour, the
-shutdown path and the TLS transport have all changed since the 2026-08-02 pass,
-and that pass's own closing recommendation was to repeat it after exactly these
-kinds of change. Scope and method are written down in
-[`security-audit.md`](security-audit.md), so it is a repeat rather than a fresh
-invention — which is what makes it the largest return per hour of anything here.
+**Act on the second security audit.** The 2026-08-12 pass is done and found no
+CRITICAL or HIGH; what it did find is five Low findings, open and each with a
+reproduction, in [`security-audit.md`](security-audit.md#pass-2). In its own
+priority order:
+
+- **F-07** — control characters in a probe name reach the console, the Prometheus
+  label values and the InfluxDB tags raw. The remote path has been escaped since
+  F-01; the configuration path never was.
+- **F-08** — the integration suite runs the container without the hardening the
+  shipped compose file applies, so nothing keeps that hardening working. It does
+  work today; that was verified separately, which is the only reason this is a
+  missing gate rather than a broken setting.
+- **F-10** — SHA-pinning of actions is held by hand. `sha_pinning_required` is
+  the repository setting that would make it structural.
+- **F-11** — the `publish` job's comment claims no third-party code runs between
+  its credentialed checkout and the tag push. Four actions do.
+- **F-09** — needs a decision rather than a fix: the connection cap converts
+  memory exhaustion into denial of service on the flooded listener, which is
+  the right trade and is written down nowhere.
+
+The pass also carries three hardening suggestions that are not findings — see its
+recommendations.
+
+**Cut a release.** Everything above the topmost `## [x.y.z]` heading in
+[`CHANGELOG.md`](../CHANGELOG.md) is unreleased, and it is additive and
+corrective throughout. It is also the only way to close **O1** in
+[`risks.md`](risks.md): three releases have been cut, all of them under the shape
+that built the image twice, and the fix for that has never run under a real
+release.
 
 ## Not planned
 

@@ -156,8 +156,8 @@ rather than softened:
   `tokio-native-tls` are banned in `deny.toml`, so the policy is a gate rather
   than an intention. [ADR-0003](docs/adr/0003-rustls-only.md)
 
-Full posture in [`docs/hardening.md`](docs/hardening.md); the 2026-08-02 audit,
-with findings, reproductions and accepted risks, in
+Full posture in [`docs/hardening.md`](docs/hardening.md); every audit pass, with
+findings, reproductions and accepted risks, in
 [`docs/security-audit.md`](docs/security-audit.md). To report a vulnerability:
 [`docs/SECURITY.md`](docs/SECURITY.md).
 
@@ -208,7 +208,7 @@ agent, read [`AGENTS.md`](AGENTS.md) first.
 | [InfluxDB](docs/influxdb.md) | Setup and the measurement/field schema |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom, cause, fix |
 | [Hardening](docs/hardening.md) | Container and secret posture |
-| [Security audit](docs/security-audit.md) | The 2026-08-02 findings and what stays open |
+| [Security audits](docs/security-audit.md) | Every pass, newest first, with what stays open |
 | [Testing](docs/testing.md) | Test pyramid, coverage, the no-sleep rule |
 | [CI/CD](docs/ci-cd.md) | Pipeline, release path, repository setup |
 | [Workflows](docs/workflows.md) | Every workflow: triggers, jobs, gotchas |
