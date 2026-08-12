@@ -144,6 +144,17 @@ cargo. `release.yml` is split into `test-report` (`contents: read`, runs cargo,
 uploads an artefact) and `github-release` (`contents: write`, downloads it) for
 exactly this reason. If you add a cargo step, it belongs in the first job.
 
+**Cargo is not the only third-party code, which is the harder half.** `publish`
+runs no cargo and still ran four third-party actions — `download-artifact`,
+`metadata-action`, `setup-buildx-action`, `login-action` — after a credentialed
+checkout, each with `.git/config` in reach, while a comment in the file asserted
+that nothing between the checkout and the push executed third-party code. That
+was F-11 of the 2026-08-12 pass. It now checks out twice: credential-free at the
+top for the changelog read and the remote tag check, and again with the token
+immediately before the push. **When a job needs a write token, take it as late
+as it is needed** — an action is somebody else's code just as much as a
+`build.rs` is, and it is easier to add without noticing.
+
 **Credentials go through stdin or a file, never argv.** `/proc/<pid>/cmdline` is
 readable by every process on the runner. `skopeo login --password-stdin` with
 `REGISTRY_AUTH_FILE` replaces `--dest-creds`; `jq -n --arg` piped into

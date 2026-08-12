@@ -709,27 +709,26 @@ jobs:
       contents: write
       packages: write
     steps:
-      # The one checkout in this file that keeps its credentials: the last step
-      # runs `git push origin "$TAG"`. Nothing between here and there executes
-      # third-party code — no cargo, no build — so the token stays inside a job
-      # that only runs skopeo, jq and git.
+      # Credential-free, and it is the only checkout most of this job needs:
+      # what follows reads CHANGELOG.md and asks the *remote* whether a tag
+      # exists. The credentialed one is taken later, immediately before the push
+      # that needs it.
       #
-      # RELEASE_PAT rather than the built-in token, because of what has to happen
-      # after the push: GitHub does not start a workflow from an event that
-      # GITHUB_TOKEN created — the recursion guard — so a tag pushed with it
-      # fires nothing and release.yml (`on: push: tags`) never runs. muninn.io
-      # shipped with the same wiring and hit it at v0.1.0: the image, the ghcr
-      # mirror and the tag all went out, and the GitHub Release, the test report
-      # and the housekeeping PR did not. It is the same secret prepare-dev
-      # already needs, for the same underlying reason.
+      # This used to be a single credentialed checkout at the top, carrying a
+      # comment that said "nothing between here and there executes third-party
+      # code — no cargo, no build". That was false: `download-artifact`,
+      # `metadata-action`, `setup-buildx-action` and `login-action` all run
+      # between it and the tag push, each with the workspace's `.git/config` —
+      # and so the token in it — in reach. F-11 of the 2026-08-12 audit. Rather
+      # than correct the comment, the split makes the claim true.
       #
-      # The fallback keeps the pipeline working without the secret: the tag is
-      # still created, and release.yml is then driven by hand through its
-      # workflow_dispatch entry point.
+      # No `fetch-depth: 0` either. It was justified as "needed to read git
+      # history for version tagging", and nothing here reads history: the
+      # version comes from CHANGELOG.md, the existence check is `git ls-remote`,
+      # and `git tag` needs only the commit it is on.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0   # needed to read git history for version tagging
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       # A "refuse tags that are not on main" step used to sit here, because this
       # workflow also ran on tag pushes and `refs/tags/v*` is not covered by the
@@ -912,6 +911,34 @@ jobs:
       # release if the registry's `:x.y.z` no longer resolves to it. The
       # `image-digest:` prefix is the contract between the two files; keep them
       # in step.
+      # The credentialed checkout, taken here and not at the top of the job, so
+      # that nothing between it and the `git push` below executes third-party
+      # code. That is now literally true — the four actions this job uses have
+      # all run by this point — where the single checkout it replaces only
+      # claimed it (F-11).
+      #
+      # RELEASE_PAT rather than the built-in token, because of what has to happen
+      # after the push: GitHub does not start a workflow from an event that
+      # GITHUB_TOKEN created — the recursion guard — so a tag pushed with it
+      # fires nothing and release.yml (`on: push: tags`) never runs. muninn.io
+      # shipped with the same wiring and hit it at v0.1.0: the image, the ghcr
+      # mirror and the tag all went out, and the GitHub Release, the test report
+      # and the housekeeping PR did not. It is the same secret prepare-dev
+      # already needs, for the same underlying reason.
+      #
+      # The fallback keeps the pipeline working without the secret: the tag is
+      # still created, and release.yml is then driven by hand through its
+      # workflow_dispatch entry point.
+      #
+      # `clean: false` only to skip a pointless `git clean -ffdx` of a workspace
+      # nothing has written to — the digests live under `runner.temp`, not here.
+      - name: Check out again, with the credential the push needs
+        if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: false
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
       - name: Create git tag
         if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
         env:
