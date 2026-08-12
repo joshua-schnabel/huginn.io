@@ -239,6 +239,49 @@ print('probe_result fields present:', sorted(required))
 " && pass "InfluxDB holds the documented probe_result fields" \
   || fail "InfluxDB is missing documented probe_result fields"
 
+# ── 9. The container is running with the hardening that ships ────────────────
+# Asserted against `docker inspect` rather than by diffing the two compose
+# files: what matters is what the runtime applied, and this also catches the
+# case where compose declares a setting the runtime quietly ignores.
+#
+# F-08 of the 2026-08-12 audit — docker-compose.yml carried all five of these
+# and docker-compose.integration.yml carried none, so the suite proved huginn
+# works unhardened while the shipped stack ran hardened, and nothing held the
+# difference up. The hardening costs huginn nothing: it writes nothing to its
+# filesystem, binds ports above 1024 and never changes uid.
+CID=$(docker compose -f "$COMPOSE_FILE" ps -q huginn)
+[ -n "$CID" ] || fail "Could not resolve the huginn container id"
+
+check_hardening() {
+  local field="$1" want="$2" got
+  got=$(docker inspect "$CID" --format "$field")
+  [ "$got" = "$want" ] || fail "container hardening: $field is '$got', expected '$want'"
+}
+
+check_hardening '{{.HostConfig.ReadonlyRootfs}}' 'true'
+check_hardening '{{.HostConfig.CapDrop}}'        '[ALL]'
+check_hardening '{{.HostConfig.CapAdd}}'         '[]'
+check_hardening '{{.HostConfig.SecurityOpt}}'    '[no-new-privileges:true]'
+check_hardening '{{.HostConfig.Privileged}}'     'false'
+check_hardening '{{.HostConfig.PidsLimit}}'      '128'
+check_hardening '{{.Config.User}}'               'nonroot:nonroot'
+# 256m, in bytes. Spelled out rather than computed so a silent unit change is
+# a failure rather than a pass.
+check_hardening '{{.HostConfig.Memory}}'         '268435456'
+pass "Container runs with the hardening docker-compose.yml applies"
+
+# The token must never be reachable from the environment — it is a file, and
+# `docker inspect` prints Config.Env to anyone who can run it. ADR-0002.
+#
+# An `if`, not `grep -q … && fail`: under `set -e` that chain returns non-zero
+# in the case where grep finds nothing, which is the case this is supposed to
+# pass on.
+if docker inspect "$CID" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+     | grep -qiE '(token|password|secret|api_key)='; then
+  fail "a secret-looking value is present in the container environment"
+fi
+pass "No secret in the container environment"
+
 echo ""
 echo "════════════════════════════════════════════════"
 echo -e "${GREEN}  All system integration tests passed! ✓${NC}"
