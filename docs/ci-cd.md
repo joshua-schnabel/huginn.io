@@ -31,27 +31,55 @@ release PR would silently revert it.
 ## Pipeline shape
 
 ```text
+── Source ────────────────────────────────────────────────────────────────
   check ─┬ test (stable + beta·canary) ─┐
          ├ supply-chain ────────────────┤
-         ├ coverage (needs test) ───────┤
+         ├ coverage ────────────────────┤
          └ version-gate ────────────────┤
+                                        ▼
+                                   SOURCE GATE
+── Image ───────────────────────────────┼─────────────────────────────────
                                         ▼
              build (per arch, native) → image.tar artefact
                 ├ scan  (Trivy + SBOM, on the artefact)
                 └ integration (load + compose, on the artefact)
                                         ▼
-             push (per arch, push only) → skopeo by digest → digest artefact
+                                    IMAGE GATE
+── Release (push events only) ──────────┼─────────────────────────────────
+                                        ▼
+             push (per arch) → skopeo by digest → digest artefact
                                         ▼
              publish → manifest, ghcr mirror, staging cleanup, git tag
                                         ▼
                               release.yml (Release + SBOM + housekeeping PR)
 ```
 
+**The gates are the stage boundaries**, not a verdict beside them: `build`
+depends on `source-gate` and `push` on `image-gate`, so each stage's membership
+is written down exactly once, in that gate's `needs`. `build` used to re-list
+the five source jobs, which made the gate's list a second copy of the same set
+— and a job wired into only one of the two would either block the merge after
+the build had already started, or gate nothing at all.
+
 **The image is built exactly once per architecture** and uploaded as a tarball.
 `scan`, `integration` and `push` all consume *that same artefact*, so the bytes
-scanned, tested and published are byte-identical. `push` needs `scan` **and**
-`integration`, and `publish` needs `push`, so nothing unscanned can reach a
-registry.
+scanned, tested and published are byte-identical. `push` reaches a registry only
+behind `image-gate`, which covers `scan` **and** `integration`, and `publish`
+needs `push` — so nothing unscanned can be pushed.
+
+**`coverage` hangs off `check`, not off `test`**, so it runs alongside the two
+toolchain legs. `cargo llvm-cov --all` runs the whole suite itself, instrumented,
+so waiting for `test` bought no extra confidence — only the duration of a full
+suite on the critical path, part of it spent waiting on the beta leg, which
+`continue-on-error` forbids from blocking anything. The cost is a coverage run
+that is also spent on a red push; both jobs are still in `source-gate`, so
+neither stops blocking.
+
+Job display names carry a `Source ·` / `Image ·` / `Release ·` / `Security ·`
+prefix. GitHub has no stages of its own — the run graph is drawn from `needs`
+alone — so the prefixes are what makes the job list group by stage, and each
+gate writes its members and their results to the run summary. The three **gate**
+names deliberately carry no prefix; see "Repository settings" below.
 
 CI runs on **every** pull request, not only those targeting `main` or `dev`. It
 was once scoped to those two, so feature branches had no gate — which is how
@@ -71,23 +99,24 @@ every `github.ref == 'refs/heads/dev'` check silently reads false. A job with
 
 | Job | any PR | push dev | push main | push tag `v*` |
 |---|:---:|:---:|:---:|:---:|
-| Format & Lint | yes | yes | yes | — |
-| Tests (stable) | yes 🚫 | yes | yes | — |
-| Tests (beta, canary) | yes | yes | yes | — |
-| Supply-chain (cargo-deny) | yes 🚫 | yes | yes | — |
-| Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
-| Version gate | yes 🚫† | ➖ | yes 🚫 | — |
-| Semgrep · ShellCheck · actionlint | yes 🚫* | yes | yes | — |
-| Build image (per arch, native) | yes 🚫 | yes | yes | — |
-| Trivy SARIF + SBOM | yes | yes | yes | — |
-| Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | — |
-| System integration test | yes 🚫 | yes | yes | — |
-| Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | — |
+| Source · Format & Lint | yes | yes | yes | — |
+| Source · Tests (stable) | yes 🚫 | yes | yes | — |
+| Source · Tests (beta, canary) | yes | yes | yes | — |
+| Source · Supply-chain (cargo-deny) | yes 🚫 | yes | yes | — |
+| Source · Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
+| Source · Version gate | yes 🚫† | ➖ | yes 🚫 | — |
+| Security · Semgrep · ShellCheck · Actionlint | yes 🚫* | yes | yes | — |
+| Image · Build (per arch, native) | yes 🚫 | yes | yes | — |
+| Image · Trivy SARIF + SBOM | yes | yes | yes | — |
+| Image · Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | — |
+| Image · System integration test | yes 🚫 | yes | yes | — |
+| Release · Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | — |
 | GitHub Release + housekeeping PR | — | — | — | yes |
 
 🚫 blocks · 🚫* Semgrep blocks only on ERROR-severity findings; ShellCheck and
 actionlint block on any finding · 🚫† enforced only on a PR whose base is `main`
-· ➖ runs as a deliberate no-op, so it can gate `build` without skipping it.
+· ➖ runs as a deliberate no-op rather than skipping, because `Source gate`
+counts anything that is not `success` as a failure.
 
 **Everything marked 🚫 blocks through one of the three gates**, never by being
 named in the ruleset itself — "Repository settings" below says why, and which
@@ -230,19 +259,26 @@ already happened here — `ShellCheck` and `Actionlint` ran on every push and pu
 request for several releases while a PR could merge straight past them, and the
 fix was recorded in this very file as a one-line ruleset change that nobody
 made. `Version gate` was in the same position and merely got away with it,
-because `build` happens to list it in `needs`.
+because `build` happened to list it in `needs`.
 
 Each gate derives its verdict from its own `needs` — the same list the pipeline
 must maintain anyway to order itself. A job added to `needs` is covered the
 moment it is added, rather than the moment somebody remembers to edit a
 repository setting that is invisible from the code.
 
-Three consequences worth knowing before anyone changes this:
+Four consequences worth knowing before anyone changes this:
 
+- **The three gate names are a fixed surface.** `build` and `push` now depend on
+  their gate, and the ruleset names it, so the string appears in two places that
+  cannot see each other. Rename a required check and it never reports again —
+  and a check that never reports blocks every pull request indefinitely. This is
+  why the gates alone carry no `Source ·` / `Image ·` / `Security ·` prefix.
 - **`if: always()` on each gate is load-bearing.** Without it, a gate whose
   dependency failed is *skipped* rather than failed — and GitHub counts a
   skipped required check as satisfied. The gate would be green by absence in
-  exactly the case it exists for.
+  exactly the case it exists for. It is also what makes the gate safe to depend
+  on: a job that can never be skipped always resolves to a real verdict, so
+  `build` and `push` are skipped precisely when their stage did not pass.
 - **`Tests (beta)` still does not block.** Its leg carries `continue-on-error`,
   so it reports `success` to `needs` even when it fails. It stays a canary.
 - **`push` and `publish` are deliberately in no gate.** Both are `push`-only, so
@@ -263,10 +299,10 @@ the alternative lets a fixable CRITICAL reach `dev` and be caught one step
 later, at `publish`.
 
 **Everything else that runs, blocks.** That is new: `ShellCheck` and `Actionlint`
-now block through `Security gate`, and `Version gate` blocks directly through
-`Source gate` rather than only transitively via `build`'s `needs`. The transitive
-route still exists and still works — it is simply no longer the only thing
-standing between an invalid release version and `dev`.
+now block through `Security gate`, and `Version gate` blocks through `Source
+gate` rather than by being listed in `build`'s `needs`. That transitive route is
+gone on purpose — `build` names only the gate now, so there is one list of the
+source stage instead of two that can drift.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
