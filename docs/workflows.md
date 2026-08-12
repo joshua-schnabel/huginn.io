@@ -62,10 +62,22 @@ Each job has one responsibility; later jobs depend on earlier ones via `needs`.
 8. **`integration`** (matrix, native runner) — `docker load` plus
    `docker compose --no-build`, then `scripts/integration-test.sh` against the
    loaded image.
-9. **`push`** (matrix, `if: push`) — needs `scan` **and** `integration`; skopeo
-   copies the scanned tarball to a staging tag by digest and records the digest.
-   Skipped on PRs, so registry credentials are never reachable there.
-10. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
+9. **`source-gate`** and **`image-gate`** — the two jobs the branch ruleset
+   actually names. Each depends on a group of the jobs above and fails if any
+   of them did not report `success`; neither runs a build or a test of its own.
+   They exist because a check that is not in the required set is only an
+   *indicator*: it goes visibly red and blocks nobody, which is the state
+   `ShellCheck` and `Actionlint` were in for several releases. Requiring a
+   fan-in job instead makes coverage follow `needs`, which this file has to
+   maintain anyway to order itself. Both carry `if: always()`, and that is
+   load-bearing: without it a gate whose dependency failed would be *skipped*,
+   and GitHub counts a skipped required check as satisfied — green in exactly
+   the case it exists for. `push` and `publish` are deliberately not in either
+   gate, because a `push`-only job reports `skipped` on a pull request.
+10. **`push`** (matrix, `if: push`) — needs `scan` **and** `integration`; skopeo
+    copies the scanned tarball to a staging tag by digest and records the digest.
+    Skipped on PRs, so registry credentials are never reachable there.
+11. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
     digests, mirrors it to ghcr with `skopeo copy --all`, deletes the staging
     tags, and creates the git tag `vX.Y.Z`, **annotated with the manifest
     digest**. It publishes **no new bytes**. The annotation is what lets
@@ -97,6 +109,11 @@ feature branches before a PR exists.
   `run:` blocks, which is the half ShellCheck above does not cover.
 - **`semgrep`** — a full pass to SARIF that never blocks, then a blocking pass on
   ERROR severity. Rulesets `p/rust` and `p/secrets`.
+- **`security-gate`** — the fan-in job the ruleset names, failing if any of the
+  three above did not report `success`. Same `if: always()` reasoning as
+  `ci.yml`'s two gates. This file is where the omission was real: all three
+  scanners went red without blocking a merge, and requiring one job covers them
+  and whatever is added next.
 
 **Gotchas**
 
