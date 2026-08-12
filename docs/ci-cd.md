@@ -241,25 +241,81 @@ step reads the tag rather than the branch the button was pressed on.
 Deliberately not automated. Changing repository settings, secrets or rulesets is
 outside what an agent does here (`AGENTS.md` §3), so this is the checklist.
 
-**Branch protection** on `main` and `dev`:
+**Branch protection is two rulesets** (Settings → Rules → Rulesets), not classic
+branch protection: one on `refs/heads/dev`, one on `refs/heads/main`. Neither has
+a bypass actor, so the maintainer goes through a pull request as well.
 
-- require a pull request before merging;
+Both rulesets:
+
+- require a pull request before merging — with no approving review, this being a
+  solo project, and a reviewer nobody can be would block every merge;
 - require exactly **three** status checks, each a fan-in job that runs no build
   and no test of its own:
-  - `Source gate` — `check`, `test`, `supply-chain`, `coverage`, `version-gate`
-  - `Image gate` — `build`, `scan`, `integration`
-  - `Security gate` — `shellcheck`, `actionlint`, `semgrep`
+  - `Source gate` — covers `check`, `test`, `supply-chain`, `coverage`, `version-gate`
+  - `Image gate` — covers `build`, `scan`, `integration`
+  - `Security gate` — covers `shellcheck`, `actionlint`, `semgrep`
 - require branches to be up to date before merging;
+- require signed commits;
 - disallow force pushes and deletion.
 
-**Why three names instead of nine.** A check that is not in the required set is
-an *indicator*: it runs, it goes visibly red, and it stops nobody. Keeping that
-set in step with `ci.yml` by hand is the failure this replaces, and it had
-already happened here — `ShellCheck` and `Actionlint` ran on every push and pull
-request for several releases while a PR could merge straight past them, and the
-fix was recorded in this very file as a one-line ruleset change that nobody
-made. `Version gate` was in the same position and merely got away with it,
-because `build` happened to list it in `needs`.
+They differ in one rule: `dev` permits a squash merge, `main` only a merge
+commit, per the branch model above.
+
+Those three membership lists are a reader's aid. The authority is each gate's
+`needs` in the workflow, and that is the only copy that can be wrong without
+anybody noticing — which is the whole point of the arrangement.
+
+### Picking the three names
+
+GitHub's name field suggests every check it has **seen recently** on the
+repository, not what the workflows produce today. The list therefore mixes three
+kinds of entry and marks none of them:
+
+- **the three gates** — the only ones to pick;
+- **stage members**, recognisable by the `·` in the name: `Source · Version
+  gate`, `Source · Format & Lint`, `Image · Trivy scan linux/amd64`. These are
+  real and would report — and adding one is still wrong. It is already covered
+  by its gate, and a second required list maintained by hand is precisely the
+  failure the gates removed;
+- **names that no longer exist**: `Version gate`, `Format & Lint`, `Trivy scan
+  linux/amd64` and the rest of the pre-stage naming, still offered because they
+  ran here recently. Picking one blocks every pull request indefinitely, because
+  it never reports again.
+
+`version-gate` is the trap in that list. It is named "gate" and is **not** one of
+the three: it is an ordinary source-stage job that validates the release
+version, and `Source gate` covers it. Anyone counting gates by name counts four.
+
+Old names age out of the picker by themselves once they leave GitHub's recent
+history. Until then, ignore everything that is not one of the three.
+
+Take the entries attributed to **GitHub Actions**. The picker shows the app
+beside each name and the ruleset stores it (`integration_id`), which pins the
+requirement to the workflow meant to satisfy it — Semgrep and Trivy post check
+runs from their own apps, so name alone is not unique.
+
+**Verify the result instead of trusting the click-through.** Both rulesets must
+come back with the same three lines:
+
+```bash
+gh api repos/joshua-schnabel/huginn.io/rulesets -q '.[].id' | while read -r id; do
+  gh api "repos/joshua-schnabel/huginn.io/rulesets/$id" \
+    -q '"\(.name):", (.rules[]
+        | select(.type == "required_status_checks")
+        | .parameters.required_status_checks[] | "  \(.context)")'
+done
+```
+
+### Why three names instead of nine
+
+A check that is not in the required set is an *indicator*: it runs, it goes
+visibly red, and it stops nobody. Keeping that set in step with `ci.yml` by hand
+is the failure this replaces, and it had already happened here — `ShellCheck`
+and `Actionlint` ran on every push and pull request for several releases while a
+PR could merge straight past them, and the fix was recorded in this very file as
+a one-line ruleset change that nobody made. The version gate was in the same
+position and merely got away with it, because `build` happened to list it in
+`needs`.
 
 Each gate derives its verdict from its own `needs` — the same list the pipeline
 must maintain anyway to order itself. A job added to `needs` is covered the
@@ -290,6 +346,14 @@ Four consequences worth knowing before anyone changes this:
 > made required — a required check that never reports blocks every pull request
 > indefinitely. Merge first, then swap the required set.
 
+**If a gate ever has to be renamed**, that same rule turns it into three moves
+rather than an edit: land the rename so the new name reports once, add the new
+name to the required set *beside* the old one, then remove the old. Done as a
+single edit it leaves a window in which the required name is one that no run
+produces, and the repository locks itself. The cheaper answer is not to rename
+them at all, which is why the gates carry no stage prefix and both workflows say
+so at the job.
+
 **The image jobs are required, deliberately.** `Image gate` waits on `build`, so
 a documentation-only PR waits for two container builds, and an advisory
 published that morning against something in the image blocks a branch that never
@@ -298,11 +362,11 @@ the right way round: a finding that blocks is a finding someone looks at, and
 the alternative lets a fixable CRITICAL reach `dev` and be caught one step
 later, at `publish`.
 
-**Everything else that runs, blocks.** That is new: `ShellCheck` and `Actionlint`
-now block through `Security gate`, and `Version gate` blocks through `Source
-gate` rather than by being listed in `build`'s `needs`. That transitive route is
-gone on purpose — `build` names only the gate now, so there is one list of the
-source stage instead of two that can drift.
+**Everything else that runs, blocks.** `ShellCheck` and `Actionlint` block
+through `Security gate`; the version gate blocks through `Source gate` rather
+than by being listed in `build`'s `needs`. That transitive route is gone on
+purpose — `build` names only the gate now, so there is one list of the source
+stage instead of two that can drift.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
