@@ -30,7 +30,10 @@ this workflow again, and its `publish` re-pointed `:x.y.z` at the second build
 while `release.yml` was already describing the first. v0.3.0 shipped that way.
 The release tag is this pipeline's output, never an entry into it.
 
-Each job has one responsibility; later jobs depend on earlier ones via `needs`.
+Each job has one responsibility, and the pipeline runs in three stages —
+**Source**, **Image**, **Release** — separated by the two fan-in gates below.
+Job display names carry the stage as a prefix; the gates themselves do not, and
+must not (they are the required checks). `needs` orders everything.
 
 1. **`check`** — `cargo fmt --check` and `cargo clippy -D warnings`.
 2. **`test`** — `cargo test --all --locked` on stable **and** beta. Beta is a
@@ -43,16 +46,21 @@ Each job has one responsibility; later jobs depend on earlier ones via `needs`.
    the percentage into the job summary, computed from the file's `LF`/`LH`
    records. The `cargo-llvm-cov` binary is pinned and cached; `cargo-deny` is
    deliberately left on the latest release so it keeps picking up new advisory
-   classes.
+   classes. Depends on `check`, **not** on `test`, so it runs alongside the two
+   toolchain legs: it runs the whole suite itself under instrumentation, so
+   waiting for `test` added no confidence — only a full suite's duration on the
+   critical path, part of it spent on the beta leg, which cannot block anything.
 5. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer,
    must match `[workspace.package].version` in `Cargo.toml`, and must be
    strictly greater than the last `v*` tag. Enforces **only** in a release
    context (a PR whose base is `main`, or a push to `main`) and is a no-op pass
-   otherwise. It must always *run*: a skipped `needs` job would skip `build` too.
-   `build` lists it, so an invalid release version fails before the expensive
-   image build. The `Cargo.toml` check exists because the image is tagged from
-   the changelog while the binary reports its manifest version — without it a
-   half-stamped release branch ships `huginn:0.4.0` that says `0.3.0` when asked.
+   otherwise. It must always *run* rather than skip: `source-gate` counts
+   anything that is not `success` as a failure, so a skip here would fail the
+   gate and take `build` with it. Being in that gate is also what makes an
+   invalid release version fail before the expensive image build. The
+   `Cargo.toml` check exists because the image is tagged from the changelog
+   while the binary reports its manifest version — without it a half-stamped
+   release branch ships `huginn:0.4.0` that says `0.3.0` when asked.
 6. **`build`** (matrix, per architecture, **native** runner) — builds the image
    exactly once into `image.tar` and uploads it as an artefact. Native runners
    replaced QEMU, which had made the arm64 build the pipeline's dominant cost.
@@ -62,10 +70,32 @@ Each job has one responsibility; later jobs depend on earlier ones via `needs`.
 8. **`integration`** (matrix, native runner) — `docker load` plus
    `docker compose --no-build`, then `scripts/integration-test.sh` against the
    loaded image.
-9. **`push`** (matrix, `if: push`) — needs `scan` **and** `integration`; skopeo
-   copies the scanned tarball to a staging tag by digest and records the digest.
-   Skipped on PRs, so registry credentials are never reachable there.
-10. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
+9. **`source-gate`** and **`image-gate`** — the two jobs the branch ruleset
+   actually names, and the boundaries between the stages. Each depends on a
+   group of the jobs above and fails if any of them did not report `success`;
+   neither runs a build or a test of its own. Each also writes its members and
+   their results as a table to the run summary, before deciding — so a failing
+   stage still says which member failed, on the page somebody actually reads.
+   They exist because a check that is not in the required set is only an
+   *indicator*: it goes visibly red and blocks nobody, which is the state
+   `ShellCheck` and `Actionlint` were in for several releases. Requiring a
+   fan-in job instead makes coverage follow `needs`, which this file has to
+   maintain anyway to order itself — and since `build` and `push` depend on
+   their gate rather than re-listing its members, each stage's membership is
+   written down exactly once. Both carry `if: always()`, and that is
+   load-bearing twice over: without it a gate whose dependency failed would be
+   *skipped*, GitHub counts a skipped required check as satisfied — green in
+   exactly the case it exists for — and a gate that can be skipped would be an
+   unreliable thing for `build` to depend on. `push` and `publish` are
+   deliberately not in either gate, because a `push`-only job reports `skipped`
+   on a pull request.
+10. **`push`** (matrix, `if: push`) — needs `image-gate`, so it sees the scanned
+    *and* integration-tested bytes and nothing else; skopeo copies the tarball
+    to a staging tag by digest and records the digest. Skipped on PRs, so
+    registry credentials are never reachable there. Its `if:` narrows the job to
+    push events without loosening the dependency — an `if:` carrying no status
+    function leaves the implicit `success()` on `needs` in place.
+11. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
     digests, mirrors it to ghcr with `skopeo copy --all`, deletes the staging
     tags, and creates the git tag `vX.Y.Z`, **annotated with the manifest
     digest**. It publishes **no new bytes**. The annotation is what lets
@@ -97,6 +127,13 @@ feature branches before a PR exists.
   `run:` blocks, which is the half ShellCheck above does not cover.
 - **`semgrep`** — a full pass to SARIF that never blocks, then a blocking pass on
   ERROR severity. Rulesets `p/rust` and `p/secrets`.
+- **`security-gate`** — the fan-in job the ruleset names, failing if any of the
+  three above did not report `success` and writing their results to the run
+  summary either way. Same `if: always()` reasoning as `ci.yml`'s two gates,
+  though unlike those it orders nothing — nothing follows it in this file, so it
+  exists purely to be the required check. This file is where the omission was
+  real: all three scanners went red without blocking a merge, and requiring one
+  job covers them and whatever is added next.
 
 **Gotchas**
 

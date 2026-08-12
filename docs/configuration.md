@@ -102,6 +102,35 @@ with labels `probe`, `type`, `target`:
 - `huginn_probe_<key>` for every probe-specific reading, e.g.
   `huginn_probe_tls_cert_expiry_days`
 
+### What huginn reports about itself
+
+The families above describe the *monitored targets*. These describe the write
+path, so that measurements taken and then thrown away are visible from outside
+the process — a probe gauge cannot show that, and a huginn losing every result
+to a full queue or a rejected token otherwise looks exactly like a healthy one.
+
+They are **process-wide and carry no labels**, so they are served from startup
+(with zeroes) even before any probe has reported:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `huginn_influx_queue_batches` | gauge | Batches waiting in the retry queue |
+| `huginn_influx_queue_bytes` | gauge | Line protocol waiting, in bytes |
+| `huginn_influx_batches_written_total` | counter | Batches InfluxDB accepted |
+| `huginn_influx_bytes_written_total` | counter | Line protocol accepted, in bytes |
+| `huginn_influx_batches_dropped_total` | counter | Batches evicted because the queue was full — **lost** |
+| `huginn_influx_bytes_dropped_total` | counter | Line protocol evicted, in bytes |
+| `huginn_influx_batches_rejected_total` | counter | Batches InfluxDB refused permanently — **lost** |
+| `huginn_influx_last_write_success_timestamp_seconds` | gauge | When InfluxDB last accepted a write; `0` if never since startup |
+
+The two marked **lost** are the ones worth alerting on: anything above zero
+means measurements exist that no backend will ever have. They have different
+causes and different fixes — an eviction means InfluxDB was unreachable for
+longer than `influx.max_buffered_bytes` could cover, while a rejection means
+InfluxDB answered and refused, most often a bad token or a wrong bucket. A
+rising queue with a stalled `…_last_write_success_timestamp_seconds` is the
+outage in progress, before anything has been lost yet.
+
 Without `api_key_file` the endpoint is unauthenticated like the UI: bind
 loopback unless the network is trusted, and use `0.0.0.0` inside a container.
 With a key, Prometheus scrapes it via:

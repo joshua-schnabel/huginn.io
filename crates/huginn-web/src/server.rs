@@ -25,7 +25,11 @@ const APP_JS: &str = include_str!("../assets/app.js");
 /// listener is enabled too, use [`run_server_with_state`] with a shared state
 /// instead, so both servers feed from one event loop.
 pub async fn run_server(bind: &str, port: u16, hub: Arc<EventHub>) -> anyhow::Result<()> {
-    let state = Arc::new(WebState::new());
+    // The UI-only path has no metrics listener, so nothing ever reads these
+    // counters; they exist so `WebState` has one shape rather than two.
+    let state = Arc::new(WebState::new(Arc::new(
+        huginn_core::stats::WriteStats::default(),
+    )));
     Arc::clone(&state).start_event_loop(Arc::clone(&hub));
     // Drop our Arc: `axum::serve` below never returns, so holding it would keep
     // the hub's Sender alive for the life of the process and no subscriber would
@@ -137,6 +141,7 @@ mod tests {
         Arc::new(WebState {
             results: Arc::new(RwLock::new(map)),
             sse_tx,
+            write_stats: Arc::new(huginn_core::stats::WriteStats::default()),
         })
     }
 
