@@ -204,4 +204,57 @@ mod tests {
         );
         assert!(!body.is_empty());
     }
+
+    /// The row key must not be derived from the probe name.
+    ///
+    /// Deriving it meant replacing every character outside `[A-Za-z0-9_-]` with
+    /// `_`, which mapped `db.primary` and `db/primary` onto one row — and probe
+    /// names only have to be non-empty and unique, so both are legal.
+    ///
+    /// This asserts on the asset's source rather than its behaviour: there is no
+    /// JavaScript runtime in this workspace, and adding one would be a new
+    /// dependency (AGENTS.md §3). It therefore guards against a return to this
+    /// specific construct, not against every way of reintroducing a collision.
+    #[test]
+    fn ui_script_keys_rows_by_name_rather_than_a_derived_dom_id() {
+        assert!(
+            !APP_JS.contains("replace(/[^a-zA-Z0-9_-]/g"),
+            "the lossy probe-name-to-id replacement is back in app.js"
+        );
+        assert!(
+            !APP_JS.contains("getElementById(id)"),
+            "app.js looks up rows by a derived id again"
+        );
+        assert!(
+            APP_JS.contains("rows.get(result.probe_name)")
+                && APP_JS.contains("rows.set(result.probe_name"),
+            "app.js no longer keys its row map on the raw probe name"
+        );
+    }
+
+    /// The snapshot must not be able to overwrite a newer streamed result.
+    ///
+    /// `/events` subscribes at connect time and replays nothing (see `sse.rs`),
+    /// so the stream has to be opened before `/metrics/latest` is requested, and
+    /// what it delivers in the meantime has to be held until the snapshot has
+    /// been applied. Same caveat as above: this checks the construct, not the
+    /// running behaviour.
+    #[test]
+    fn ui_script_opens_the_stream_before_seeding_and_buffers_until_seeded() {
+        let stream_at = APP_JS
+            .find("new EventSource(")
+            .expect("app.js no longer opens an EventSource");
+        let fetch_at = APP_JS
+            .find("fetch('/metrics/latest')")
+            .expect("app.js no longer fetches the snapshot");
+        assert!(
+            stream_at < fetch_at,
+            "app.js requests the snapshot before opening the stream, which reopens the gap \
+             in which a result is shown only at the next tick"
+        );
+        assert!(
+            APP_JS.contains("pending.push(result)") && APP_JS.contains("pending.splice(0)"),
+            "app.js no longer buffers streamed results until the snapshot is applied"
+        );
+    }
 }
