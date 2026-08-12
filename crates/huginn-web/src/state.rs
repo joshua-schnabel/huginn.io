@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use huginn_core::event::{EventHub, ProbeEvent};
+use huginn_core::stats::WriteStats;
 use huginn_core::types::ProbeResult;
 use serde_json;
 use tokio::sync::broadcast::error::RecvError;
@@ -15,14 +16,21 @@ pub struct WebState {
     pub results: Arc<RwLock<HashMap<String, ProbeResult>>>,
     /// SSE broadcast: each message is a JSON-encoded `ProbeResult`.
     pub sse_tx: broadcast::Sender<String>,
+    /// Write-path counters, filled by the InfluxDB queue and writer.
+    ///
+    /// Held rather than derived because the numbers live in another crate that
+    /// this one must not depend on; the binary owns them and hands the same
+    /// `Arc` to both sides.
+    pub write_stats: Arc<WriteStats>,
 }
 
 impl WebState {
-    pub fn new() -> Self {
+    pub fn new(write_stats: Arc<WriteStats>) -> Self {
         let (sse_tx, _) = broadcast::channel(256);
         Self {
             results: Arc::new(RwLock::new(HashMap::new())),
             sse_tx,
+            write_stats,
         }
     }
 
@@ -56,12 +64,6 @@ impl WebState {
     }
 }
 
-impl Default for WebState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,7 +78,7 @@ mod tests {
     #[tokio::test]
     async fn event_loop_inserts_result_on_probe_completed() {
         let hub = Arc::new(EventHub::new(16));
-        let state = Arc::new(WebState::new());
+        let state = Arc::new(WebState::new(Arc::new(WriteStats::default())));
         Arc::clone(&state).start_event_loop(Arc::clone(&hub));
 
         hub.publish(ProbeEvent::ProbeCompleted(result("web")));
@@ -90,7 +92,7 @@ mod tests {
     #[tokio::test]
     async fn event_loop_updates_existing_probe_keeps_latest() {
         let hub = Arc::new(EventHub::new(16));
-        let state = Arc::new(WebState::new());
+        let state = Arc::new(WebState::new(Arc::new(WriteStats::default())));
         Arc::clone(&state).start_event_loop(Arc::clone(&hub));
 
         let mut r1 = result("db");
@@ -110,7 +112,7 @@ mod tests {
     #[tokio::test]
     async fn event_loop_broadcasts_json_on_sse_tx() {
         let hub = Arc::new(EventHub::new(16));
-        let state = Arc::new(WebState::new());
+        let state = Arc::new(WebState::new(Arc::new(WriteStats::default())));
         let mut sse_rx = state.sse_tx.subscribe();
         Arc::clone(&state).start_event_loop(Arc::clone(&hub));
 
@@ -131,7 +133,7 @@ mod tests {
     async fn event_loop_handles_lagged_events() {
         // capacity=1: any second publish before recv() is processed causes Lagged.
         let hub = Arc::new(EventHub::new(1));
-        let state = Arc::new(WebState::new());
+        let state = Arc::new(WebState::new(Arc::new(WriteStats::default())));
         Arc::clone(&state).start_event_loop(Arc::clone(&hub));
 
         // Yield once so the spawned task runs until it is parked in rx.recv().await.

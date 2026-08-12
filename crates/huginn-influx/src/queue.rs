@@ -8,9 +8,10 @@
 //! than the bug it set out to fix.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use huginn_core::stats::WriteStats;
 use tokio::sync::Notify;
 use tracing::warn;
 
@@ -32,12 +33,15 @@ pub struct RetryQueue {
     capacity_bytes: usize,
     notify: Notify,
     closed: AtomicBool,
-    dropped_batches: AtomicU64,
-    dropped_bytes: AtomicU64,
+    // Depth and evictions are published here rather than kept privately, so the
+    // metrics endpoint can read them without huginn-web having to know this
+    // crate exists. Both are updated under `inner`'s lock, so a scrape never
+    // sees a depth that belongs to a different moment than the eviction count.
+    stats: Arc<WriteStats>,
 }
 
 impl RetryQueue {
-    pub fn new(capacity_bytes: usize) -> Self {
+    pub fn new(capacity_bytes: usize, stats: Arc<WriteStats>) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 batches: VecDeque::new(),
@@ -46,8 +50,7 @@ impl RetryQueue {
             capacity_bytes,
             notify: Notify::new(),
             closed: AtomicBool::new(false),
-            dropped_batches: AtomicU64::new(0),
-            dropped_bytes: AtomicU64::new(0),
+            stats,
         }
     }
 
@@ -77,14 +80,14 @@ impl RetryQueue {
         while !inner.batches.is_empty() && inner.bytes + len > self.capacity_bytes {
             if let Some(old) = inner.batches.pop_front() {
                 inner.bytes -= old.len();
-                self.dropped_batches.fetch_add(1, Ordering::Relaxed);
-                self.dropped_bytes
-                    .fetch_add(old.len() as u64, Ordering::Relaxed);
+                self.stats.record_eviction(old.len() as u64);
             }
         }
 
         inner.bytes += len;
         inner.batches.push_back(batch);
+        self.stats
+            .set_queue_depth(inner.batches.len() as u64, inner.bytes as u64);
         drop(inner);
 
         self.notify.notify_one();
@@ -121,6 +124,8 @@ impl RetryQueue {
                 // no reader could verify.
                 let b = inner.batches.pop_front().expect("front was just checked");
                 inner.bytes -= b.len();
+                self.stats
+                    .set_queue_depth(inner.batches.len() as u64, inner.bytes as u64);
                 true
             }
             _ => false,
@@ -175,11 +180,11 @@ impl RetryQueue {
 
     /// How many batches were evicted because the queue was full.
     pub fn dropped_batches(&self) -> u64 {
-        self.dropped_batches.load(Ordering::Relaxed)
+        self.stats.dropped_batches()
     }
 
     pub fn dropped_bytes(&self) -> u64 {
-        self.dropped_bytes.load(Ordering::Relaxed)
+        self.stats.dropped_bytes()
     }
 }
 
@@ -193,9 +198,15 @@ mod tests {
         Arc::from(s)
     }
 
+    /// A queue whose counters nobody inspects — most tests here are about
+    /// ordering and eviction, not about what is reported.
+    fn queue(capacity_bytes: usize) -> RetryQueue {
+        RetryQueue::new(capacity_bytes, Arc::new(WriteStats::default()))
+    }
+
     #[test]
     fn fifo_order() {
-        let q = RetryQueue::new(1024);
+        let q = queue(1024);
         q.push(batch("first"));
         q.push(batch("second"));
 
@@ -213,7 +224,7 @@ mod tests {
     /// popping must NOT remove that unwritten front.
     #[test]
     fn pop_if_front_ignores_a_batch_that_is_no_longer_front() {
-        let q = RetryQueue::new(12); // fits two 5-byte batches
+        let q = queue(12); // fits two 5-byte batches
         q.push(batch("aaaaa"));
         let held = q.peek().unwrap(); // writer peeks "aaaaa"
         q.push(batch("bbbbb"));
@@ -226,7 +237,7 @@ mod tests {
 
     #[test]
     fn peek_does_not_remove() {
-        let q = RetryQueue::new(1024);
+        let q = queue(1024);
         q.push(batch("only"));
         assert_eq!(&*q.peek().unwrap(), "only");
         assert_eq!(&*q.peek().unwrap(), "only");
@@ -237,7 +248,7 @@ mod tests {
     #[test]
     fn eviction_drops_oldest_not_newest() {
         // Capacity fits two 5-byte batches, not three.
-        let q = RetryQueue::new(12);
+        let q = queue(12);
         q.push(batch("aaaaa"));
         q.push(batch("bbbbb"));
         q.push(batch("ccccc")); // must evict "aaaaa"
@@ -251,9 +262,54 @@ mod tests {
         assert_eq!(q.dropped_bytes(), 5);
     }
 
+    /// What the metrics endpoint reads has to agree with what the queue holds,
+    /// at every step — a depth that lags by one push would show an outage
+    /// draining while it was still filling.
+    #[test]
+    fn published_depth_follows_the_queue_through_push_pop_and_eviction() {
+        let stats = Arc::new(WriteStats::default());
+        let q = RetryQueue::new(12, Arc::clone(&stats));
+
+        q.push(batch("aaaaa"));
+        assert_eq!((stats.queue_batches(), stats.queue_bytes()), (1, 5));
+
+        q.push(batch("bbbbb"));
+        assert_eq!((stats.queue_batches(), stats.queue_bytes()), (2, 10));
+
+        // Over capacity: "aaaaa" is evicted, so the depth must not grow to three.
+        q.push(batch("ccccc"));
+        assert_eq!(
+            (stats.queue_batches(), stats.queue_bytes()),
+            (2, 10),
+            "an eviction has to be reflected in the depth, not only in the counter"
+        );
+        assert_eq!(stats.dropped_batches(), 1);
+        assert_eq!(stats.dropped_bytes(), 5);
+
+        let front = q.peek().unwrap();
+        assert!(q.pop_if_front(&front));
+        assert_eq!((stats.queue_batches(), stats.queue_bytes()), (1, 5));
+    }
+
+    /// A peek that no longer matches the front removes nothing, so it must not
+    /// move the depth either.
+    #[test]
+    fn a_refused_pop_leaves_the_published_depth_alone() {
+        let stats = Arc::new(WriteStats::default());
+        let q = RetryQueue::new(12, Arc::clone(&stats));
+        q.push(batch("aaaaa"));
+        let held = q.peek().unwrap();
+        q.push(batch("bbbbb"));
+        q.push(batch("ccccc")); // evicts the batch `held` points at
+
+        let before = (stats.queue_batches(), stats.queue_bytes());
+        assert!(!q.pop_if_front(&held), "the held batch is gone already");
+        assert_eq!((stats.queue_batches(), stats.queue_bytes()), before);
+    }
+
     #[test]
     fn bytes_tracks_contents() {
-        let q = RetryQueue::new(1024);
+        let q = queue(1024);
         assert_eq!(q.bytes(), 0);
         q.push(batch("12345"));
         assert_eq!(q.bytes(), 5);
@@ -267,7 +323,7 @@ mod tests {
     /// Rejecting it outright would drop that batch forever, every time.
     #[test]
     fn oversized_single_batch_is_still_queued() {
-        let q = RetryQueue::new(4);
+        let q = queue(4);
         q.push(batch("way too long for this queue"));
         assert_eq!(q.len(), 1);
         assert!(q.peek().is_some());
@@ -275,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_batch_returns_none_once_closed_and_empty() {
-        let q = RetryQueue::new(1024);
+        let q = queue(1024);
         q.close();
         assert!(q.wait_for_batch().await.is_none());
     }
@@ -284,7 +340,7 @@ mod tests {
     /// drain.
     #[tokio::test]
     async fn wait_for_batch_drains_before_reporting_closed() {
-        let q = RetryQueue::new(1024);
+        let q = queue(1024);
         q.push(batch("pending"));
         q.close();
 
@@ -296,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_batch_wakes_on_push() {
-        let q = Arc::new(RetryQueue::new(1024));
+        let q = Arc::new(queue(1024));
         let q2 = Arc::clone(&q);
 
         let waiter = tokio::spawn(async move { q2.wait_for_batch().await.map(|b| b.to_string()) });
@@ -313,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_batch_wakes_on_close() {
-        let q = Arc::new(RetryQueue::new(1024));
+        let q = Arc::new(queue(1024));
         let q2 = Arc::clone(&q);
 
         let waiter = tokio::spawn(async move { q2.wait_for_batch().await });

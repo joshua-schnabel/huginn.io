@@ -32,13 +32,6 @@ touches those surfaces.
 
 ## Next
 
-**Self-monitoring for the write path.** Retry-queue evictions, permanently
-rejected batches and writer health are invisible from outside the process: the
-probe gauges cannot show that measurements were taken and then dropped, which is
-exactly the failure mode huginn is built around. A new metric family is additive
-under [`versioning.md`](versioning.md), so this can land in a minor release — and
-its names join the stable surface when it does.
-
 **Re-run the security audit.** Listener handling, secret-file behaviour, the
 shutdown path and the TLS transport have all changed since the 2026-08-02 pass,
 and that pass's own closing recommendation was to repeat it after exactly these
