@@ -26,6 +26,18 @@ if you know which surfaces it protects.
   library.
 - **Log output** — messages, fields and formatting of the pretty/JSON logs.
 
+## Planned for the next major
+
+Changes that would break a config that loads today, so they wait.
+
+- **Control characters in a probe `name` or `target` will be rejected**, rather
+  than rewritten into their textual form with a warning as they are now. A name
+  that cannot be displayed safely is a name worth refusing, which is what the
+  rest of the config validation already does with values that can never work —
+  but refusing one that used to load is a breaking change. F-07 of the
+  2026-08-12 pass in [`security-audit.md`](security-audit.md#pass-2) has the
+  reasoning and the measurements.
+
 ## MSRV
 
 The minimum supported Rust version is `rust-version` in `Cargo.toml` — read it

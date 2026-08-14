@@ -110,7 +110,19 @@ impl ProbeResult {
 /// `char::is_control` is Unicode category Cc: U+0000–U+001F, U+007F–U+009F.
 /// C1 (U+0080–U+009F) is included because some terminals decode it as the 8-bit
 /// form of the same escape sequences.
-fn escape_control_chars(s: &str) -> String {
+/// Render control characters as text so a string is safe to put in front of a
+/// reader.
+///
+/// `\n`, `\r` and `\t` by name, the rest of the Unicode `Cc` range as `\xHH`.
+/// C1 is included because some terminals decode it as the 8-bit form of the
+/// same escapes.
+///
+/// Public because two callers need exactly this and neither can reach the
+/// other: `ProbeResult::failure` below escapes what a *monitored host* writes,
+/// and `AppConfig` escapes what the *operator* writes into a probe name or
+/// target. Both end up in the same sinks — console, Prometheus label values,
+/// InfluxDB tags — and only one of them was covered until F-07.
+pub fn escape_control_chars(s: &str) -> String {
     if !s.chars().any(char::is_control) {
         return s.to_string();
     }
