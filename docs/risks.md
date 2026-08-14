@@ -4,18 +4,21 @@ Live document. Risks are removed when they are resolved, not when they stop bein
 mentioned — R1 went that way when the listener limits landed. Numbers are not
 reused, so a gap means something was fixed, not lost.
 
-The 2026-08-02 audit's findings are closed and recorded in
-[`security-audit.md`](security-audit.md); what is below is what remains open by
-decision, plus the operational risks the audit did not cover.
+Audit findings live in [`security-audit.md`](security-audit.md), closed and open
+alike; what is below is what remains open by decision, plus the operational risks
+no audit covered. The 2026-08-12 pass left F-07 … F-11 open — they are tracked
+there, as findings with reproductions, and move here only if a decision turns one
+into an accepted risk.
 
 ## R4 — Unfixable base-image CVEs stay open in the Security tab
 
 **Severity: low · Status: accepted, monitored**
 
 Debian package CVEs in the distroless base, all LOW/MEDIUM, none with a patched
-version published upstream. They appear as open code-scanning alerts. (17 of
-them when this was last counted, on 2026-08-02 — the count moves with the base
-image and is not worth chasing here; the Security tab has the current one.)
+version published upstream. They appear as open code-scanning alerts. (19 of
+them when this was last counted, on 2026-08-12 — 6 MEDIUM, 13 LOW, none fixable;
+it was 17 on 2026-08-02. The count moves with the base image and is not worth
+chasing here; the Security tab has the current one.)
 
 **Mitigation.** They are deliberately *not* filtered out — the open alert is the
 audit trail. Only fixable CRITICAL/HIGH block the pipeline, so the gate stays

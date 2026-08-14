@@ -1,12 +1,411 @@
-# Security audit — 2026-08-02
+# Security audits
 
-A full security review of huginn.io before the first release: adversarial
-testing against a running instance plus a line-by-line code review, across the
-whole product rather than the application code alone.
+Full security reviews of huginn.io: adversarial testing against a running
+instance plus a line-by-line code review, across the whole product rather than
+the application code alone.
 
-This is a point-in-time report. Practices live in
-[`hardening.md`](hardening.md); to report a vulnerability see
-[`SECURITY.md`](SECURITY.md).
+Each pass is a **point-in-time report** and stays here once written — a superseded
+finding is still the record of what was true, and the passes read against each
+other. Newest first. Practices live in [`hardening.md`](hardening.md); to report
+a vulnerability see [`SECURITY.md`](SECURITY.md).
+
+Finding IDs run continuously across passes, so `F-03` means one thing in this
+document forever.
+
+| Pass | Date | Findings |
+|---|---|---|
+| [2](#pass-2) | 2026-08-12 | F-07 … F-11, all Low |
+| [1](#pass-1) | 2026-08-02 | F-01 … F-06, no CRITICAL or HIGH |
+
+---
+
+# Pass 2 — 2026-08-12 {#pass-2}
+
+The repeat the first pass asked for. Its closing recommendation was to re-run
+after any change to the probe result path, the HTTP listeners or the container
+definition; all three had changed, across 58 files and roughly 5 500 inserted
+lines.
+
+The point of the repeat is not the volume. It is that several of the first
+pass's conclusions had quietly stopped being true:
+
+- It reviewed **two** listeners, both off by default. There are **three** now,
+  and `health` is **on by default** (`crates/huginn-web/src/health.rs`, new).
+- Its "no stored XSS" entry rests on the row `id` being filtered to
+  `[A-Za-z0-9_-]`. That filter was removed when the debug UI stopped deriving
+  DOM ids from probe names — the assurance had lost its own reasoning.
+- The fixes for F-02 and F-03 (`headers.rs`, `serve.rs`) were written *in
+  response* to that pass and so had never themselves been audited.
+- The TLS probe now performs its own handshake with a custom `ServerCertVerifier`.
+  The accepted-risk text describing it described code that no longer existed.
+
+## Scope and method
+
+| | |
+|---|---|
+| **Reviewed** | `cc5f574` (`dev`) — contains `v1.0.0` in full plus eight unreleased commits. Findings that also affect the published `v1.0.0` are marked **[shipped]** |
+| **Toolchain** | rustc 1.94.0, cargo-deny 0.20.2, Docker 29.3.1 — **identical to pass 1**, so differences below are the code's and not the tools' |
+| **Runtime tested** | `huginn:ci` built from this tree, run under `docker-compose.integration.yml` and, separately, under the hardening `docker-compose.yml` applies |
+| **Out of scope** | InfluxDB itself, the host OS, the GitHub platform |
+
+Method unchanged from pass 1, deliberately: per domain, form attack hypotheses
+and **prove or disprove** them — dynamically where possible, by tracing the code
+path otherwise. Disproved hypotheses are recorded
+([below](#checked-2)), because a later change turns any of them into a real
+finding. That is not theoretical here: it is exactly what happened to the stored-XSS
+entry above.
+
+Eight domains rather than seven. CI/CD was one bullet in pass 1 and is a domain
+of its own now: the pipeline has since gained skopeo with registry credentials,
+the digest recorded in the release tag, `RELEASE_PAT`, a GPG signing key, three
+fan-in gates and stage chaining.
+
+The attack setup: a hostile SMTP server whose banner carries ANSI SGR, an OSC
+"set window title" sequence, HTML and line-protocol metacharacters; probe
+**names** and **targets** seeded with the same payloads plus `__proto__`,
+`constructor` and the `db.primary` / `db/primary` collision pair; a half-open
+connection flood; and the full method/path/auth matrix against all three
+listeners.
+
+## Findings
+
+| ID | Severity | Component | Finding | Status |
+|---|---|---|---|---|
+| [F-07](#f-07) | Low | `huginn-web`, `huginn-influx` | Control characters in operator-supplied probe names reach console, Prometheus labels and InfluxDB tags raw **[shipped]** | Open |
+| [F-08](#f-08) | Low | `docker-compose.integration.yml` | The integration suite exercises the container **unhardened**, so no gate protects the hardening that ships **[shipped]** | Open |
+| [F-09](#f-09) | Low | `huginn-web` | The connection cap trades memory exhaustion for denial of service on the flooded listener, and the residual is undocumented **[shipped]** | Open |
+| [F-10](#f-10) | Low | repository settings | Nothing enforces SHA-pinning of actions; it is held by hand | Open |
+| [F-11](#f-11) | Low | `ci.yml` | The `publish` job's security comment is false — third-party actions do run between the credentialed checkout and the tag push | Open |
+
+**No CRITICAL or HIGH finding was identified.** Neither did pass 1; that is a
+statement about two passes, not a guarantee about a third.
+
+---
+
+### F-07 — Control characters from configuration reach three sinks raw {#f-07}
+
+**Severity:** Low · **Status:** Open · **[shipped]**
+
+F-01's fix escapes the whole Unicode Cc range in `ProbeResult::failure`, which
+is where every probe builds a failure — so the string a *remote* host writes is
+covered at every sink at once. Nothing does the same for the strings the
+*operator* writes: `probe.name` and `probe.target`. Name validation requires
+non-empty and unique, and nothing else.
+
+**Reproduction.** A probe configured as
+
+```
+name: "evil\x1b[31mNAME\x1b]0;PWNED\x07<img src=x onerror=alert(1)> q=\" b=\\ c=, e=="
+```
+
+against the image built from this tree:
+
+| Sink | Result |
+|---|---|
+| Console — pretty formatter and the `tracing` line | **raw** |
+| `/metrics` label values | **raw** — 3 exposition lines, 6 × ESC, 3 × BEL |
+| InfluxDB tag values | **raw, and persisted** — 240 × ESC, 120 × BEL in a three-minute query result |
+| `/metrics/latest` (JSON) | escaped on the wire — `serde_json` emits control characters as `\u001b`, per the JSON grammar |
+| Debug UI | inert — `escHtml` output lands in element text context, where ESC and BEL do nothing |
+
+`escape_label` and `escape_tag` are not at fault: both correctly escape what
+their formats define as special (`"`, `\`, `,`, newlines), and the exposition
+format and line protocol simply say nothing about C0. The same payload's quote
+and backslash came back correctly escaped in the same lines.
+
+**Impact.** The same shape as F-01, including persistence: anyone who `curl`s
+`/metrics`, reads the container's logs, or prints a stored InfluxDB tag in a
+terminal has the sequences executed — colour, cursor, window title, and with
+`\r` the ability to overwrite the line just written and so forge or hide output.
+
+**Why Low rather than Medium.** F-01's input was a monitored host — the untrusted
+party huginn is pointed at. This input is the operator's own configuration file,
+a trusted read-only mount. Whoever can write it already decides what huginn does,
+so no privilege boundary is crossed. It is a defence-in-depth gap and an
+inconsistency, not an escalation.
+
+**Worth noting where it sits.** Pass 1 explicitly tested "Prometheus exposition
+injection" and found it sound — with quote, backslash and comma payloads. The C0
+range in a label value was not among them, which is how a checked domain still
+had a gap.
+
+---
+
+### F-08 — The shipped hardening is exercised by no gate {#f-08}
+
+**Severity:** Low · **Status:** Open · **[shipped]**
+
+`docker-compose.yml` carries the full F-04 hardening. `docker-compose.integration.yml`
+— the stack the system integration suite runs against, in CI and locally — carries
+none of it.
+
+**Reproduction.** `docker inspect` of the running integration stack:
+
+```
+ReadonlyRootfs: false     CapDrop: []        SecurityOpt: []
+Memory:         0         PidsLimit: <nil>
+```
+
+against `docker-compose.yml`, which sets `read_only: true`, `cap_drop: [ALL]`,
+`no-new-privileges:true`, `mem_limit: 256m` and `pids_limit: 128`. Confirmed
+good in both: `User: nonroot:nonroot`, `Privileged: false`, loopback-only port
+publishing, and no secret in `Config.Env`.
+
+**Impact.** Every gate that claims to test the container tests the *unhardened*
+one. A change that cannot survive a read-only rootfs — a temp file, a cache
+directory — or that exceeds 128 processes or 256 MiB would pass CI and fail on
+first deployment. The hardening is a documented part of the product
+([`hardening.md`](hardening.md)) with nothing holding it up.
+
+**The configuration itself is sound today**, which is what makes this a missing
+gate rather than a broken setting. Verified by running the same image under
+exactly the shipped flags: `read_only`, `cap_drop ALL`, `no-new-privileges`,
+`--memory 256m`, `--pids-limit 128` → container `healthy`, 64 probe results,
+writes accepted by InfluxDB, and **zero** filesystem or permission errors in the
+log.
+
+---
+
+### F-09 — The connection cap trades memory for availability {#f-09}
+
+**Severity:** Low · **Status:** Open · **[shipped]**
+
+F-03's fix works, and its measured effect is large. Repeating pass 1's flood —
+4 000 half-open connections, each sending a partial request head and then
+nothing:
+
+| | 2026-08-02 | 2026-08-12 |
+|---|---|---|
+| Container RSS | 29.5 → 113.3 MiB | 8.55 → **19.12 MiB** |
+| Process tasks (PIDs) | — | 40 → **40** |
+| Connections closed by the server | 0 | **3 894 of 4 000** |
+
+The 256-permit cap and the 10-second header-read deadline both fire. What is not
+written down anywhere is the other half of the trade: while the flood runs, the
+**flooded listener stops serving**. Three of five legitimate requests to it timed
+out at 8 s; the two that were served took 0.75 s and 2.8 s.
+
+**The blast radius is narrow, and that is the important part.** The permits are
+per listener. During a flood of the UI listener, measured over five samples
+each: `metrics` answered in 3–4 ms and `health` in 0.3 ms, every time. The
+container stayed `healthy` with `FailingStreak: 0`, and `huginn healthcheck`
+exited 0 — so a flood of a published debug port cannot fail the HEALTHCHECK and
+make an orchestrator restart a working monitor. That was the amplification worth
+checking, and it does not exist.
+
+**Impact.** An attacker who can reach a listener can deny that listener for the
+length of the timeout window, repeatedly, at negligible cost. Both listeners are
+off by default and bind loopback; the debug UI is unauthenticated by decision
+([ADR-0009](adr/0009-debug-ui-stays-unauthenticated.md)). The process, the
+probes and the InfluxDB writer are unaffected — measurement continues throughout.
+
+**This is close to being an accepted risk rather than a finding**, and may become
+one: bounding memory at the cost of latency on a debug surface is the right
+trade. It is filed as a finding because nobody has been asked to accept it —
+F-03's text presents the fix as complete and says nothing about what replaced the
+memory growth.
+
+---
+
+### F-10 — SHA-pinning is practice, not policy {#f-10}
+
+**Severity:** Low · **Status:** Open
+
+`AGENTS.md` §9 and pass 1 both state that every action is pinned to a
+40-character commit SHA, because a tag is movable and a compromised upstream
+would otherwise reach CI with no Dependabot PR. **It is true today** — all 13
+distinct `uses:` references across the six workflows are SHA-40 pinned, verified
+mechanically.
+
+Nothing enforces it. The repository's Actions settings report:
+
+```
+allowed_actions: "all"      sha_pinning_required: false
+```
+
+and no gate covers the gap either: actionlint has no such rule, Semgrep's
+`p/rust` and `p/secrets` do not look at `uses:`, and Trivy scans images. The next
+workflow edit may write `actions/checkout@v5` and every check will stay green.
+
+**Impact.** Latent. It is the exact shape of F-06 — a policy that holds only
+because everyone has so far remembered it — and GitHub now offers the switch that
+would make it structural.
+
+---
+
+### F-11 — `publish`'s security comment is false {#f-11}
+
+**Severity:** Low · **Status:** Open
+
+`ci.yml`'s `publish` job is the one checkout in that file that keeps its git
+credentials, because its last step runs `git push origin "$TAG"` with
+`RELEASE_PAT`. The comment justifying that reads:
+
+> Nothing between here and there executes third-party code — no cargo, no build
+> — so the token stays inside a job that only runs skopeo, jq and git.
+
+Four third-party actions run between that checkout and the tag push:
+`actions/download-artifact`, `docker/metadata-action`,
+`docker/setup-buildx-action` and `docker/login-action`. Each executes with the
+workspace — including the `.git/config` holding the credential — in reach.
+
+**Impact.** Small in practice: all four are SHA-pinned, and two of them are
+GitHub's and Docker's own. The finding is the **claim**, not the exposure. It is
+written where a maintainer goes to decide whether a change to this job is safe,
+and it tells them a job property that does not hold — so the next action added
+here will be added on the strength of reasoning that was already wrong.
+
+The other two credentialed checkouts in the repository (`release-dispatch.yml`'s
+`release`, `release.yml`'s `prepare-dev`) were checked for the same thing: both
+run only shell steps after checkout, so for those the claim does hold.
+
+## Checked, not exploitable {#checked-2}
+
+Tested and did not hold. Recorded because a later change turns any of these into
+a finding — see what happened to pass 1's stored-XSS entry.
+
+- **F-01 still holds for remote input.** The hostile 5xx banner reaches the
+  console as the literal text `\x1b[31m…`. The `^[` sequences visible in the same
+  log lines are huginn's own formatter colours, not the attacker's.
+- **Stored XSS in the debug UI, re-tested against the rewritten `app.js`** rather
+  than inherited. `escHtml` still covers `& < > "` and still does not cover `'`,
+  which remains safe only because nothing is interpolated into an attribute. The
+  removed DOM-id derivation cannot be a collision source any more because there is
+  no derived id: rows are held in a `Map` keyed on the raw name. `__proto__` and
+  `constructor` were configured as probe names — a `Map` is not an object, so
+  neither reaches a prototype. The `db.primary` / `db/primary` pair produced two
+  rows.
+- **The `health` listener discloses nothing.** It serves the two bytes `OK` and
+  nothing else. `GET /health` → 200; `POST /health` → 405; `/`, `/metrics`,
+  `/events`, `/health/../etc/passwd` → 404. It is not reachable from the host at
+  all (no published port, and it has no `bind` key to widen), and was reached for
+  this test only by entering the container's network namespace.
+- **Security headers on every listener and every status.** CSP,
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and
+  `Cache-Control: no-store` are present on `ui` 200/404, on `metrics` 200 **and
+  401**, on `/assets/app.js`, and on `health`.
+- **`/metrics` authentication.** No header, wrong key, lowercase `bearer`, `Basic`
+  scheme, key as a query parameter, a one-character-short prefix and the key with
+  one character appended → `401` for all seven; the exact `Bearer <key>` → `200`.
+  The 401 body is 13 bytes and contains no metric data. The lowercase rejection
+  remains a deviation from RFC 7235 and remains a client-compatibility nit.
+- **Method and path handling.** `POST/PUT/DELETE/PATCH/OPTIONS/TRACE` → 405 on
+  both `ui` and `metrics`; `/assets/../../etc/passwd`, `//`, `/health%00`,
+  `/../Dockerfile` and a percent-encoded traversal → 404.
+- **The TLS probe's dangerous verifier is contained.** `ReadOnlyCertVerifier` is
+  module-private with no `pub` export, constructed once (`tls.rs:199`), on a
+  config built `with_no_client_auth()` — it presents no credential. The other two
+  TLS clients in the workspace (`huginn-influx`'s writer, the HTTP probe) are
+  `reqwest::Client::builder()` with default verification, and
+  `danger_accept_invalid_certs` appears nowhere in the tree. Pass 1's
+  accepted-risk wording therefore still describes the rewritten code.
+- **Secret files are fail-closed.** Empty → refuses, naming the reason.
+  Whitespace-only → refuses. Missing → refuses. Each stops startup and prints
+  the path and cause without printing content.
+- **A malformed token does not lose data silently** — the failure F-05 was about.
+  With a token containing a NUL byte, huginn starts, and every write fails as a
+  **retryable** transport error rather than a permanent rejection, so batches
+  queue instead of being discarded: `queue_batches 70`,
+  `batches_rejected_total 0`, `batches_dropped_total 0`,
+  `last_write_success_timestamp_seconds 0`. That is precisely the signature the
+  write-path metrics were added to produce.
+- **Strict config loading rejects and explains.** An invented key was refused at
+  startup with the offending key named, the valid alternatives listed, and the
+  line and column given.
+- **Workflow script injection.** Only seven `${{ }}` interpolations exist inside
+  any `run:` block across the six workflows, and they are `github.repository`
+  (once) and `runner.temp` (six times). Everything attacker-adjacent —
+  `vars.*`, `secrets.*`, step outputs, `github.actor` — reaches the shell through
+  `env:`, which is the correct pattern and an improvement on pass 1, when
+  `vars.*` still appeared in shell bodies. No `pull_request_target` anywhere.
+- **Credential reach.** Every secret is confined to a `push`-only job
+  (`ci.yml`'s `push` and `publish`, both `if: github.event_name == 'push'`) or to
+  a release workflow. Fourteen of the seventeen checkouts set
+  `persist-credentials: false`; the three that do not are the three that push
+  (see F-11). `dependabot-auto-merge.yml` declares `contents: write` on an
+  `on: pull_request` trigger, which a fork cannot obtain — GitHub caps a fork
+  PR's token at read regardless of the declared permissions — and its job is
+  additionally gated on the PR author being `dependabot[bot]`.
+- **A hand-pushed tag cannot publish.** `ci.yml` does not run on tags at all.
+  `release.yml` does, and refuses a tag whose commit is not an ancestor of
+  `main`; it then compares the `image-digest:` recorded in the tag's annotation
+  against what the registry currently serves and exits 1 on a mismatch, on an
+  unresolvable image, and only degrades to `verified=no` for tags predating the
+  mechanism.
+- **Supply chain.** `cargo deny check` → `advisories ok, bans ok, licenses ok,
+  sources ok`. The ban mechanism was proved to fire, as in pass 1, by additionally
+  banning `ring` — a crate that *is* in the tree — in a throwaway copy of the
+  config: `error[banned]: crate 'ring = 0.17.14' is explicitly banned`. The
+  repository's `deny.toml` was not modified (`git diff` empty).
+- **The four direct dependencies added since pass 1 added nothing to the tree.**
+  `rustls` 0.23.43, `tokio-rustls` 0.26.4, `hyper-util` 0.1.20 and `x509-parser`
+  0.18.1 are present at **identical versions** in `Cargo.lock` at pass 1's
+  commit — the claim that promoting them to direct dependencies cost no
+  supply-chain surface is exact.
+- **The two pins Dependabot cannot update are current.** `semgrep/semgrep:1.172.0`
+  and `rhysd/actionlint:1.7.12` are each the latest upstream release as of
+  2026-08-12 (published 2026-07-28 and 2026-03-30). The manual-bump risk is real
+  and has not yet materialised.
+
+## Accepted risk
+
+Unchanged in substance from pass 1, re-confirmed against the current code.
+
+1. **The debug UI is unauthenticated.** Now a recorded decision rather than an
+   open question — [ADR-0009](adr/0009-debug-ui-stays-unauthenticated.md).
+   `metrics.api_key_file` still protects only the Prometheus listener.
+2. **The TLS probe accepts invalid certificates.** Required, and re-verified
+   against the rewritten implementation above rather than carried forward.
+3. **Base-image CVEs stay visible as open alerts.** Recounted on 2026-08-12:
+   **19 total — 0 CRITICAL, 0 HIGH, 6 MEDIUM, 13 LOW, and none with a published
+   fix.** Pass 1 counted 17 on 2026-08-02. The blocking gate is fixable
+   CRITICAL/HIGH, which is empty.
+
+## Recommendations
+
+In rough priority order.
+
+1. **Extend the Cc escaping to configuration-supplied strings**, or reject
+   control characters in probe names and targets at config load. Rejecting is
+   more in keeping with the rest of 1.0's strict loading: a name nobody can
+   safely display is a name worth refusing (F-07).
+2. **Give the integration stack the hardening the shipped stack has**, so the
+   suite tests what ships (F-08).
+3. **Turn on `sha_pinning_required`** in the repository's Actions settings, and
+   consider narrowing `allowed_actions` (F-10).
+4. **Correct or remove the `publish` comment**, or better, set
+   `persist-credentials: false` there too and hand the token only to the final
+   `git push` step — which would make the claim true instead of documenting that
+   it is not (F-11).
+5. **Decide on F-09** and record the outcome, either as an accepted risk in
+   [`risks.md`](risks.md) or as a change.
+6. **Validate secret files as legal HTTP header values at load**, so a token
+   containing a control byte is refused at startup rather than after the queue
+   has filled. Nothing is lost silently today, so this is hardening, not a fix.
+7. **Turn off "Allow GitHub Actions to create and approve pull requests"**
+   (`can_approve_pull_request_reviews: true`). It grants nothing today, because
+   the rulesets require zero approving reviews — which is exactly why removing it
+   costs nothing and closes a path that would matter the day that changes.
+8. **Re-run this audit** after any change to the probe result path, the HTTP
+   listeners, or the container definition. Unchanged from pass 1, and it was the
+   right advice: every one of those had changed, and each had invalidated
+   something.
+
+---
+
+# Pass 1 — 2026-08-02 {#pass-1}
+
+The pre-release review. Kept in full: its findings are the record of what was
+true, and pass 2 above is largely a conversation with it.
+
+**What of it still stands, as of pass 2:** all six fixes hold. F-01's escaping
+covers every remote path tested; F-02's headers are on all three listeners;
+F-03's limits are measured above; F-05's fail-closed behaviour was re-tested
+across four bad-file cases; F-06's bans were proved to fire. Two of its
+"checked, not exploitable" entries are superseded — the stored-XSS entry rested
+on a filter that no longer exists (re-tested and still sound, for different
+reasons), and the `expect()` count has changed. F-04's fix reached the shipped
+compose file but not the integration one, which is F-08.
 
 ## Scope and method
 

@@ -305,7 +305,7 @@ workflow permissions must be reasoned about explicitly and flagged in the PR.
 | Symptom → cause → fix | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
 | Testing pyramid, coverage, no-sleep rule | [`docs/testing.md`](docs/testing.md) |
 | Container hardening | [`docs/hardening.md`](docs/hardening.md) |
-| The 2026-08-02 security audit | [`docs/security-audit.md`](docs/security-audit.md) |
+| Security audits, newest first | [`docs/security-audit.md`](docs/security-audit.md) |
 | Vulnerability reporting | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Contributor workflow | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | SemVer policy, stable surface | [`docs/versioning.md`](docs/versioning.md) |
