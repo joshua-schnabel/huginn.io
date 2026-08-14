@@ -46,6 +46,36 @@ the shutdown drain gives the writer a bounded window to flush before exit.
 one with a volume, to cover a case where the orchestrator is already restarting
 things — [ADR-0004](adr/0004-bounded-retry-queue.md).
 
+## R7 — A connection flood denies the listener it floods
+
+**Severity: low · Status: accepted by design**
+
+The connection cap that closed [F-03](security-audit.md#f-03) bounds memory by
+making excess peers wait for a permit, and permits free only when the
+header-read deadline expires. So a peer that can reach an enabled listener can
+hold its 256 permits with slow request heads and make legitimate requests to
+*that listener* wait — measured on 2026-08-12 under a 4 000-connection
+half-open flood, three of five timed out.
+
+**Mitigation.** The permits are per listener, which is what keeps this narrow:
+during the same flood the other two listeners answered in 0.3–4 ms throughout,
+the container stayed healthy and `huginn healthcheck` kept exiting 0 — so a
+flood of a published debug port cannot fail the container's HEALTHCHECK and make
+an orchestrator restart a working monitor. Probing, batching and the InfluxDB
+writer are untouched: measurement continues throughout. The deadline was cut
+from ten seconds to three, which shortens the denial in proportion.
+
+**Residual.** An optional, off-by-default, loopback-by-default debug surface can
+be made unresponsive by whoever can already reach it. The debug UI is
+unauthenticated by decision anyway
+([ADR-0009](adr/0009-debug-ui-stays-unauthenticated.md)), so an attacker in that
+position can already read everything it serves.
+
+**Not planned to change.** The alternative to waiting is refusing, and refusing
+requires per-peer accounting on a socket that is meant to be small. Bounding
+memory at the cost of latency here is the right way round — the failure that
+matters is the monitor dying, and it no longer can. F-09 of the 2026-08-12 pass.
+
 ## O1 — The release path has run, but not yet under one build
 
 **Open question, not a risk to a deployment**

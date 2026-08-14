@@ -104,8 +104,11 @@ must not (they are the required checks). `needs` orders everything.
 
 **Gotchas**
 
-- `publish` is the only job in this file whose checkout keeps its credentials,
-  because it pushes the tag. It runs no cargo — see
+- `publish` checks out **twice**: credential-free at the top for the changelog
+  read and the remote tag check, and again with the token immediately before the
+  push that needs it. One checkout at the top would have put the credential
+  within reach of the four third-party actions this job uses, which is what it
+  did until F-11 — see
   [`ci-cd.md`](ci-cd.md#what-can-reach-a-credential).
 - The tag is pushed with `RELEASE_PAT` where available. With `GITHUB_TOKEN`,
   GitHub's recursion guard means `release.yml` never fires.

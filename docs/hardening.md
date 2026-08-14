@@ -63,7 +63,7 @@ secrets/
 
 ### Request limits on the HTTP listeners
 
-Both listeners cap concurrent connections at **256** and give a peer **10
+Every listener caps concurrent connections at **256** and gives a peer **three
 seconds** to send its request head. A connection that has sent nothing complete
 by then is dropped.
 
@@ -71,6 +71,17 @@ This closes [F-03](security-audit.md#f-03). The measurement that opened it: 4 00
 idle half-open connections raised RSS from 29 MiB to 113 MiB (~21 KiB each) while
 both listeners kept serving normally, and nothing capped the count — the bound
 was the container's memory limit, not the application.
+
+**What it trades, measured on 2026-08-12 under the same flood.** RSS 8.55 →
+19.12 MiB, tasks flat at 40, and 3 894 of 4 000 connections closed by the
+server: the memory exhaustion is gone. In its place, the *flooded* listener
+stops serving while the flood runs — three of five legitimate requests to it
+timed out, because a new peer waits for a permit and permits free only when the
+deadline expires. The permits are per listener, so the blast radius stops there:
+the other two answered in 0.3–4 ms throughout, the container stayed healthy, and
+`huginn healthcheck` kept exiting 0. That residual is accepted and tracked as
+**R7** in [`risks.md`](risks.md); the deadline was cut from ten seconds to three
+to shorten it, which is the whole reason that number is not larger.
 
 **Neither limit is a `tower` layer, and that is the point.** A layer wraps the
 service, and the service is not reached until hyper has parsed a request; a
