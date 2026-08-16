@@ -10,7 +10,7 @@
 # inside the artefact people run. The `tag@digest` form keeps the version
 # readable — and Dependabot updates both halves together, so this does not
 # freeze the builder in place.
-FROM rust:1.97-slim@sha256:3b2879047d42784ca9403ad20c51ed3df361a50f1df96f5777d39b4e33aa65cd AS builder
+FROM rust:1.97-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
 
 WORKDIR /build
 
@@ -43,7 +43,7 @@ RUN find . -name "*.rs" -exec touch {} \; && cargo build --release --locked
 # two builds of one commit could differ. R4 in docs/risks.md makes keeping this
 # current an operational duty; Dependabot moves the digest, and the Trivy gate
 # is what says when it must.
-FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36
+FROM gcr.io/distroless/cc-debian12@sha256:6e1871c34683dc9ee996d13084497783fd98ac0200213d0826625f4e9d4be1d0
 
 COPY --from=builder /build/target/release/huginn /usr/local/bin/huginn
 COPY config/config.example.yaml /etc/huginn/config.yaml
