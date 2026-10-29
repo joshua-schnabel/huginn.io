@@ -433,7 +433,7 @@ jobs:
       # .trivyignore.yaml is read HERE and not by the full scan above, so a
       # suppressed finding still reaches the Security tab. Every entry in it
       # carries an expiry date and a reason the vulnerable code cannot be
-      # reached in huginn's deployment — see the file. It is empty today.
+      # reached in huginn's deployment — see the file.
       - name: Trivy - blocking scan (fixable CRITICAL/HIGH only)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
