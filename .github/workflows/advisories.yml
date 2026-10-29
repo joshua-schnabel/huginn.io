@@ -1,0 +1,60 @@
+name: Advisories
+
+# A daily `cargo deny check advisories` against `dev` and `main`, whether or not
+# anything was pushed.
+#
+# ci.yml's supply-chain job runs only on a push or a pull request, and an
+# advisory is published against a lockfile that has not changed — it becomes
+# true about a tree nobody touched. `dev` went quiet on 2026-08-16; by
+# 2026-10-25 nine RustSec advisories applied to it, and nothing had reported a
+# single one until a Dependabot PR happened to run the gate that day. By then
+# every pull request was red on a lockfile none of them had caused.
+#
+# Both branches, because they answer different questions: `main` is what the
+# published image was built from, `dev` is what the next release will ship. An
+# advisory against `main` alone is a reason to release; one against `dev` is a
+# reason to fix before releasing.
+#
+# Advisories only. Licences, bans and sources change only when the lockfile
+# does, and ci.yml checks those then. An advisory is the one verdict that changes
+# about an unchanged tree.
+#
+# Three platform behaviours, each of which looks like a bug when met cold:
+#   - `schedule` runs the workflow file from the DEFAULT branch, `main`. A change
+#     to this file takes effect once it has been released, and `ref:` below is
+#     the only reason the job looks at `dev` at all.
+#   - In a public repository GitHub disables scheduled workflows after 60 days
+#     without repository activity — the very kind of quiet spell this exists
+#     for. If it stops running, re-enable it on the Actions tab.
+#   - A failed scheduled run notifies the user who last changed the `cron` line,
+#     not whoever is watching the repository.
+on:
+  schedule:
+    - cron: "17 5 * * *"   # daily, off the hour so it does not queue behind everyone else's
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: Advisories · ${{ matrix.ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # One branch's result says nothing about the other's.
+      fail-fast: false
+      matrix:
+        ref: [dev, main]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: cargo deny check advisories
+        run: cargo deny check advisories

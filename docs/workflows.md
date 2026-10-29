@@ -11,6 +11,7 @@ The pipeline's rationale is [`ci-cd.md`](ci-cd.md); cutting a release is
 |---|---|---|
 | `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
+| `advisories.yml` | daily · manual | `cargo deny check advisories` against `dev` and `main`, pushed to or not |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
@@ -151,6 +152,39 @@ feature branches before a PR exists.
 - Trivy is **not** here. It lives in `ci.yml`'s `scan` job so it scans the exact
   image that ships; when it was here it built its own image, so the scanned image
   was never the published one.
+
+## `advisories.yml` — the daily advisory scan
+
+**Runs** daily on a schedule, and manually. Checks out `dev` and `main` in two
+independent jobs and runs `cargo deny check advisories` against each.
+
+It exists because an advisory is the one verdict that changes about a tree
+nobody touched. `ci.yml`'s supply-chain job runs only on a push or a PR, so a
+quiet branch is an unmeasured one: `dev` sat still from 2026-08-16, and by
+2026-10-25 nine RustSec advisories applied to it without anything having said
+so. The first run to notice was a Dependabot PR — which then failed, like every
+other PR, on a lockfile it had not caused.
+
+- **`main`** is what the published image was built from: a failure there alone
+  is a reason to release.
+- **`dev`** is what the next release ships: a failure there is a reason to fix
+  before releasing.
+
+Only advisories. Licences, bans and sources move only when the lockfile does,
+and `ci.yml` checks them at that moment.
+
+**Gotchas**
+
+- `schedule` always runs the workflow file from the **default branch**, `main`.
+  A change to this file takes effect once it has been released, and the job sees
+  `dev` only because it checks it out by name.
+- GitHub **disables scheduled workflows** in a public repository after 60 days
+  without repository activity — exactly the kind of quiet spell this is for. If
+  the runs stop, re-enable the workflow on the Actions tab.
+- A failed scheduled run notifies whoever last changed the `cron` line, not the
+  repository's watchers.
+- It reports; it does not block anything. The gate is still `ci.yml`, which will
+  fail on the next PR for the same reason — this makes sure you hear first.
 
 ## `auto-pr.yml` — draft PR opener and branch janitor
 
