@@ -1,0 +1,173 @@
+name: Lockfile maintenance
+
+# A weekly `cargo update` against `dev`, opened as one pull request that runs
+# the full pipeline like any other.
+#
+# Dependabot covers direct dependencies only, by decision (dependabot.yml,
+# #33/#36), and its security updates come from the GitHub Advisory Database,
+# which does not carry every RustSec advisory. Between the two, transitive
+# crates went unpatched: on 2026-10-25 nine RustSec advisories applied to `dev`,
+# four of them in crates Dependabot never proposes and five that it could not
+# see at all. A full `cargo update` reaches every crate in the graph, and Cargo
+# resolves that graph itself — the inconsistent lockfile #33 produced came from
+# Dependabot's updater editing it crate by crate, not from Cargo.
+#
+# ── The MSRV floor ────────────────────────────────────────────────────────
+# Run with `incompatible-rust-versions = "fallback"`, so Cargo picks the newest
+# release of each crate that still builds on `rust-version` instead of the
+# newest outright. Without it this job would lift a dependency above the floor
+# every week, and `Source · MSRV` would fail every week on the same crate.
+# Cargo.toml warns that fallback could choose a release without a security fix;
+# here that would not be silent — the PR's `cargo deny check` fails on it, and
+# that is the moment to raise the floor deliberately.
+#
+# ── The token ─────────────────────────────────────────────────────────────
+# Events created with GITHUB_TOKEN start no workflow run, so a PR opened with it
+# would never run the required checks. The token is minted from a GitHub App
+# (`maintenance` environment, which only `main` may use — a scheduled run always
+# comes from the default branch), lives for an hour, and carries `contents` and
+# `pull-requests` write on this repository only. It is minted after
+# `cargo update`, and nothing third-party runs after it: the only
+# steps that see it are this file's own shell and `gh`.
+#
+# ── Not auto-merged ───────────────────────────────────────────────────────
+# Dependabot's `cooldown` holds a fresh release back for days, so a malicious
+# publication has time to be yanked; `cargo update` has no such wait. Every
+# gate still runs, but none of them recognises a malicious crate that compiles
+# and passes its tests. The PR waits for a human, which is a click a week.
+#
+# The branch is `maintenance/lockfile`, outside auto-pr.yml's naming rule and
+# listed in its `branches-ignore` — otherwise that workflow would delete it on
+# sight, or race this one to open the PR under its own, approval-parked author.
+on:
+  schedule:
+    - cron: "41 4 * * 1"   # Mondays, before the week's work rather than during it
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: lockfile-maintenance
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: cargo update → PR into dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: maintenance
+    steps:
+      - name: Check out dev, without a credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      # Resolution only: `cargo update` reads the index and writes Cargo.lock.
+      # It compiles nothing and runs no build script, so no crate's code
+      # executes in this job.
+      - name: cargo update, held to the MSRV floor
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: cargo update 2>&1 | tee "$RUNNER_TEMP/update.log"
+
+      - name: Anything to propose?
+        id: diff
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock is already current; nothing to propose."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --stat -- Cargo.lock
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint a one-hour app token
+        if: steps.diff.outputs.changed == 'true'
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.MAINTENANCE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MAINTENANCE_APP_PRIVATE_KEY }}
+          # Narrower than the installation if it ever grows: the token gets
+          # these two and nothing else.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Commit through the API, then open or refresh the PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BRANCH: maintenance/lockfile
+        run: |
+          # Through the Git database API rather than `git push`, for the
+          # signature. Both branch rulesets carry `required_signatures`, and
+          # GitHub signs a commit an app creates through the API when it carries
+          # no custom author, committer or signature. A `git commit` here would
+          # be unsigned. It also means git never holds the token.
+          #
+          # Blob, tree and commit first, the branch last and in one update: the
+          # branch never points anywhere but at a finished commit, so an open PR
+          # never passes through a state with no diff against `dev`.
+          api="repos/${GITHUB_REPOSITORY}/git"
+          base=$(git rev-parse HEAD)
+          base_tree=$(git rev-parse 'HEAD^{tree}')
+
+          # The update list is the PR's substance: what moved, and what was
+          # held back for the floor ("available: … requires Rust …").
+          changes=$(grep -E '^ +(Updating|Adding|Removing|Downgrading) [^ ]+ v[0-9]' "$RUNNER_TEMP/update.log" | sed 's/^ *//' || true)
+
+          # jq builds every request body, so neither the lockfile nor the update
+          # list is ever spliced into JSON by hand.
+          blob=$(jq -n --rawfile lock Cargo.lock '{content: ($lock | @base64), encoding: "base64"}' \
+            | gh api -X POST "$api/blobs" --input - --jq .sha)
+          tree=$(jq -n --arg base_tree "$base_tree" --arg blob "$blob" \
+            '{base_tree: $base_tree, tree: [{path: "Cargo.lock", mode: "100644", type: "blob", sha: $blob}]}' \
+            | gh api -X POST "$api/trees" --input - --jq .sha)
+          jq -n --arg tree "$tree" --arg base "$base" --arg changes "$changes" \
+            '{tree: $tree, parents: [$base],
+              message: ("chore(deps): refresh Cargo.lock\n\nWeekly cargo update against dev, held to the rust-version floor.\n\n" + $changes)}' \
+            | gh api -X POST "$api/commits" --input - > "$RUNNER_TEMP/commit.json"
+          commit=$(jq -r .sha "$RUNNER_TEMP/commit.json")
+
+          # Checked rather than assumed. An unsigned commit would open a PR whose
+          # checks all pass and whose merge button stays blocked, with nothing
+          # failing anywhere — better to fail here, naming the reason.
+          if [ "$(jq -r .verification.verified "$RUNNER_TEMP/commit.json")" != "true" ]; then
+            echo "::error::GitHub did not sign the commit ($(jq -r .verification.reason "$RUNNER_TEMP/commit.json")); both rulesets require signatures, so the PR could never merge"
+            exit 1
+          fi
+
+          # The branch is this job's alone and is rebuilt from current `dev`
+          # every week, so it is moved rather than appended to.
+          if gh api "$api/ref/heads/${BRANCH}" --silent 2>/dev/null; then
+            gh api -X PATCH "$api/refs/heads/${BRANCH}" -f sha="$commit" -F force=true --silent
+          else
+            gh api -X POST "$api/refs" -f ref="refs/heads/${BRANCH}" -f sha="$commit" --silent
+          fi
+          echo "Committed $commit, signed by GitHub."
+
+          {
+            echo "Weekly \`cargo update\` against \`dev\`, from \`.github/workflows/lockfile-maintenance.yml\`."
+            echo
+            echo "Resolved with \`incompatible-rust-versions = \"fallback\"\`: a crate whose newest release needs more than \`rust-version\` stays on the newest one that does not, and says so below as *available*."
+            echo
+            echo '```text'
+            printf '%s\n' "$changes"
+            echo '```'
+            echo
+            echo "**Not auto-merged.** \`cargo update\` has no cooldown, so a freshly published release reaches this PR the same week. Every gate runs; none of them recognises a malicious crate that compiles. Skim the list before merging."
+          } > "$RUNNER_TEMP/body.md"
+
+          state=$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null || echo NONE)
+          if [ "$state" = "OPEN" ]; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/body.md"
+            echo "Refreshed the open PR."
+          else
+            gh pr create --base dev --head "$BRANCH" \
+              --title "chore(deps): refresh Cargo.lock" \
+              --body-file "$RUNNER_TEMP/body.md"
+          fi

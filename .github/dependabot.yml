@@ -68,7 +68,15 @@ updates:
     # left `serde_derive`'s internal reference pointing at 3.0.0, producing a
     # lockfile that `cargo test --locked` refuses (see #33, repaired in #36).
     # A broken lockfile every week costs more than the stale transitives it was
-    # meant to fix, and security updates reach transitive crates regardless.
+    # meant to fix.
+    #
+    # The transitives are covered elsewhere: lockfile-maintenance.yml runs a
+    # full `cargo update` every week, which Cargo resolves as one graph and so
+    # cannot produce #33's inconsistency. It used to read "security updates
+    # reach transitive crates regardless", and that was only half true — they do
+    # for an advisory in the GitHub Advisory Database, which is what Dependabot
+    # reads. On 2026-10-25 five of nine RustSec advisories against this tree
+    # were not in it, and nothing proposed a fix for any of them.
     #
     # The failure that motivated widening it — `serde` 1.0.229 requiring an
     # exact `serde_core =1.0.229`, which aborted the whole grouped job — was
