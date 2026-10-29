@@ -2,9 +2,13 @@ name: Auto PR
 
 # Opens a draft PR against dev for branches with a valid prefix.
 # Deletes branches that don't follow the naming convention.
-# Dependabot manages its own branches and PRs, and release.yml manages its own
-# release/* housekeeping branch + PR — both are ignored here, otherwise the
-# naming rule below would delete them on sight.
+# Dependabot manages its own branches and PRs, release.yml manages its own
+# release/* housekeeping branch + PR, and lockfile-maintenance.yml manages
+# `maintenance/lockfile` — all three are ignored here, otherwise the naming rule
+# below would delete them on sight. The last one matters twice: it is pushed
+# with an app token, which (unlike GITHUB_TOKEN) does start this workflow, and
+# a PR opened here would carry github-actions as its author and park on
+# approval instead of running the gates.
 on:
   push:
     branches-ignore:
@@ -12,6 +16,7 @@ on:
       - "dev"
       - "dependabot/**"
       - "release/**"
+      - "maintenance/**"
 
 permissions:
   contents: write

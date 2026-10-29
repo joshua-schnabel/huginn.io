@@ -13,12 +13,14 @@ The pipeline's rationale is [`ci-cd.md`](ci-cd.md); cutting a release is
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
+| `lockfile-maintenance.yml` | weekly · manual | Full `cargo update` against `dev`, held to the MSRV floor, as one signed PR |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
 | `release-dispatch.yml` | manual, owner-only | One-click release: pick patch/minor/major |
 
 Dependency updates are configured in `.github/dependabot.yml` — one grouped PR
 per ecosystem (cargo, github-actions, docker), all targeting `dev`. That is
-Dependabot config, not a workflow.
+Dependabot config, not a workflow. It covers direct crates only; the transitive
+ones are `lockfile-maintenance.yml`'s.
 
 ## `ci.yml` — quality gates and publish
 
@@ -215,6 +217,58 @@ A security update is recognised by `ghsa-id` being non-empty in the
 - This is a workaround for a platform behaviour, not a fix. Making the
   integration branch the default branch would remove the need for it entirely —
   that trade is in [`ci-cd.md`](ci-cd.md).
+
+## `lockfile-maintenance.yml` — the weekly `cargo update`
+
+**Runs** Mondays on a schedule, and manually — from `main` only, because its
+environment allows nothing else. Checks out `dev`, runs `cargo update`, and if
+`Cargo.lock` changed, opens one PR into `dev` from `maintenance/lockfile`, or
+refreshes the one already open.
+
+It exists for what Dependabot does not reach. Dependabot's cargo updates cover
+direct dependencies only, by decision (`dependabot.yml`, #33/#36), and its
+security updates come from the GitHub Advisory Database, which does not carry
+every RustSec advisory. On 2026-10-25 nine RustSec advisories applied to `dev`:
+four in crates Dependabot never proposes, five it could not see at all. A full
+`cargo update` reaches the whole graph, and Cargo resolves it as one — #33's
+inconsistent lockfile came from Dependabot's updater, not from Cargo.
+
+1. **Resolve, held to the floor.** `cargo update` with
+   `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`: each crate goes to its
+   newest release that still builds on `rust-version`. Without it the job would
+   lift something above the floor every week and `Source · MSRV` would fail on
+   it every week. A crate held back appears in the list as
+   `(available: …, requires Rust …)` — that is the signal to consider raising
+   the floor.
+2. **Mint a token** from the GitHub App, after resolution, with `contents` and
+   `pull-requests` write on this repository and nothing else. It lives an hour.
+3. **Commit through the Git database API** — blob, tree, commit with `dev` as
+   parent, then the branch, in one ref update. Through the API because both
+   rulesets require signatures and GitHub signs a commit an app creates there;
+   a `git push` would be unsigned. The job reads `verification.verified` back
+   and **fails** if it is not `true`, because an unsigned commit opens a PR
+   whose checks all pass and whose merge stays blocked with nothing failing.
+4. **Open or refresh the PR**, with the update list as its body. Not draft and
+   **not auto-merged**.
+
+**Gotchas**
+
+- **Not auto-merged, on purpose.** Dependabot's `cooldown` holds a fresh release
+  back for days; `cargo update` has no such wait. Every gate runs, and none of
+  them recognises a malicious crate that compiles. Skim the list.
+- The token comes from the `maintenance` **environment**, which only `main` may
+  use. Scheduled runs always start from the default branch, so that costs
+  nothing — but it means the workflow does nothing until it has been released,
+  and a manual run must be started on `main`.
+- With `GITHUB_TOKEN` instead, the PR would run no checks at all: events it
+  creates start no workflow. That is the whole reason for the app.
+- `maintenance/lockfile` is in `auto-pr.yml`'s `branches-ignore`. Without that
+  entry auto-pr would delete it on sight (it matches no prefix) — and since an
+  app token *does* start workflows, it would actually run.
+- The branch is rebuilt from current `dev` each week and moved with a force
+  update. It is this job's alone; do not push to it by hand.
+- `cargo update` resolves and writes the lockfile; it compiles nothing and runs
+  no build script, so no crate's code runs in the job that holds the token.
 
 ## `release.yml` — Release, SBOM, and next-cycle prep
 
