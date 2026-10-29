@@ -103,8 +103,9 @@ updates:
 
   # ── The Dockerfile's base images ──────────────────────────────────────────
   # The `rust:*-slim` builder and the `gcr.io/distroless/cc-*` runtime. The
-  # builder is the real MSRV gate (see Cargo.toml), and the distroless runtime
-  # is the only CVE surface in the image that Cargo.lock does not cover.
+  # builder must stay at or above the MSRV floor (see Cargo.toml) — ci.yml's
+  # `msrv` job is what tests the floor itself — and the distroless runtime is
+  # the only CVE surface in the image that Cargo.lock does not cover.
   #
   # Bumping the builder is an update, not an MSRV change: `rust-version` is a
   # floor and the builder only has to sit at or above it. Do not chase either

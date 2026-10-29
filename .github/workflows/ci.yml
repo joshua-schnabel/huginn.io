@@ -32,6 +32,7 @@ env:
 #   ── Source ──────────────────────────────────────────────────────────────
 #   check ─┬ test (stable + beta·canary) ─┐
 #          ├ supply-chain ────────────────┤
+#          ├ msrv (rust-version floor) ───┤
 #          ├ coverage ────────────────────┤
 #          └ version-gate (SemVer + successor, main only) ┤
 #                                         ▼
@@ -164,6 +165,52 @@ jobs:
           exit "$failed"
       - name: cargo deny check
         run: cargo deny check
+
+  # ── Source: MSRV ──────────────────────────────────────────────────────────
+  # Builds the workspace with exactly the toolchain `rust-version` names, which
+  # nothing else in this pipeline does: `test` runs floating stable and beta,
+  # and the image's builder sits wherever Dependabot last moved it — above the
+  # floor by design. Under edition 2021 Cargo does not refuse a dependency
+  # whose own `rust-version` is higher (see the comment at `rust-version` in
+  # Cargo.toml), so without this job the floor is a claim nothing tests.
+  # Observed on 2026-10-29: a routine `cargo update` pulled in a `uuid` that
+  # needs one minor more than the floor, and every other check stayed green.
+  #
+  # Red here is a decision, not a defect: hold the dependency back
+  # (`cargo update -p <crate> --precise <version>`), or raise `rust-version` —
+  # allowed in a minor release, with a changelog entry (docs/versioning.md).
+  #
+  # `--all-targets`, so tests and their dev-dependencies count too: a
+  # contributor on the floor toolchain runs the suite, not only the binary.
+  # `check` rather than `build` — the question is whether the compiler accepts
+  # the tree, and codegen adds minutes without adding an answer.
+  msrv:
+    name: Source · MSRV
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Read from Cargo.toml rather than written here, so there is one copy of
+      # the number (AGENTS.md §7). Validated, because it lands in `toolchain:`.
+      - name: Read the rust-version floor
+        id: floor
+        run: |
+          floor=$(grep -m1 -E '^rust-version[[:space:]]*=' Cargo.toml | cut -d'"' -f2)
+          if ! printf '%s' "$floor" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error file=Cargo.toml::could not read rust-version (got '$floor')"
+            exit 1
+          fi
+          echo "floor: $floor"
+          echo "version=$floor" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.floor.outputs.version }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: cargo check on the floor toolchain
+        run: cargo check --workspace --all-targets --locked
 
   # ── Source: Code coverage ≥ 80 % ──────────────────────────────────────────
   # Depends on `check`, not on `test`, so it runs *alongside* the two toolchain
@@ -583,7 +630,7 @@ jobs:
   source-gate:
     name: Source gate
     runs-on: ubuntu-latest
-    needs: [check, test, supply-chain, coverage, version-gate]
+    needs: [check, test, supply-chain, msrv, coverage, version-gate]
     if: always()
     timeout-minutes: 5
     steps:

@@ -46,7 +46,17 @@ must not (they are the required checks). `needs` orders everything.
    a `deny.toml` ignore entry's `expires <YYYY-MM-DD>` has passed: cargo-deny
    accepts only `id` and `reason` on an entry, so the date lives in the reason
    and is enforced here, or it would be decoration.
-4. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, **workspace-aggregate
+4. **`msrv`** — `cargo check --workspace --all-targets --locked` on exactly the
+   toolchain `rust-version` in `Cargo.toml` names, read from the file rather than
+   repeated in the workflow. Nothing else builds on the floor: `test` runs
+   floating stable and beta, and the image's builder sits above it by design.
+   Under edition 2021 Cargo does not refuse a dependency that needs more, so
+   without this job the floor is an untested claim — a routine `cargo update` on
+   2026-10-29 would have pulled in a `uuid` one minor above it with every other
+   check green. Red is a decision, not a defect: pin the dependency back with
+   `cargo update -p <crate> --precise <version>`, or raise the floor, which
+   `versioning.md` allows in a minor release.
+5. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, **workspace-aggregate
    line** coverage, not per-file and not regions. Uploads `lcov.info` and writes
    the percentage into the job summary, computed from the file's `LF`/`LH`
    records. The `cargo-llvm-cov` binary is pinned and cached; `cargo-deny` is
@@ -55,7 +65,7 @@ must not (they are the required checks). `needs` orders everything.
    toolchain legs: it runs the whole suite itself under instrumentation, so
    waiting for `test` added no confidence — only a full suite's duration on the
    critical path, part of it spent on the beta leg, which cannot block anything.
-5. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer,
+6. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer,
    must match `[workspace.package].version` in `Cargo.toml`, and must be
    strictly greater than the last `v*` tag. Enforces **only** in a release
    context (a PR whose base is `main`, or a push to `main`) and is a no-op pass
@@ -66,16 +76,16 @@ must not (they are the required checks). `needs` orders everything.
    `Cargo.toml` check exists because the image is tagged from the changelog
    while the binary reports its manifest version — without it a half-stamped
    release branch ships `huginn:0.4.0` that says `0.3.0` when asked.
-6. **`build`** (matrix, per architecture, **native** runner) — builds the image
+7. **`build`** (matrix, per architecture, **native** runner) — builds the image
    exactly once into `image.tar` and uploads it as an artefact. Native runners
    replaced QEMU, which had made the arm64 build the pipeline's dominant cost.
-7. **`scan`** (matrix) — Trivy against that artefact: a full SARIF pass to the
+8. **`scan`** (matrix) — Trivy against that artefact: a full SARIF pass to the
    Security tab, a blocking pass on fixable CRITICAL/HIGH reading
    `.trivyignore.yaml`, and a CycloneDX SBOM kept for 90 days. Never rebuilds.
-8. **`integration`** (matrix, native runner) — `docker load` plus
+9. **`integration`** (matrix, native runner) — `docker load` plus
    `docker compose --no-build`, then `scripts/integration-test.sh` against the
    loaded image.
-9. **`source-gate`** and **`image-gate`** — the two jobs the branch ruleset
+10. **`source-gate`** and **`image-gate`** — the two jobs the branch ruleset
    actually names, and the boundaries between the stages. Each depends on a
    group of the jobs above and fails if any of them did not report `success`;
    neither runs a build or a test of its own. Each also writes its members and
@@ -94,13 +104,13 @@ must not (they are the required checks). `needs` orders everything.
    unreliable thing for `build` to depend on. `push` and `publish` are
    deliberately not in either gate, because a `push`-only job reports `skipped`
    on a pull request.
-10. **`push`** (matrix, `if: push`) — needs `image-gate`, so it sees the scanned
+11. **`push`** (matrix, `if: push`) — needs `image-gate`, so it sees the scanned
     *and* integration-tested bytes and nothing else; skopeo copies the tarball
     to a staging tag by digest and records the digest. Skipped on PRs, so
     registry credentials are never reachable there. Its `if:` narrows the job to
     push events without loosening the dependency — an `if:` carrying no status
     function leaves the implicit `success()` on `needs` in place.
-11. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
+12. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
     digests, mirrors it to ghcr with `skopeo copy --all`, deletes the staging
     tags, and creates the git tag `vX.Y.Z`, **annotated with the manifest
     digest**. It publishes **no new bytes**. The annotation is what lets
