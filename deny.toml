@@ -11,9 +11,40 @@
 
 # ── Advisories (RustSec vulnerability database) ──────────────────────────────
 [advisories]
-# List of advisory IDs to ignore (e.g. false positives or accepted risks)
-# Format: ignore = ["RUSTSEC-2020-0001"]
-ignore = []
+# Suppressions for the blocking `cargo deny check` in
+# .github/workflows/ci.yml. Same rules as .trivyignore.yaml, for the same
+# reason — a suppression argued for after the fact tends to be argued for
+# loosely:
+#
+#   1. Every entry says why the vulnerable code cannot be reached in huginn's
+#      deployment, not merely that no fix exists. "Upstream has not fixed it"
+#      alone is not a reason to ship it silently.
+#   2. Every entry carries `expires <YYYY-MM-DD>` in its reason. The
+#      "Check suppression expiries" step in ci.yml fails the job once the date
+#      has passed, so the finding blocks again. cargo-deny accepts only `id`
+#      and `reason` on an ignore entry (checked 2026-10-29), which is why the
+#      date lives in the reason and is enforced next to it rather than by
+#      cargo-deny itself. If a later release grows a native expiry, move to it.
+#   3. Delete the entry the moment it is no longer needed.
+#
+# cargo-deny prints the reason on every run, so the argument and the date are in
+# front of whoever reads a green gate, not only in this file.
+ignore = [
+    # `unsafe-libyaml` is C transpiled to Rust, pulled in by `serde_yaml_ng`,
+    # and the advisory is `unmaintained` — no vulnerability is known, and
+    # `serde_yaml_ng` 0.10 is its own latest release, so there is nothing to
+    # upgrade to. Reachability: huginn parses exactly one YAML document, at
+    # `crates/huginn-core/src/config.rs:548`, from the `--config` path, during
+    # startup and before any listener binds or any probe runs. That is the only
+    # non-test call. No probe result, no SMTP/IMAP banner, no HTTP body and no
+    # InfluxDB response ever reaches a YAML parser, so the input is the
+    # operator's own file — the same trust level as the binary itself. Moving
+    # off the crate means replacing the config parser, which is a dependency
+    # change and a behaviour risk (the control-character handling the F-07 tests
+    # rely on is this parser's), so it is a decision of its own rather than part
+    # of a lockfile bump.
+    { id = "RUSTSEC-2024-0449", reason = "expires 2027-01-31 — unmaintained, not vulnerable; reached only by the operator's own config file at startup (see deny.toml for the full argument)" },
+]
 
 # ── Licenses ─────────────────────────────────────────────────────────────────
 [licenses]
