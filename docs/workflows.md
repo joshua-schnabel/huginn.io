@@ -40,7 +40,10 @@ must not (they are the required checks). `needs` orders everything.
    non-blocking canary (`continue-on-error`): it warns of an upcoming toolchain
    break without gating a merge.
 3. **`supply-chain`** — `cargo deny check`: advisories, licences, banned crates,
-   registry sources.
+   registry sources. Before it, `Check suppression expiries` fails the job once
+   a `deny.toml` ignore entry's `expires <YYYY-MM-DD>` has passed: cargo-deny
+   accepts only `id` and `reason` on an entry, so the date lives in the reason
+   and is enforced here, or it would be decoration.
 4. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, **workspace-aggregate
    line** coverage, not per-file and not regions. Uploads `lcov.info` and writes
    the percentage into the job summary, computed from the file's `LF`/`LH`
