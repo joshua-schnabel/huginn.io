@@ -47,20 +47,29 @@ jobs:
       # because a revert of a dependency bump looks like any other diff.
       # huginn.io#51 was exactly that.
       #
-      # `ghsa-id` is populated only for security updates, which is what
-      # distinguishes them here. The `base.ref` check makes this a no-op once a
-      # PR has already been moved, so the recreate below cannot loop.
+      # Recognised by its base branch alone. Every ecosystem in dependabot.yml
+      # sets `target-branch: dev`, so a Dependabot PR against `main` is a
+      # security update by construction — there is no other way for one to get
+      # there.
+      #
+      # This step used to key off `steps.meta.outputs.ghsa-id`, and it never
+      # fired. fetch-metadata fills `ghsa-id` only with `alert-lookup: true`
+      # *and* a token that can read Dependabot alerts, which `GITHUB_TOKEN`
+      # cannot; this workflow had neither, so the output was always empty and
+      # the step always skipped. Observed on huginn.io#111: a hickory-resolver
+      # security update sat on `main` for weeks, its run logging an empty
+      # `outputs.ghsa-id`. The base branch needs no lookup and no credential.
+      #
+      # The `base.ref` check also makes this a no-op once a PR has been moved,
+      # so the recreate below cannot loop.
       - name: Move a security update onto dev
         id: retarget
-        if: >-
-          steps.meta.outputs.ghsa-id != '' &&
-          github.event.pull_request.base.ref == 'main'
+        if: github.event.pull_request.base.ref == 'main'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GHSA: ${{ steps.meta.outputs.ghsa-id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::notice::${GHSA} opened against main; retargeting to dev"
+          echo "::notice::security update opened against main; retargeting to dev"
           gh pr edit "$PR_URL" --base dev
 
           # Retargeting alone is not enough, and this is the part to understand
