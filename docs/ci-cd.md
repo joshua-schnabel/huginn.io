@@ -201,9 +201,10 @@ carries 17 unfixable LOW/MEDIUM CVEs that stay visible as open alerts on purpose
 ([R4](risks.md)).
 
 `.trivyignore.yaml` is read by the blocking scan only, so a suppressed finding
-still reaches the Security tab. It is empty, and its rules are written down for
-when it is not: every entry carries `expired_at`, and every entry argues why the
-vulnerable code cannot be reached in huginn's deployment.
+still reaches the Security tab. It is meant to stay close to empty, and its
+rules say what an entry has to bring: an `expired_at`, and an argument why the
+vulnerable code cannot be reached in huginn's deployment. What it holds today is
+in the file, each entry with its reasoning.
 
 ## Architectures
 

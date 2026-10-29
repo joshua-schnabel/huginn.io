@@ -143,6 +143,26 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
+      # cargo-deny accepts only `id` and `reason` on an ignore entry (checked
+      # 2026-10-29), so an expiry it enforces itself does not exist. Without this step the date in
+      # a suppression's reason is decoration, and a suppression nobody revisits
+      # is how a finding quietly becomes permanent — the one thing deny.toml's
+      # rules and .trivyignore.yaml's both set out to prevent. Compared as
+      # integers rather than as dates, because `date -d` is not portable and
+      # ISO-8601 without its dashes sorts identically either way.
+      - name: Check suppression expiries
+        run: |
+          today=$(date -u +%Y%m%d)
+          failed=0
+          while read -r expiry; do
+            if [ "${expiry//-/}" -lt "$today" ]; then
+              echo "::error file=deny.toml::suppression expired on $expiry — recheck the advisory, then delete the entry or argue for a new date"
+              failed=1
+            else
+              echo "suppression valid until $expiry"
+            fi
+          done < <(grep -oE 'expires [0-9]{4}-[0-9]{2}-[0-9]{2}' deny.toml | cut -d' ' -f2)
+          exit "$failed"
       - name: cargo deny check
         run: cargo deny check
 
@@ -460,7 +480,7 @@ jobs:
       # .trivyignore.yaml is read HERE and not by the full scan above, so a
       # suppressed finding still reaches the Security tab. Every entry in it
       # carries an expiry date and a reason the vulnerable code cannot be
-      # reached in huginn's deployment — see the file. It is empty today.
+      # reached in huginn's deployment — see the file.
       - name: Trivy - blocking scan (fixable CRITICAL/HIGH only)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
