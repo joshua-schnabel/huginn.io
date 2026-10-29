@@ -22,12 +22,20 @@ chasing here; the Security tab has the current one.)
 
 **Mitigation.** They are deliberately *not* filtered out — the open alert is the
 audit trail. Only fixable CRITICAL/HIGH block the pipeline, so the gate stays
-one people act on rather than one they switch off. `.trivyignore.yaml` exists
-with its rules written down and no entries.
+one people act on rather than one they switch off. `.trivyignore.yaml` holds
+the few exceptions, each with an expiry and a reachability argument.
 
 **Residual.** Unfixable today means blocking tomorrow: when Debian ships fixes,
 the gate starts failing until the image is rebuilt. That is intended, and it
 makes image currency an operational duty.
+
+One gap the gate cannot close by itself: Trivy calls a finding *fixed* as soon
+as Debian has the patched package, and distroless rebuilds later. In between the
+gate blocks on something no Dockerfile change can fix. Observed on 2026-10-30
+with a HIGH in libssl3: the newest distroless digest still carried the
+vulnerable version. The bridge is a `.trivyignore.yaml` entry with a short
+expiry and a measured reachability argument — not waiting, which blocks every
+PR, and not a long suppression, which outlives the reason for it.
 
 ## R6 — A backend outage that outlives the process loses buffered results
 

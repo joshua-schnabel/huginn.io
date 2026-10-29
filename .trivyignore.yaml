@@ -1,8 +1,8 @@
 # Suppressions for the blocking Trivy scan in .github/workflows/ci.yml.
 #
-# Empty, and the intent is that it stays that way. The file exists so that the
-# rules are already written down when the first entry is needed — a suppression
-# argued for after the fact tends to be argued for loosely.
+# Meant to stay close to empty. The rules were written down before the first
+# entry was needed, because a suppression argued for after the fact tends to be
+# argued for loosely.
 #
 # Rules for this file, so it does not quietly become the place findings go to
 # die:
@@ -23,4 +23,31 @@
 # Recheck at each expiry: `trivy image --input image.tar`, and delete the entry
 # the moment upstream ships a fix.
 
-vulnerabilities: []
+vulnerabilities:
+  # libssl3 in the distroless runtime. HIGH, and "fixed" in Trivy's sense —
+  # Debian has shipped the patched package — but distroless had not rebuilt
+  # with it: on 2026-10-30 the newest gcr.io/distroless/cc-debian12 (the digest
+  # Dependabot proposes in #100, identical to `latest`) still carried the
+  # vulnerable version, read from its dpkg status in every layer. A base-image
+  # bump cannot fix it until upstream rebuilds; that gap is what this entry
+  # bridges, and the expiry is short for that reason.
+  #
+  # Reachability, measured on the image CI built for #114 (linux/amd64):
+  #   - `huginn` is the only executable in the image. Of 285 ELF files, every
+  #     other one is a shared library.
+  #   - Its dynamic section needs libgcc_s, libm, libc and the loader — nothing
+  #     else. Neither `libssl.so` nor `libcrypto.so` appears anywhere in the
+  #     binary, so it does not dlopen them either.
+  #   - The only files that reference libssl/libcrypto are those two libraries
+  #     and OpenSSL's own engines and providers. Nothing loads them.
+  #   - The CVE concerns DTLS handshake retransmission. huginn speaks TLS
+  #     through rustls only (ADR-0003; openssl is banned in deny.toml) and
+  #     speaks no DTLS at all.
+  # The library is present and dead. Delete this entry the day a rebuilt base
+  # image lands — Dependabot's docker group will propose it.
+  - id: CVE-2026-84782
+    statement: >-
+      libssl3 in the distroless base; huginn is the image's only executable and
+      links neither libssl nor libcrypto (rustls only), and the flaw is in DTLS,
+      which huginn does not use. Fixed in Debian, not yet in distroless.
+    expired_at: 2026-11-30
