@@ -144,13 +144,17 @@ was not run.
 Each cost real investigation, and each contradicts a plausible assumption. Do not
 undo them.
 
-**The Docker build is the real MSRV gate.** `rust-version` in `Cargo.toml`
+**One job builds on the MSRV, and only one.** `rust-version` in `Cargo.toml`
 documents the floor, but under edition 2021 and resolver 2 it does *not* steer
-resolution — CI runs floating stable and stays green while the image build
-fails. Not hypothetical: `hickory-resolver` 0.26, required for
-RUSTSEC-2026-0119, needs 1.88 and broke the image against the then-current 1.85
-builder while every local check passed. The builder must stay at or above the
-floor; Dependabot moves it forward on its own, and that is not an MSRV change.
+resolution, and nothing else compiles on it — the tests run floating stable and
+the image's builder sits above the floor. A dependency that needs more leaves
+all of them green. Not hypothetical, twice: `hickory-resolver` 0.26, required
+for RUSTSEC-2026-0119, needs 1.88 and broke the image against the then-current
+1.85 builder while every local check passed; and on 2026-10-29 a routine
+`cargo update` pulled in a `uuid` above the floor that no check at all would
+have caught. `Source · MSRV` in `ci.yml` is that job. The builder must stay at
+or above the floor; Dependabot moves it forward on its own, and that is not an
+MSRV change.
 
 **Catching only SIGINT silently disabled the shutdown drain.** `docker stop` and
 systemd send **SIGTERM**. Without a handler for it the process died before the
@@ -243,8 +247,8 @@ back.
 - **TLS is rustls only.** `openssl`, `openssl-sys`, `native-tls` and
   `tokio-native-tls` are banned in `deny.toml`.
   [ADR-0003](docs/adr/0003-rustls-only.md)
-- **MSRV** is `rust-version` in `Cargo.toml`; edition 2021, resolver 2 — and see
-  §6 on which gate actually enforces it.
+- **MSRV** is `rust-version` in `Cargo.toml`; edition 2021, resolver 2. The
+  `Source · MSRV` job is what enforces it — see §6.
 - **Testing:** unit tests inline in `#[cfg(test)]`; cross-crate and whole-binary
   behaviour in `huginn/tests/`. Never hit a real external service — use
   `wiremock`. **Don't sleep — poll.** Tests touching the environment must be
