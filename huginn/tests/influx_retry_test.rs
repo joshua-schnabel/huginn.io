@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use huginn_core::event::{EventHub, ProbeEvent};
+use huginn_core::stats::WriteStats;
 use huginn_core::types::ProbeResult;
 use huginn_influx::queue::RetryQueue;
 use huginn_influx::writer::{run_batcher, run_writer, InfluxWriter};
@@ -77,7 +78,10 @@ async fn no_results_are_lost_while_influxdb_is_briefly_down() {
     let tf = token_file("mytoken");
     let cfg = influx_cfg(&server.uri(), &tf);
     let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-    let queue = Arc::new(RetryQueue::new(8 * 1024 * 1024));
+    let queue = Arc::new(RetryQueue::new(
+        8 * 1024 * 1024,
+        Arc::new(WriteStats::default()),
+    ));
     let (shutdown_tx, _) = broadcast::channel(1);
 
     // Capacity 16 against 100 rapid publishes: if the batcher ever stalls on the
@@ -95,6 +99,7 @@ async fn no_results_are_lost_while_influxdb_is_briefly_down() {
         Arc::clone(&queue),
         5, // fast backoff — this is a test, not an outage drill
         50,
+        Arc::new(WriteStats::default()),
         shutdown_tx.subscribe(),
     ));
     tokio::task::yield_now().await;
@@ -168,7 +173,10 @@ async fn a_permanently_rejected_batch_does_not_block_the_queue() {
     let tf = token_file("mytoken");
     let cfg = influx_cfg(&server.uri(), &tf);
     let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-    let queue = Arc::new(RetryQueue::new(8 * 1024 * 1024));
+    let queue = Arc::new(RetryQueue::new(
+        8 * 1024 * 1024,
+        Arc::new(WriteStats::default()),
+    ));
     let (shutdown_tx, _) = broadcast::channel(1);
 
     queue.push(Arc::from("poisoned,probe_name=bad up=1i 1"));
@@ -180,6 +188,7 @@ async fn a_permanently_rejected_batch_does_not_block_the_queue() {
         Arc::clone(&queue),
         1,
         10,
+        Arc::new(WriteStats::default()),
         shutdown_tx.subscribe(),
     ));
 

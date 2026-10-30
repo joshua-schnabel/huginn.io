@@ -17,13 +17,13 @@ UI streams live results over SSE, and a separately gated Prometheus endpoint
 exposes the same data as gauges. It ships as a **distroless, nonroot** multi-arch
 container image, from a Cargo workspace of five crates.
 
-**Status: released, pre-1.0.** `v0.2.0`, `v0.2.1` and `v0.3.0` are tagged and
-published; the image is on Docker Hub and mirrored to ghcr. Read the current
-version from `CHANGELOG.md`'s topmost `## [x.y.z]` heading rather than from any
-sentence here — a version written into prose is wrong the morning after a
-release (§7). [`docs/roadmap.md`](docs/roadmap.md) carries what is still open
-for 1.0 and is the one place it is tracked — do not restate it here, it goes
-stale. Start with [`docs/architecture.md`](docs/architecture.md).
+**Status: released, with a stable major version out.** The image is on Docker Hub
+and mirrored to ghcr. Read the current version from `CHANGELOG.md`'s topmost
+`## [x.y.z]` heading rather than from any sentence here — a version written into
+prose is wrong the morning after a release (§7), as the list of tags that used to
+stand in this paragraph duly was. [`docs/roadmap.md`](docs/roadmap.md) carries
+what is still open and is the one place it is tracked — do not restate it here,
+it goes stale. Start with [`docs/architecture.md`](docs/architecture.md).
 
 Sibling project: [muninn.io](https://github.com/joshua-schnabel/muninn.io), same
 maintainer. It was built on huginn's conventions, and the two are kept aligned
@@ -144,13 +144,17 @@ was not run.
 Each cost real investigation, and each contradicts a plausible assumption. Do not
 undo them.
 
-**The Docker build is the real MSRV gate.** `rust-version` in `Cargo.toml`
+**One job builds on the MSRV, and only one.** `rust-version` in `Cargo.toml`
 documents the floor, but under edition 2021 and resolver 2 it does *not* steer
-resolution — CI runs floating stable and stays green while the image build
-fails. Not hypothetical: `hickory-resolver` 0.26, required for
-RUSTSEC-2026-0119, needs 1.88 and broke the image against the then-current 1.85
-builder while every local check passed. The builder must stay at or above the
-floor; Dependabot moves it forward on its own, and that is not an MSRV change.
+resolution, and nothing else compiles on it — the tests run floating stable and
+the image's builder sits above the floor. A dependency that needs more leaves
+all of them green. Not hypothetical, twice: `hickory-resolver` 0.26, required
+for RUSTSEC-2026-0119, needs 1.88 and broke the image against the then-current
+1.85 builder while every local check passed; and on 2026-10-29 a routine
+`cargo update` pulled in a `uuid` above the floor that no check at all would
+have caught. `Source · MSRV` in `ci.yml` is that job. The builder must stay at
+or above the floor; Dependabot moves it forward on its own, and that is not an
+MSRV change.
 
 **Catching only SIGINT silently disabled the shutdown drain.** `docker stop` and
 systemd send **SIGTERM**. Without a handler for it the process died before the
@@ -243,8 +247,8 @@ back.
 - **TLS is rustls only.** `openssl`, `openssl-sys`, `native-tls` and
   `tokio-native-tls` are banned in `deny.toml`.
   [ADR-0003](docs/adr/0003-rustls-only.md)
-- **MSRV** is `rust-version` in `Cargo.toml`; edition 2021, resolver 2 — and see
-  §6 on which gate actually enforces it.
+- **MSRV** is `rust-version` in `Cargo.toml`; edition 2021, resolver 2. The
+  `Source · MSRV` job is what enforces it — see §6.
 - **Testing:** unit tests inline in `#[cfg(test)]`; cross-crate and whole-binary
   behaviour in `huginn/tests/`. Never hit a real external service — use
   `wiremock`. **Don't sleep — poll.** Tests touching the environment must be
@@ -256,8 +260,8 @@ back.
 ## 8. Git & PR workflow
 
 - Branch off `dev` with a valid prefix: `feature/` · `fix/` · `chore/` · `docs/`
-  · `test/`. Pushing such a branch makes `auto-pr.yml` open a draft PR into
-  `dev`; a branch that does not match the prefix is auto-deleted.
+  · `test/`. A branch that does not match the prefix is auto-deleted by
+  `auto-pr.yml`. Open the PR into `dev` yourself — nothing opens it for you.
 - Flow: `feature/* → dev` (**squash**) → `main` (**merge commit**). No direct
   pushes (§3).
 - **Conventional Commits:** `feat · fix · chore · docs · test · refactor · perf ·
@@ -287,6 +291,11 @@ workflow permissions must be reasoned about explicitly and flagged in the PR.
   Unicode `Cc` range.
 - **Least-privilege workflow `permissions:`** — grant the minimum a job needs,
   and scope `security-events: write` to the one job that uploads SARIF.
+- **Actions secrets live in environments scoped to the refs that use them**,
+  never at repository level: a repository secret is readable from any branch's
+  copy of a workflow, so a push credential would be enough to print it. A job
+  that needs a secret declares its `environment:`.
+  [`docs/ci-cd.md`](docs/ci-cd.md#where-the-secrets-live)
 - **Gates:** cargo-deny (advisories, licences, the rustls-only ban), Semgrep
   (`p/rust` + `p/secrets`, ERROR blocks), Trivy (fixable CRITICAL/HIGH block),
   shellcheck, actionlint. A Trivy suppression needs an expiry and a reachability
@@ -305,7 +314,7 @@ workflow permissions must be reasoned about explicitly and flagged in the PR.
 | Symptom → cause → fix | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
 | Testing pyramid, coverage, no-sleep rule | [`docs/testing.md`](docs/testing.md) |
 | Container hardening | [`docs/hardening.md`](docs/hardening.md) |
-| The 2026-08-02 security audit | [`docs/security-audit.md`](docs/security-audit.md) |
+| Security audits, newest first | [`docs/security-audit.md`](docs/security-audit.md) |
 | Vulnerability reporting | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Contributor workflow | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | SemVer policy, stable surface | [`docs/versioning.md`](docs/versioning.md) |

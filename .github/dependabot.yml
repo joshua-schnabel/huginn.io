@@ -8,7 +8,9 @@ version: 2
 # The group includes major bumps too, so the PR really is "everything in one".
 # Interaction with dependabot-auto-merge.yml: that workflow only auto-merges
 # patch/minor, so a group PR that happens to include a major waits for manual
-# review — you review exactly when a breaking bump is present.
+# review — you review exactly when a breaking bump is present. The
+# github-actions group is never auto-merged at all: actions run inside the jobs
+# that hold credentials, crates and base images do not.
 #
 # Security updates (advisory-driven) are intentionally NOT grouped — Dependabot
 # still opens those as their own PRs so an urgent CVE fix isn't held back.
@@ -68,7 +70,15 @@ updates:
     # left `serde_derive`'s internal reference pointing at 3.0.0, producing a
     # lockfile that `cargo test --locked` refuses (see #33, repaired in #36).
     # A broken lockfile every week costs more than the stale transitives it was
-    # meant to fix, and security updates reach transitive crates regardless.
+    # meant to fix.
+    #
+    # The transitives are covered elsewhere: lockfile-maintenance.yml runs a
+    # full `cargo update` every week, which Cargo resolves as one graph and so
+    # cannot produce #33's inconsistency. It used to read "security updates
+    # reach transitive crates regardless", and that was only half true — they do
+    # for an advisory in the GitHub Advisory Database, which is what Dependabot
+    # reads. On 2026-10-25 five of nine RustSec advisories against this tree
+    # were not in it, and nothing proposed a fix for any of them.
     #
     # The failure that motivated widening it — `serde` 1.0.229 requiring an
     # exact `serde_core =1.0.229`, which aborted the whole grouped job — was
@@ -95,8 +105,9 @@ updates:
 
   # ── The Dockerfile's base images ──────────────────────────────────────────
   # The `rust:*-slim` builder and the `gcr.io/distroless/cc-*` runtime. The
-  # builder is the real MSRV gate (see Cargo.toml), and the distroless runtime
-  # is the only CVE surface in the image that Cargo.lock does not cover.
+  # builder must stay at or above the MSRV floor (see Cargo.toml) — ci.yml's
+  # `msrv` job is what tests the floor itself — and the distroless runtime is
+  # the only CVE surface in the image that Cargo.lock does not cover.
   #
   # Bumping the builder is an update, not an MSRV change: `rust-version` is a
   # floor and the builder only has to sit at or above it. Do not chase either

@@ -1,10 +1,19 @@
-name: Auto PR
+name: Branch naming
 
-# Opens a draft PR against dev for branches with a valid prefix.
-# Deletes branches that don't follow the naming convention.
-# Dependabot manages its own branches and PRs, and release.yml manages its own
-# release/* housekeeping branch + PR — both are ignored here, otherwise the
-# naming rule below would delete them on sight.
+# Deletes branches that don't follow the naming convention. Nothing else.
+#
+# It used to open a draft PR into dev as well. That needed "Allow GitHub
+# Actions to create and approve pull requests", which is off — a workflow
+# able to open PRs is a workflow able to approve them the day a ruleset asks
+# for a review — and the PRs it opened carried github-actions as their author,
+# so their CI parked on approval instead of running. PRs are opened by whoever
+# pushed the branch.
+#
+# Dependabot manages its own branches and PRs, release.yml manages its own
+# release/* housekeeping branch + PR, and lockfile-maintenance.yml manages
+# `maintenance/lockfile` — all three are ignored here, otherwise the naming rule
+# below would delete them on sight. The last one matters because it is pushed
+# with an app token, which (unlike GITHUB_TOKEN) does start this workflow.
 on:
   push:
     branches-ignore:
@@ -12,60 +21,24 @@ on:
       - "dev"
       - "dependabot/**"
       - "release/**"
+      - "maintenance/**"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: write   # deleting the ref, and nothing else
 
 jobs:
-  open-pr:
-    name: Open Draft PR or Delete Invalid Branch
+  enforce:
+    name: Enforce branch naming
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Enforce branch naming and create PR
+      # No checkout: the only call is `gh api` against an explicit path.
+      - name: Delete a branch that does not match the naming convention
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          BRANCH="${GITHUB_REF_NAME}"
-          VALID_PATTERN="^(feature|fix|chore|docs|test)/.+"
-
-          # Delete branch if it doesn't match the naming convention
-          if ! echo "$BRANCH" | grep -qE "$VALID_PATTERN"; then
+          if ! printf '%s' "$BRANCH" | grep -qE '^(feature|fix|chore|docs|test)/.+'; then
             echo "::warning::Branch '$BRANCH' does not match naming convention. Deleting."
-            gh api -X DELETE "/repos/${{ github.repository }}/git/refs/heads/$BRANCH"
-            exit 0
+            gh api -X DELETE "/repos/${REPO}/git/refs/heads/${BRANCH}"
           fi
-
-          # Check if a PR already exists for this branch
-          EXISTING=$(gh pr list --head "$BRANCH" --base dev --json number --jq length)
-          if [ "$EXISTING" -gt 0 ]; then
-            echo "PR already exists for $BRANCH — skipping."
-            exit 0
-          fi
-
-          # Derive a title from the branch name:
-          # "feature/add-smtp-tls" → "feat: add smtp tls"
-          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
-          DESCRIPTION=$(echo "$BRANCH" | cut -d'/' -f2- | tr '-' ' ')
-
-          case "$PREFIX" in
-            feature) TYPE="feat" ;;
-            fix)     TYPE="fix" ;;
-            chore)   TYPE="chore" ;;
-            docs)    TYPE="docs" ;;
-            test)    TYPE="test" ;;
-            *)       TYPE="$PREFIX" ;;
-          esac
-
-          TITLE="${TYPE}: ${DESCRIPTION}"
-
-          gh pr create \
-            --base dev \
-            --head "$BRANCH" \
-            --title "$TITLE" \
-            --body "Automatically opened by push to \`$BRANCH\`." \
-            --draft

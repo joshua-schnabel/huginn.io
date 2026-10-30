@@ -31,27 +31,56 @@ release PR would silently revert it.
 ## Pipeline shape
 
 ```text
+── Source ────────────────────────────────────────────────────────────────
   check ─┬ test (stable + beta·canary) ─┐
          ├ supply-chain ────────────────┤
-         ├ coverage (needs test) ───────┤
+         ├ msrv ────────────────────────┤
+         ├ coverage ────────────────────┤
          └ version-gate ────────────────┤
+                                        ▼
+                                   SOURCE GATE
+── Image ───────────────────────────────┼─────────────────────────────────
                                         ▼
              build (per arch, native) → image.tar artefact
                 ├ scan  (Trivy + SBOM, on the artefact)
                 └ integration (load + compose, on the artefact)
                                         ▼
-             push (per arch, push only) → skopeo by digest → digest artefact
+                                    IMAGE GATE
+── Release (push events only) ──────────┼─────────────────────────────────
+                                        ▼
+             push (per arch) → skopeo by digest → digest artefact
                                         ▼
              publish → manifest, ghcr mirror, staging cleanup, git tag
                                         ▼
                               release.yml (Release + SBOM + housekeeping PR)
 ```
 
+**The gates are the stage boundaries**, not a verdict beside them: `build`
+depends on `source-gate` and `push` on `image-gate`, so each stage's membership
+is written down exactly once, in that gate's `needs`. `build` used to re-list
+the five source jobs, which made the gate's list a second copy of the same set
+— and a job wired into only one of the two would either block the merge after
+the build had already started, or gate nothing at all.
+
 **The image is built exactly once per architecture** and uploaded as a tarball.
 `scan`, `integration` and `push` all consume *that same artefact*, so the bytes
-scanned, tested and published are byte-identical. `push` needs `scan` **and**
-`integration`, and `publish` needs `push`, so nothing unscanned can reach a
-registry.
+scanned, tested and published are byte-identical. `push` reaches a registry only
+behind `image-gate`, which covers `scan` **and** `integration`, and `publish`
+needs `push` — so nothing unscanned can be pushed.
+
+**`coverage` hangs off `check`, not off `test`**, so it runs alongside the two
+toolchain legs. `cargo llvm-cov --all` runs the whole suite itself, instrumented,
+so waiting for `test` bought no extra confidence — only the duration of a full
+suite on the critical path, part of it spent waiting on the beta leg, which
+`continue-on-error` forbids from blocking anything. The cost is a coverage run
+that is also spent on a red push; both jobs are still in `source-gate`, so
+neither stops blocking.
+
+Job display names carry a `Source ·` / `Image ·` / `Release ·` / `Security ·`
+prefix. GitHub has no stages of its own — the run graph is drawn from `needs`
+alone — so the prefixes are what makes the job list group by stage, and each
+gate writes its members and their results to the run summary. The three **gate**
+names deliberately carry no prefix; see "Repository settings" below.
 
 CI runs on **every** pull request, not only those targeting `main` or `dev`. It
 was once scoped to those two, so feature branches had no gate — which is how
@@ -71,23 +100,29 @@ every `github.ref == 'refs/heads/dev'` check silently reads false. A job with
 
 | Job | any PR | push dev | push main | push tag `v*` |
 |---|:---:|:---:|:---:|:---:|
-| Format & Lint | yes | yes | yes | — |
-| Tests (stable) | yes 🚫 | yes | yes | — |
-| Tests (beta, canary) | yes | yes | yes | — |
-| Supply-chain (cargo-deny) | yes 🚫 | yes | yes | — |
-| Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
-| Version gate | yes 🚫† | ➖ | yes 🚫 | — |
-| Semgrep · ShellCheck · actionlint | yes 🚫* | yes | yes | — |
-| Build image (per arch, native) | yes | yes | yes | — |
-| Trivy SARIF + SBOM | yes | yes | yes | — |
-| Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | — |
-| System integration test | yes | yes | yes | — |
-| Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | — |
+| Source · Format & Lint | yes | yes | yes | — |
+| Source · Tests (stable) | yes 🚫 | yes | yes | — |
+| Source · Tests (beta, canary) | yes | yes | yes | — |
+| Source · Supply-chain (cargo-deny) | yes 🚫 | yes | yes | — |
+| Source · MSRV (`rust-version` toolchain) | yes 🚫 | yes | yes | — |
+| Source · Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
+| Source · Version gate | yes 🚫† | ➖ | yes 🚫 | — |
+| Security · Semgrep · ShellCheck · Actionlint | yes 🚫* | yes | yes | — |
+| Image · Build (per arch, native) | yes 🚫 | yes | yes | — |
+| Image · Trivy SARIF + SBOM | yes | yes | yes | — |
+| Image · Trivy blocking scan | yes 🚫 | yes 🚫 | yes 🚫 | — |
+| Image · System integration test | yes 🚫 | yes | yes | — |
+| Release · Publish → Docker Hub + ghcr | — | `:dev` + `:x.y.z-dev` | `:latest` + `:x.y.z` | — |
 | GitHub Release + housekeeping PR | — | — | — | yes |
 
-🚫 blocks · 🚫* blocks only on ERROR-severity findings · 🚫† enforced only on a
-PR whose base is `main` · ➖ runs as a deliberate no-op, so it can gate `build`
-without skipping it.
+🚫 blocks · 🚫* Semgrep blocks only on ERROR-severity findings; ShellCheck and
+actionlint block on any finding · 🚫† enforced only on a PR whose base is `main`
+· ➖ runs as a deliberate no-op rather than skipping, because `Source gate`
+counts anything that is not `success` as a failure.
+
+**Everything marked 🚫 blocks through one of the three gates**, never by being
+named in the ruleset itself — "Repository settings" below says why, and which
+two jobs are deliberately in no gate.
 
 **`ci.yml` does not run on tags at all** — the whole `v*` column is
 `release.yml`'s. It used to run there, and that is what made every release build
@@ -111,6 +146,17 @@ cargo. `release.yml` is split into `test-report` (`contents: read`, runs cargo,
 uploads an artefact) and `github-release` (`contents: write`, downloads it) for
 exactly this reason. If you add a cargo step, it belongs in the first job.
 
+**Cargo is not the only third-party code, which is the harder half.** `publish`
+runs no cargo and still ran four third-party actions — `download-artifact`,
+`metadata-action`, `setup-buildx-action`, `login-action` — after a credentialed
+checkout, each with `.git/config` in reach, while a comment in the file asserted
+that nothing between the checkout and the push executed third-party code. That
+was F-11 of the 2026-08-12 pass. It now checks out twice: credential-free at the
+top for the changelog read and the remote tag check, and again with the token
+immediately before the push. **When a job needs a write token, take it as late
+as it is needed** — an action is somebody else's code just as much as a
+`build.rs` is, and it is easier to add without noticing.
+
 **Credentials go through stdin or a file, never argv.** `/proc/<pid>/cmdline` is
 readable by every process on the runner. `skopeo login --password-stdin` with
 `REGISTRY_AUTH_FILE` replaces `--dest-creds`; `jq -n --arg` piped into
@@ -122,6 +168,48 @@ readable by every process on the runner. `skopeo login --password-stdin` with
 mirror; the Trivy and Semgrep jobs need `security-events: write` for the SARIF
 upload, and in `security.yml` that permission is scoped to the Semgrep job alone
 — ShellCheck and actionlint only read the tree.
+
+### Where the secrets live
+
+**In environments, never at repository level.** A repository secret is readable
+by a workflow run started from *any* branch of the repository, using *that
+branch's* copy of the workflow file. Whoever can push a branch can therefore push
+one whose workflow prints the secret — base64 defeats the log masking — with no
+pull request, no review and no ruleset in the way, because the rulesets protect
+`dev` and `main`, not the pushing of a feature branch. An environment hands its
+secrets only to a job running on a ref its deployment rule admits.
+
+| Environment | Secrets | Admits | Jobs |
+|---|---|---|---|
+| `registry` | `DOCKERHUB_TOKEN` | `dev`, `main` | `ci.yml` `push`; `publish` on `dev` |
+| `release` | `DOCKERHUB_TOKEN`, `RELEASE_PAT`, `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE` | `main`, tags `v*.*.*` | `ci.yml` `publish` on `main`; `release-dispatch.yml`; `release.yml` `prepare-dev` |
+| `maintenance` | `MAINTENANCE_APP_PRIVATE_KEY` | `main` | `lockfile-maintenance.yml` |
+
+`DOCKERHUB_TOKEN` is stored twice on purpose. `publish` needs it on both branches
+but `RELEASE_PAT` only on `main`, and a job takes one environment — so it picks
+`release` or `registry` by ref, which keeps `RELEASE_PAT` out of every `dev` run.
+Rotating the Docker Hub token is therefore **two updates**.
+
+What this does and does not protect against:
+
+- **Fork pull requests were never the risk.** A `pull_request` run from a fork
+  receives no secrets in a public repository and a read-only `GITHUB_TOKEN`, and
+  no workflow here uses `pull_request_target`, `workflow_run` or
+  `issue_comment`. That was true before environments, too.
+- **A push credential alone no longer reaches the registry token.** `dev` and
+  `main` are ruleset-protected, so getting code into a run that holds
+  `DOCKERHUB_TOKEN` means getting a change merged through the gates.
+- **The tag rule is the gap that remains for `release`.** A tag push runs
+  `release.yml` from the *tagged commit*, and `github-release`'s "the tag must be
+  on main" check lives in that same file. Anyone able to push a tag can push one
+  on a commit carrying an edited `release.yml`. Closing that needs a tag ruleset
+  that lets only a dedicated identity create `v*` tags — and since the tag is
+  pushed with `RELEASE_PAT`, which acts as the maintainer, that identity would
+  first have to become an app rather than the maintainer's own token. Not done.
+- **A merged pull request runs with what its branch is allowed.** Changes under
+  `.github/` are the ones that reach the jobs holding secrets; read them as such.
+- **Nothing in the repository defends against a stolen admin credential**, which
+  can change environments and rulesets themselves.
 
 ## Source scanning
 
@@ -155,9 +243,10 @@ carries 17 unfixable LOW/MEDIUM CVEs that stay visible as open alerts on purpose
 ([R4](risks.md)).
 
 `.trivyignore.yaml` is read by the blocking scan only, so a suppressed finding
-still reaches the Security tab. It is empty, and its rules are written down for
-when it is not: every entry carries `expired_at`, and every entry argues why the
-vulnerable code cannot be reached in huginn's deployment.
+still reaches the Security tab. It is meant to stay close to empty, and its
+rules say what an entry has to bring: an `expired_at`, and an argument why the
+vulnerable code cannot be reached in huginn's deployment. What it holds today is
+in the file, each entry with its reasoning.
 
 ## Architectures
 
@@ -208,38 +297,132 @@ step reads the tag rather than the branch the button was pressed on.
 Deliberately not automated. Changing repository settings, secrets or rulesets is
 outside what an agent does here (`AGENTS.md` §3), so this is the checklist.
 
-**Branch protection** on `main` and `dev`:
+**Branch protection is two rulesets** (Settings → Rules → Rulesets), not classic
+branch protection: one on `refs/heads/dev`, one on `refs/heads/main`. Neither has
+a bypass actor, so the maintainer goes through a pull request as well.
 
-- require a pull request before merging;
-- require these status checks — the names are the jobs' display names, and this
-  is the set actually configured today:
-  - `Format & Lint`
-  - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
-  - `Supply-Chain Security`
-  - `Code Coverage (≥ 80%)`
-  - `Semgrep SAST`
-  - `Trivy scan linux/amd64` · `Trivy scan linux/arm64`
-  - `Integration test linux/amd64` · `Integration test linux/arm64`
+Both rulesets:
+
+- require a pull request before merging — with no approving review, this being a
+  solo project, and a reviewer nobody can be would block every merge;
+- require exactly **three** status checks, each a fan-in job that runs no build
+  and no test of its own:
+  - `Source gate` — covers `check`, `test`, `supply-chain`, `msrv`, `coverage`, `version-gate`
+  - `Image gate` — covers `build`, `scan`, `integration`
+  - `Security gate` — covers `shellcheck`, `actionlint`, `semgrep`
 - require branches to be up to date before merging;
+- require signed commits;
 - disallow force pushes and deletion.
 
-**The image jobs are required, deliberately.** It costs: they depend on `build`,
-so a documentation-only PR waits for two container builds, and an advisory
+They differ in one rule: `dev` permits a squash merge, `main` only a merge
+commit, per the branch model above.
+
+Those three membership lists are a reader's aid. The authority is each gate's
+`needs` in the workflow, and that is the only copy that can be wrong without
+anybody noticing — which is the whole point of the arrangement.
+
+### Picking the three names
+
+GitHub's name field suggests every check it has **seen recently** on the
+repository, not what the workflows produce today. The list therefore mixes three
+kinds of entry and marks none of them:
+
+- **the three gates** — the only ones to pick;
+- **stage members**, recognisable by the `·` in the name: `Source · Version
+  gate`, `Source · Format & Lint`, `Image · Trivy scan linux/amd64`. These are
+  real and would report — and adding one is still wrong. It is already covered
+  by its gate, and a second required list maintained by hand is precisely the
+  failure the gates removed;
+- **names that no longer exist**: `Version gate`, `Format & Lint`, `Trivy scan
+  linux/amd64` and the rest of the pre-stage naming, still offered because they
+  ran here recently. Picking one blocks every pull request indefinitely, because
+  it never reports again.
+
+`version-gate` is the trap in that list. It is named "gate" and is **not** one of
+the three: it is an ordinary source-stage job that validates the release
+version, and `Source gate` covers it. Anyone counting gates by name counts four.
+
+Old names age out of the picker by themselves once they leave GitHub's recent
+history. Until then, ignore everything that is not one of the three.
+
+Take the entries attributed to **GitHub Actions**. The picker shows the app
+beside each name and the ruleset stores it (`integration_id`), which pins the
+requirement to the workflow meant to satisfy it — Semgrep and Trivy post check
+runs from their own apps, so name alone is not unique.
+
+**Verify the result instead of trusting the click-through.** Both rulesets must
+come back with the same three lines:
+
+```bash
+gh api repos/joshua-schnabel/huginn.io/rulesets -q '.[].id' | while read -r id; do
+  gh api "repos/joshua-schnabel/huginn.io/rulesets/$id" \
+    -q '"\(.name):", (.rules[]
+        | select(.type == "required_status_checks")
+        | .parameters.required_status_checks[] | "  \(.context)")'
+done
+```
+
+### Why three names instead of nine
+
+A check that is not in the required set is an *indicator*: it runs, it goes
+visibly red, and it stops nobody. Keeping that set in step with `ci.yml` by hand
+is the failure this replaces, and it had already happened here — `ShellCheck`
+and `Actionlint` ran on every push and pull request for several releases while a
+PR could merge straight past them, and the fix was recorded in this very file as
+a one-line ruleset change that nobody made. The version gate was in the same
+position and merely got away with it, because `build` happened to list it in
+`needs`.
+
+Each gate derives its verdict from its own `needs` — the same list the pipeline
+must maintain anyway to order itself. A job added to `needs` is covered the
+moment it is added, rather than the moment somebody remembers to edit a
+repository setting that is invisible from the code.
+
+Four consequences worth knowing before anyone changes this:
+
+- **The three gate names are a fixed surface.** `build` and `push` now depend on
+  their gate, and the ruleset names it, so the string appears in two places that
+  cannot see each other. Rename a required check and it never reports again —
+  and a check that never reports blocks every pull request indefinitely. This is
+  why the gates alone carry no `Source ·` / `Image ·` / `Security ·` prefix.
+- **`if: always()` on each gate is load-bearing.** Without it, a gate whose
+  dependency failed is *skipped* rather than failed — and GitHub counts a
+  skipped required check as satisfied. The gate would be green by absence in
+  exactly the case it exists for. It is also what makes the gate safe to depend
+  on: a job that can never be skipped always resolves to a real verdict, so
+  `build` and `push` are skipped precisely when their stage did not pass.
+- **`Tests (beta)` still does not block.** Its leg carries `continue-on-error`,
+  so it reports `success` to `needs` even when it fails. It stays a canary.
+- **`push` and `publish` are deliberately in no gate.** Both are `push`-only, so
+  on a pull request they report `skipped`, and the gates treat anything that is
+  not `success` as a failure.
+
+> **Changing the ruleset is a manual step, and its order matters.** The gate
+> jobs must exist on the default branch and have reported once before they are
+> made required — a required check that never reports blocks every pull request
+> indefinitely. Merge first, then swap the required set.
+
+**If a gate ever has to be renamed**, that same rule turns it into three moves
+rather than an edit: land the rename so the new name reports once, add the new
+name to the required set *beside* the old one, then remove the old. Done as a
+single edit it leaves a window in which the required name is one that no run
+produces, and the repository locks itself. The cheaper answer is not to rename
+them at all, which is why the gates carry no stage prefix and both workflows say
+so at the job.
+
+**The image jobs are required, deliberately.** `Image gate` waits on `build`, so
+a documentation-only PR waits for two container builds, and an advisory
 published that morning against something in the image blocks a branch that never
 touched the image — that happened on 2026-08-06. The decision is that this is
 the right way round: a finding that blocks is a finding someone looks at, and
 the alternative lets a fixable CRITICAL reach `dev` and be caught one step
 later, at `publish`.
 
-Two jobs are **not** required and it is worth knowing which:
-
-- `Version gate` is required only transitively — `build` lists it in `needs`, so
-  an invalid release version fails `build`, and the required image checks then
-  never report. The effect is the same; the mechanism is worth understanding
-  before anyone "simplifies" it.
-- `ShellCheck` and `Actionlint` live in `security.yml` and gate nothing. They
-  run on every push and PR and go red visibly, but a PR can merge past them.
-  Adding them is a one-line ruleset change and probably worth doing.
+**Everything else that runs, blocks.** `ShellCheck` and `Actionlint` block
+through `Security gate`; the version gate blocks through `Source gate` rather
+than by being listed in `build`'s `needs`. That transitive route is gone on
+purpose — `build` names only the gate now, so there is one list of the source
+stage instead of two that can drift.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
@@ -251,12 +434,17 @@ keeps a merge commit, and `release-dispatch.yml` asks for `--merge` explicitly.
 With merge commits disabled the release PR is opened but auto-merge warns and
 you merge it by hand.
 
-**Enable "Allow GitHub Actions to create and approve pull requests"** (Settings →
-Actions → General → Workflow permissions). Without it the API refuses with *"GitHub
-Actions is not permitted to create or approve pull requests"*, and `auto-pr.yml`
-cannot open its draft PR, nor can the post-release housekeeping PR be opened.
-Both warn instead of failing — the branch is pushed either way — but you then
-open the PR yourself. The setting is off by default on new repositories.
+**Leave "Allow GitHub Actions to create and approve pull requests" off**
+(Settings → Actions → General → Workflow permissions), which is the default on
+new repositories. It grants `GITHUB_TOKEN` the right to open *and approve* pull
+requests. Approval grants nothing while the rulesets require no review, which is
+exactly why switching it off costs nothing and closes the path for the day they
+do. Nothing here needs it: the release PR and the housekeeping PR are opened
+with `RELEASE_PAT`, which acts as the maintainer rather than as GitHub Actions,
+and the lockfile PR with the maintenance app's token. Only the fallback without
+`RELEASE_PAT` would hit *"GitHub Actions is not permitted to create or approve
+pull requests"* — and that fallback is already broken for a worse reason: see `RELEASE_PAT`
+in the secrets table below.
 
 **After the first publish**, set the `huginn` package in GitHub → Packages to
 **Public**; it defaults to private, and `docker pull ghcr.io/…` would need auth.
@@ -267,15 +455,56 @@ open the PR yourself. The setting is off by default on new repositories.
 |---|---|---|
 | `DOCKERHUB_USERNAME` | the Docker Hub account owning `<user>/huginn` | `push`, `publish`, the ghcr mirror |
 
-**Secrets**
+**Secrets** — each in the environment named, never at repository level; see
+[Where the secrets live](#where-the-secrets-live) for why.
 
-| Name | Needed for | Consequence if absent |
+| Name | Environment | Needed for | Consequence if absent |
+|---|---|---|---|
+| `DOCKERHUB_TOKEN` | `registry` **and** `release` | pushing the image | `push` fails with a message naming it; nothing is published |
+| `RELEASE_PAT` | `release` | the release tag push, the release-dispatch PR, the housekeeping PR | **`release.yml` never runs** — see above, and **silently**: every use falls back to `GITHUB_TOKEN`, so the tag is still pushed and nothing fails. The PRs are not opened at all, because GitHub Actions may not create pull requests here |
+| `GPG_PRIVATE_KEY` | `release` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
+| `GPG_PASSPHRASE` | `release` | only if the signing key has one | gpg cannot use the key |
+
+**The `registry` and `release` environments** (Settings → Environments). No
+required reviewers on either — each release is already a deliberate act, and a
+review click on every `dev` push would be switched off within a week.
+
+- `registry`: deployment branches **`dev`** and **`main`**.
+- `release`: deployment branch **`main`**, plus a **tag** rule `v*.*.*` —
+  `release.yml` runs on the tag push, whose ref is the tag, not a branch.
+
+Moving a secret from repository level into an environment, without a gap:
+create the environment and set the secret there first, check it arrived —
+`gh secret list --env release` lists the names — and only then delete the
+repository secret. In the other order, `RELEASE_PAT` fails silently, as the
+table says.
+
+**The `maintenance` environment** (Settings → Environments), for
+`lockfile-maintenance.yml`. Its deployment-branch rule allows **`main` only** —
+a scheduled run always starts from the default branch, so nothing legitimate is
+turned away, and a workflow file edited on a feature branch cannot reach the
+key. No required reviewers: the job runs weekly, and the PR it opens is where
+the review happens.
+
+| Kind | Name | Value |
 |---|---|---|
-| `DOCKERHUB_TOKEN` | pushing the image | `push` fails with a message naming it; nothing is published |
-| `RELEASE_PAT` | the release tag push, the release-dispatch PR, the housekeeping PR | **`release.yml` never runs** — see above. The PRs are still opened, but CI does not trigger on them and auto-merge hangs |
+| variable | `MAINTENANCE_APP_CLIENT_ID` | the GitHub App's **Client ID** (not its numeric App ID — `actions/create-github-app-token` has deprecated that input) |
+| secret | `MAINTENANCE_APP_PRIVATE_KEY` | the whole `.pem`, `BEGIN` and `END` lines included |
 
-| `GPG_PRIVATE_KEY` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
-| `GPG_PASSPHRASE` | only if the signing key has one | gpg cannot use the key |
+**The GitHub App** behind it (Settings → Developer settings → GitHub Apps), owned
+by your account and installed on **this repository only** — on *All
+repositories* the same key would reach every one of them. Repository
+permissions **Contents: write** and **Pull requests: write**, nothing else, and
+in particular not *Workflows*: a lockfile update never touches
+`.github/workflows/`, and without that permission a stolen key cannot either.
+Webhook **inactive** — the app reacts to nothing. The private key is the
+long-lived secret; rotate it by generating a new one on the app's page and
+deleting the old.
+
+Why an app and not `RELEASE_PAT`: the PR has to start the required checks,
+which a `GITHUB_TOKEN`-created PR does not, and both an app token and a PAT can.
+The app token is scoped to one repository and two permissions and expires in an
+hour; the PAT acts as you.
 
 **The signing key.** Generate one **for CI**, not a copy of a personal key: if it
 leaks, revoking a dedicated key costs nothing, and a personal one costs
@@ -307,9 +536,18 @@ the two `staging-*` tags once the multi-arch manifest points at their digests.
 
 Dependabot opens one grouped PR per ecosystem — cargo, github-actions, docker —
 weekly, against `dev`, with a 3-day cooldown. `dependabot-auto-merge.yml`
-auto-merges patch and minor bumps; a group containing a major waits for review,
-so you review exactly when a breaking bump is present. Security updates are not
+auto-merges patch and minor bumps of crates and base images; a group containing
+a major waits for review, so you review exactly when a breaking bump is present.
+**GitHub Actions updates always wait for review**: an action runs inside the
+jobs that hold `DOCKERHUB_TOKEN` and `RELEASE_PAT`, and a compromised release
+would otherwise run there unread. Security updates are not
 grouped and not delayed by the cooldown.
+
+Dependabot's cargo updates reach **direct** dependencies only, and it learns of
+advisories from the GitHub Advisory Database, which does not carry every RustSec
+one. `lockfile-maintenance.yml` covers the rest: a weekly full `cargo update`,
+held to the MSRV floor, opened as one signed PR into `dev` and left for review
+rather than auto-merged — `cargo update` has no cooldown.
 
 Dependabot does **not** update `container:` or `docker run` references
 (dependabot-core#5819). The Semgrep and actionlint images in `security.yml` are

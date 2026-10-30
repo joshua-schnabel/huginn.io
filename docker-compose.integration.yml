@@ -31,6 +31,24 @@ services:
     ports:
       - "127.0.0.1:9116:9116"
       - "127.0.0.1:9464:9464"
+    # The same five settings docker-compose.yml applies, and for a different
+    # reason: there they harden a deployment, here they make the suite test the
+    # thing that ships. Without them every gate that claims to exercise the
+    # container exercised the *unhardened* one, so a change that cannot survive a
+    # read-only rootfs — a temp file, a cache directory — or that outgrows 128
+    # processes or 256 MiB would pass CI and fail on first deployment. F-08 of
+    # the 2026-08-12 audit.
+    #
+    # scripts/integration-test.sh asserts these against `docker inspect` at
+    # runtime rather than by comparing the two YAML files, which also catches the
+    # case where compose sets them and the runtime does not apply them.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
     depends_on:
       influxdb:
         condition: service_healthy

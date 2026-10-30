@@ -1,10 +1,14 @@
 //! Prometheus exposition endpoint (`GET /metrics`).
 //!
 //! Hand-rolled text format (version 0.0.4) rather than a client-library crate:
-//! the whole surface is a handful of gauges over [`WebState`]'s latest-result
-//! map, and adding a dependency needs approval (AGENTS.md §3). Only the latest
-//! sample per probe exists, so everything is a gauge — no counters, no
-//! histograms.
+//! the whole surface is a handful of families over [`WebState`], and adding a
+//! dependency needs approval (AGENTS.md §3). No histograms.
+//!
+//! Two groups, and they differ in shape. The **probe** families carry
+//! `probe`/`type`/`target` labels and are all gauges, because only the latest
+//! sample per probe exists. The **write-path** families are process-wide and
+//! carry no labels at all; the monotonic ones are counters, so `rate()` and
+//! `increase()` mean what a reader expects.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -16,6 +20,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use huginn_core::stats::WriteStats;
 use huginn_core::types::ProbeResult;
 use tracing::info;
 
@@ -102,7 +107,11 @@ async fn handle_prometheus(State(state): State<MetricsState>, headers: HeaderMap
         }
     }
     let guard = state.web.results.read().await;
-    ([("content-type", CONTENT_TYPE)], render(&guard)).into_response()
+    (
+        [("content-type", CONTENT_TYPE)],
+        render(&guard, &state.web.write_stats),
+    )
+        .into_response()
 }
 
 /// `Authorization: Bearer <key>` check. The comparison is constant-time so a
@@ -133,13 +142,18 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Render the latest results as Prometheus text format.
+/// Render the latest results and the write-path counters as Prometheus text
+/// format.
 ///
 /// Output is deterministic: probes are sorted by name, and each metric family
 /// appears exactly once with its `# HELP`/`# TYPE` header (Prometheus rejects
 /// duplicate `# TYPE` lines). The per-probe `metrics` map is passed through as
 /// `huginn_probe_<key>` families.
-pub fn render(results: &HashMap<String, ProbeResult>) -> String {
+///
+/// Probe families come first and the write-path families are appended, so the
+/// output an existing scraper already parses is unchanged up to the point the
+/// new block begins.
+pub fn render(results: &HashMap<String, ProbeResult>, stats: &WriteStats) -> String {
     let mut probes: Vec<&ProbeResult> = results.values().collect();
     probes.sort_by(|a, b| a.probe_name.cmp(&b.probe_name));
 
@@ -189,7 +203,85 @@ pub fn render(results: &HashMap<String, ProbeResult>) -> String {
         render_family(&mut out, &name, &help, samples.into_iter());
     }
 
+    render_write_path(&mut out, stats);
+
     out
+}
+
+/// The write path's own numbers.
+///
+/// Everything above describes a monitored target. These describe huginn: a
+/// probe gauge cannot show that a measurement was taken and then discarded,
+/// which is what an eviction or a permanent rejection is. Without them, losing
+/// every result to a bad token looks exactly like everything being fine.
+fn render_write_path(out: &mut String, stats: &WriteStats) {
+    render_scalar(
+        out,
+        "huginn_influx_queue_batches",
+        "Batches currently waiting in the retry queue.",
+        "gauge",
+        stats.queue_batches() as f64,
+    );
+    render_scalar(
+        out,
+        "huginn_influx_queue_bytes",
+        "Bytes of line protocol currently waiting in the retry queue.",
+        "gauge",
+        stats.queue_bytes() as f64,
+    );
+    render_scalar(
+        out,
+        "huginn_influx_batches_written_total",
+        "Batches InfluxDB has accepted since startup.",
+        "counter",
+        stats.written_batches() as f64,
+    );
+    render_scalar(
+        out,
+        "huginn_influx_bytes_written_total",
+        "Bytes of line protocol InfluxDB has accepted since startup.",
+        "counter",
+        stats.written_bytes() as f64,
+    );
+    render_scalar(
+        out,
+        "huginn_influx_batches_dropped_total",
+        "Batches evicted because the retry queue was full. These measurements are lost.",
+        "counter",
+        stats.dropped_batches() as f64,
+    );
+    render_scalar(
+        out,
+        "huginn_influx_bytes_dropped_total",
+        "Bytes of line protocol evicted because the retry queue was full.",
+        "counter",
+        stats.dropped_bytes() as f64,
+    );
+    render_scalar(
+        out,
+        "huginn_influx_batches_rejected_total",
+        "Batches InfluxDB refused permanently and which were discarded. These measurements are lost.",
+        "counter",
+        stats.rejected_batches() as f64,
+    );
+    render_scalar(
+        out,
+        "huginn_influx_last_write_success_timestamp_seconds",
+        "Unix timestamp of the last write InfluxDB accepted, or 0 if none has since startup.",
+        "gauge",
+        stats.last_write_success_unix() as f64,
+    );
+}
+
+/// Append one unlabelled family: header, then its single sample.
+///
+/// Separate from [`render_family`] because these are process-wide. Giving them
+/// the probe labels would be wrong in a way that breaks arithmetic — summing a
+/// counter across labels that do not vary double-counts as soon as a second
+/// series appears.
+fn render_scalar(out: &mut String, name: &str, help: &str, kind: &str, value: f64) {
+    out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n"));
+    out.push_str(&format!("{name} {value}\n"));
 }
 
 /// Append one gauge family: header once, then one sample line per probe.
@@ -262,14 +354,40 @@ mod tests {
             .collect()
     }
 
+    /// Only the probe half, for the tests that predate the write-path block and
+    /// are about the per-probe families.
+    fn render_probes(results: &HashMap<String, ProbeResult>) -> String {
+        let full = render(results, &WriteStats::default());
+        match full.find("# HELP huginn_influx_") {
+            Some(at) => full[..at].to_string(),
+            None => full,
+        }
+    }
+
+    /// The probe half is empty without probes — but the endpoint as a whole is
+    /// not, and must not be: a scrape that returns nothing is indistinguishable
+    /// from a target that is down, while huginn with no results yet is a target
+    /// that is up and has written nothing.
     #[test]
-    fn empty_state_renders_empty_output() {
-        assert_eq!(render(&HashMap::new()), "");
+    fn without_probes_only_the_write_path_block_is_rendered() {
+        assert_eq!(render_probes(&HashMap::new()), "");
+
+        let full = render(&HashMap::new(), &WriteStats::default());
+        assert!(
+            !full.contains("huginn_probe_"),
+            "no probe families without probes: {full}"
+        );
+        assert!(
+            full.contains(
+                "# TYPE huginn_influx_queue_batches gauge\nhuginn_influx_queue_batches 0\n"
+            ),
+            "the write-path block must still be there: {full}"
+        );
     }
 
     #[test]
     fn success_renders_one_for_probe_success() {
-        let out = render(&map_of(vec![ProbeResult::success(
+        let out = render_probes(&map_of(vec![ProbeResult::success(
             "web",
             "http",
             "https://example.com",
@@ -292,7 +410,7 @@ mod tests {
 
     #[test]
     fn failure_renders_zero_and_omits_status_code() {
-        let out = render(&map_of(vec![ProbeResult::failure(
+        let out = render_probes(&map_of(vec![ProbeResult::failure(
             "db",
             "tcp",
             "host:5432",
@@ -313,7 +431,7 @@ mod tests {
 
     #[test]
     fn each_family_header_appears_exactly_once_for_multiple_probes() {
-        let out = render(&map_of(vec![
+        let out = render_probes(&map_of(vec![
             ProbeResult::success("a", "tcp", "a:1", 1.0, None),
             ProbeResult::success("b", "tcp", "b:2", 2.0, None),
         ]));
@@ -333,7 +451,7 @@ mod tests {
 
     #[test]
     fn probe_metrics_map_is_passed_through() {
-        let out = render(&map_of(vec![ProbeResult::success(
+        let out = render_probes(&map_of(vec![ProbeResult::success(
             "cert",
             "tls",
             "example.com:443",
@@ -353,7 +471,7 @@ mod tests {
     fn label_values_are_escaped() {
         assert_eq!(escape_label(r#"a\b"c"#), r#"a\\b\"c"#);
         assert_eq!(escape_label("line1\nline2"), "line1\\nline2");
-        let out = render(&map_of(vec![ProbeResult::success(
+        let out = render_probes(&map_of(vec![ProbeResult::success(
             "quo\"te", "tcp", "t:1", 1.0, None,
         )]));
         assert!(out.contains("probe=\"quo\\\"te\""), "got:\n{out}");
@@ -373,6 +491,7 @@ mod tests {
                     "web", "http", "t", 1.0, None,
                 )]))),
                 sse_tx,
+                write_stats: Arc::new(WriteStats::default()),
             }),
             api_key: api_key.map(Arc::from),
         }

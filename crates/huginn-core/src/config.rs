@@ -547,7 +547,11 @@ impl AppConfig {
         })?;
         let mut cfg: AppConfig = serde_yaml_ng::from_str(&content)
             .map_err(|e| HuginError::Config(format!("YAML parse error: {e}")))?;
-        let warnings = cfg.apply_env_overrides();
+        let mut warnings = cfg.apply_env_overrides();
+        // Before validate(), deliberately: the duplicate-name check has to run
+        // on the normalised names, or two names that differ only in a control
+        // character would pass it and then collide everywhere downstream.
+        warnings.extend(cfg.escape_control_chars_in_names());
         cfg.validate()?;
         Ok((cfg, warnings))
     }
@@ -559,6 +563,47 @@ impl AppConfig {
     /// `HUGINN_LOG_FORMAT=xml` quietly became `pretty`, and `HUGINN_UI_ENABLED=yes`
     /// quietly became `false` — a typo in a deployment looked exactly like a
     /// deliberate setting.
+    /// Replace control characters in probe names and targets with their textual
+    /// form, warning once per string that changed.
+    ///
+    /// These two are the only operator-supplied strings that travel: a name and
+    /// a target reach the console, the `tracing` fields, the Prometheus label
+    /// values and the InfluxDB tags. `ProbeResult::failure` has escaped the
+    /// *remote* string since F-01, but nothing escaped these — so a probe named
+    /// with an ANSI sequence recoloured the operator's terminal, set its window
+    /// title, and was stored in InfluxDB to do it again in every later reader.
+    /// F-07 of the 2026-08-12 audit, with the measurements.
+    ///
+    /// Normalising here rather than at each sink is the same choice F-01 made:
+    /// one place every consumer is downstream of, rather than one guard per
+    /// consumer and a gap the next sink inherits. The per-format escaping in
+    /// the exposition writer and the line-protocol writer stays as a second
+    /// layer.
+    ///
+    /// Rejecting instead would suit the rest of 1.0's strict loading better, and
+    /// is what the next major should do — a config that used to load must keep
+    /// loading until then. See `docs/versioning.md`.
+    fn escape_control_chars_in_names(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for probe in &mut self.probes {
+            for (field, value) in [("name", &mut probe.name), ("target", &mut probe.target)] {
+                let escaped = crate::types::escape_control_chars(value);
+                if escaped != *value {
+                    // The warning carries the escaped form on purpose: printing
+                    // the raw one to report it would do the very thing being
+                    // reported.
+                    warnings.push(format!(
+                        "probe {field} contains control characters and was rewritten to '{escaped}' \
+                         — they reach the console, the Prometheus labels and the InfluxDB tags, \
+                         where a control byte drives the reader's terminal"
+                    ));
+                    *value = escaped;
+                }
+            }
+        }
+        warnings
+    }
+
     pub fn apply_env_overrides(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
 
@@ -1650,6 +1695,90 @@ probes:
 {probes}"#
         );
         serde_yaml_ng::from_str(&yaml).unwrap()
+    }
+
+    /// F-07. A probe name is operator-supplied and travels to the console, the
+    /// Prometheus label values and the InfluxDB tags; a control byte in it
+    /// drives the reader's terminal.
+    ///
+    /// Note the payload: the YAML source carries `\x1b`, not a raw escape byte.
+    /// serde_yaml_ng refuses raw control characters in the stream outright
+    /// ("control characters are not allowed"), so a double-quoted scalar with
+    /// YAML escapes is the way one actually gets into a config — which is how
+    /// the audit's hostile config was written, and why this cannot happen by
+    /// accident.
+    #[test]
+    fn control_characters_in_a_probe_name_are_rewritten_and_warned_about() {
+        let mut cfg = cfg_with_probes(
+            r#"  - name: "evil\x1b[31mNAME\x07"
+    type: tcp
+    target: "a:80"
+"#,
+        );
+        let warnings = cfg.escape_control_chars_in_names();
+
+        assert_eq!(cfg.probes[0].name, "evil\\x1b[31mNAME\\x07");
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(warnings[0].contains("probe name"), "got: {}", warnings[0]);
+        // The warning must not carry the raw bytes: reporting the problem that
+        // way would perform it.
+        assert!(
+            !warnings[0].contains('\u{1b}'),
+            "warning leaked a raw escape"
+        );
+    }
+
+    #[test]
+    fn control_characters_in_a_probe_target_are_rewritten_too() {
+        let mut cfg = cfg_with_probes(
+            r#"  - name: "p"
+    type: tcp
+    target: "ho\x1bst:80"
+"#,
+        );
+        let warnings = cfg.escape_control_chars_in_names();
+
+        assert_eq!(cfg.probes[0].target, "ho\\x1bst:80");
+        assert!(warnings[0].contains("probe target"), "got: {}", warnings[0]);
+    }
+
+    #[test]
+    fn ordinary_names_are_left_alone_and_warn_about_nothing() {
+        let mut cfg = cfg_with_probes(
+            "  - name: \"db.primary\"\n    type: tcp\n    target: \"a:80\"\n  - name: \"grüß-me ✅\"\n    type: tcp\n    target: \"b:80\"\n",
+        );
+        let warnings = cfg.escape_control_chars_in_names();
+
+        assert_eq!(cfg.probes[0].name, "db.primary");
+        assert_eq!(cfg.probes[1].name, "grüß-me ✅");
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+    }
+
+    /// The reason normalisation runs *before* `validate()`: escaping maps two
+    /// distinct names onto one, so the uniqueness check has to see the result.
+    /// Checked first, both names are unique and the collision lands silently in
+    /// the UI's map and the InfluxDB series — the failure #86 removed from the
+    /// debug UI, reintroduced through the back door.
+    #[test]
+    fn names_that_collide_only_after_escaping_are_still_rejected() {
+        let mut cfg = cfg_with_probes(
+            r#"  - name: "x\x1by"
+    type: tcp
+    target: "a:80"
+  - name: "x\\x1by"
+    type: tcp
+    target: "b:80"
+"#,
+        );
+        // Distinct before normalisation, so validate() alone would accept them.
+        assert_ne!(cfg.probes[0].name, cfg.probes[1].name);
+        assert!(cfg.validate().is_ok());
+
+        cfg.escape_control_chars_in_names();
+        assert_eq!(cfg.probes[0].name, cfg.probes[1].name);
+
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("duplicate probe name"), "got: {err}");
     }
 
     /// Duplicate names silently merge in the UI map and share an InfluxDB series.

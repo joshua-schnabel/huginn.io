@@ -7,6 +7,7 @@ use clap::Parser;
 use colored::Colorize;
 use huginn_core::config::{AppConfig, LogFormat};
 use huginn_core::event::{EventHub, ProbeEvent};
+use huginn_core::stats::WriteStats;
 use huginn_core::types::ProbeResult;
 use huginn_influx::queue::RetryQueue;
 use huginn_influx::writer::{run_batcher, run_writer, InfluxWriter};
@@ -283,7 +284,14 @@ pub(crate) async fn run(
     // cause events to be dropped at the source.
     let writer =
         Arc::new(InfluxWriter::new(&cfg.influx).context("Failed to initialise InfluxDB writer")?);
-    let queue = Arc::new(RetryQueue::new(cfg.influx.max_buffered_bytes));
+    // One set of counters, written by the queue and the writer and read by the
+    // metrics endpoint. The binary owns them because it is the only place that
+    // sees both sides — huginn-web must not depend on huginn-influx.
+    let write_stats = Arc::new(WriteStats::default());
+    let queue = Arc::new(RetryQueue::new(
+        cfg.influx.max_buffered_bytes,
+        Arc::clone(&write_stats),
+    ));
 
     // Subscribe before spawning (see the console subscriber above) so no early
     // probe result is lost to InfluxDB at startup.
@@ -300,6 +308,7 @@ pub(crate) async fn run(
         Arc::clone(&queue),
         cfg.influx.retry_initial_backoff_ms,
         cfg.influx.retry_max_backoff_ms,
+        Arc::clone(&write_stats),
         shutdown_tx.subscribe(),
     ));
 
@@ -340,7 +349,7 @@ pub(crate) async fn run(
             None
         };
 
-        let state = Arc::new(huginn_web::state::WebState::new());
+        let state = Arc::new(huginn_web::state::WebState::new(Arc::clone(&write_stats)));
         Arc::clone(&state).start_event_loop(Arc::clone(&hub));
         if let Some(listener) = ui_listener {
             let ui_state = Arc::clone(&state);

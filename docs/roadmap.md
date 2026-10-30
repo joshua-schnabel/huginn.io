@@ -23,24 +23,54 @@ The release path was repaired along the way: the tag is pushed with
 release PR, and `ci.yml` no longer runs on tags — which is what stopped every
 release building twice. See [`ci-cd.md`](ci-cd.md).
 
-**What is left is 1.0 itself**: the surfaces below have to stop moving before a
-version number can promise they will not. [`versioning.md`](versioning.md) says
-what 1.0 would cover.
+**A stable major version has shipped**, so the surfaces in
+[`versioning.md`](versioning.md) are promises now rather than intentions: the
+config schema, the CLI, the InfluxDB schema, the container contract, probe
+semantics and the Prometheus metric names cannot change incompatibly without a
+major version. What is left below is additive or corrective, and none of it
+touches those surfaces.
 
 ## Next
 
-**Self-monitoring for the write path.** Retry-queue evictions, permanently
-rejected batches and writer health are invisible from outside the process: the
-probe gauges cannot show that measurements were taken and then dropped, which is
-exactly the failure mode huginn is built around. If this lands before 1.0, the
-metric names join the stable surface in [`versioning.md`](versioning.md).
+**Cut a release.** Everything above the topmost `## [x.y.z]` heading in
+[`CHANGELOG.md`](../CHANGELOG.md) is unreleased, and it is additive and
+corrective throughout — and it carries the dependency updates that close the
+advisories still open against `main`. It is also the first release under the
+ref-scoped environments, so the first that proves `release` holds what the tag
+push and the signed housekeeping commit need.
 
-**Re-run the security audit.** Listener handling, secret-file behaviour, the
-shutdown path and the TLS transport have all changed since the 2026-08-02 pass,
-and that pass's own closing recommendation was to repeat it after exactly these
-kinds of change. Scope and method are written down in
-[`security-audit.md`](security-audit.md), so it is a repeat rather than a fresh
-invention.
+**Decide the libssl3 suppression before it lapses on 2026-11-30.**
+`.trivyignore.yaml` suppresses CVE-2026-84782 in the distroless base, with the
+reachability argument at the entry: huginn links neither libssl nor libcrypto
+and speaks no DTLS. On that date the suppression expires and Trivy blocks the
+pipeline. Either a rebuilt base image has landed by then — Dependabot's docker
+group proposes it, and the entry is deleted — or the runtime moves to a base
+without OpenSSL, which removes this whole class of alert rather than this one.
+
+**Close the tag gap in `release`.** A tag push runs `release.yml` from the
+tagged commit, so anyone able to push a `v*` tag reaches the `release`
+environment with a workflow of their own — the "tag must be on main" check lives
+in the file being replaced. Closing it needs a tag ruleset that lets only one
+identity create `v*` tags, and that identity cannot be `RELEASE_PAT`, which acts
+as the maintainer: the tag push has to move to an app first.
+[`ci-cd.md`](ci-cd.md#where-the-secrets-live) has the reasoning. Best done after
+a release has proved the environments as they are.
+
+**Bump the two scanner images by hand.** The actionlint and Semgrep images in
+`security.yml` are pinned by digest, and Dependabot does not update `container:`
+or `docker run` references (`dependabot.yml` says why), so nothing proposes a
+new version. Neither pin has moved since 2026-08-07. Semgrep's rules are fetched
+at scan time, so an old image still scans with current rules; actionlint's
+checks are in the image.
+
+**What the second audit left that is not a finding.** Its five findings are all
+fixed — [`security-audit.md`](security-audit.md#pass-2) has the status of each.
+What remains are its hardening suggestions, none of them a known weakness:
+
+- **Validate secret files as legal HTTP header values at load**, so a token with
+  a control byte is refused at startup rather than after the queue has filled.
+- **Narrow `allowed_actions`** from `all`, now that `sha_pinning_required` holds
+  the pinning.
 
 ## Not planned
 
@@ -57,5 +87,5 @@ invention.
 ## Related
 
 - [`risks.md`](risks.md) — the open risks these items come from
-- [`releasing.md`](releasing.md) — how the first release gets cut
-- [`versioning.md`](versioning.md) — what a version number will promise
+- [`releasing.md`](releasing.md) — how a release gets cut
+- [`versioning.md`](versioning.md) — what a version number promises

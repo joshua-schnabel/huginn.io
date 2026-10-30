@@ -11,23 +11,17 @@ the **manual PR flow**. Both end up in the same place.
 
 ---
 
-## One-click release (recommended — once it is available)
-
-> **Not available for the first release.** `workflow_dispatch` workflows are only
-> listed in the Actions UI when the file is on the **default branch**, and
-> `release-dispatch.yml` has never reached `main` — `main` still predates it.
-> The first release therefore goes through the manual flow below, which also
-> puts the workflow on `main` and makes the button appear for every release
-> after it.
->
-> The manual flow does one thing the dispatch would have done for you: stamp the
-> workspace version. Run `bash scripts/set-workspace-version.sh X.Y.Z` in the
-> release branch, so the released image reports the version its tag claims.
+## One-click release (recommended)
 
 Run the **Release (dispatch)** workflow and pick the bump type — that's it.
 
 1. GitHub → **Actions** → **Release (dispatch)** → **Run workflow**.
-2. Choose **`bump`**: `patch`, `minor`, or `major`. Run it on `dev`.
+2. Choose **`bump`**: `patch`, `minor`, or `major`. Run it on **`main`** — the
+   default in the dialog. It releases `dev` either way, because it checks `dev`
+   out itself; the branch only decides which copy of the workflow runs, and the
+   `release` environment that holds `RELEASE_PAT` and the signing key admits
+   `main` and `v*.*.*` tags, not `dev`. Started on `dev`, it fails at the key
+   import with "GPG_PRIVATE_KEY is not set".
 
 The workflow (owner-only) then:
 - computes the next version from the last release (`patch` `0.1.0 → 0.1.1`,

@@ -21,6 +21,20 @@
 //!
 //! Both listeners are off by default and bind loopback, so this is defence for
 //! the deployment that turns one on, not a claim that they are safe to expose.
+//!
+//! **What the fix trades, rather than removes.** The 2026-08-12 audit measured
+//! the same flood again: RSS 8.55 → 19.12 MiB where it had been 29.5 → 113.3,
+//! tasks flat at 40, and 3 894 of 4 000 connections closed by the server. The
+//! memory exhaustion is gone. In its place, while the flood runs the *flooded*
+//! listener stops serving — three of five legitimate requests to it timed out,
+//! because a new peer waits for a permit and permits free only when
+//! `HEADER_READ_TIMEOUT` expires. That is F-09, and it is accepted: bounding
+//! memory at the cost of latency on an optional debug surface is the right way
+//! round. The permits are per listener, which is what keeps it narrow — during
+//! that flood the other two answered in 0.3–4 ms throughout, the container
+//! stayed healthy, and `huginn healthcheck` kept exiting 0, so a flood of a
+//! published debug port cannot make an orchestrator restart a working monitor.
+//! `docs/risks.md` carries it as R7.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,11 +59,20 @@ const MAX_CONNECTIONS: usize = 256;
 /// How long a peer may take to send its request head.
 ///
 /// This is the one that closes F-03: a connection that has sent nothing
-/// complete by then is dropped, so a half-open socket costs a slot for ten
+/// complete by then is dropped, so a half-open socket costs a slot for three
 /// seconds instead of for ever. It bounds only the head — a slow *body* or a
 /// long-lived response is not affected, which is why the SSE stream on
 /// `/events` keeps working.
-const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Three seconds rather than the ten this shipped with, because the deadline is
+/// also the length of the denial it leaves behind (F-09 of the 2026-08-12
+/// audit): an attacker holding all 256 permits with slow heads makes legitimate
+/// requests to that listener wait until permits free, and they free when this
+/// expires. The window shrinks linearly with the number, and three seconds is
+/// still far more than any real client needs to put a request head on a socket
+/// it has already connected — these listeners serve a browser on loopback and a
+/// Prometheus scrape, not a modem.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Serve `app` on `listener` until the process ends.
 ///

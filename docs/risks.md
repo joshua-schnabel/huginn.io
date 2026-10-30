@@ -4,27 +4,37 @@ Live document. Risks are removed when they are resolved, not when they stop bein
 mentioned — R1 went that way when the listener limits landed. Numbers are not
 reused, so a gap means something was fixed, not lost.
 
-The 2026-08-02 audit's findings are closed and recorded in
-[`security-audit.md`](security-audit.md); what is below is what remains open by
-decision, plus the operational risks the audit did not cover.
+Audit findings live in [`security-audit.md`](security-audit.md), closed and open
+alike; what is below is what remains open by decision, plus the operational risks
+no audit covered. A finding moves here only if a decision turns it into an
+accepted risk — as F-09 of the 2026-08-12 pass did, into R7.
 
 ## R4 — Unfixable base-image CVEs stay open in the Security tab
 
 **Severity: low · Status: accepted, monitored**
 
 Debian package CVEs in the distroless base, all LOW/MEDIUM, none with a patched
-version published upstream. They appear as open code-scanning alerts. (17 of
-them when this was last counted, on 2026-08-02 — the count moves with the base
-image and is not worth chasing here; the Security tab has the current one.)
+version published upstream. They appear as open code-scanning alerts. (19 of
+them when this was last counted, on 2026-08-12 — 6 MEDIUM, 13 LOW, none fixable;
+it was 17 on 2026-08-02. The count moves with the base image and is not worth
+chasing here; the Security tab has the current one.)
 
 **Mitigation.** They are deliberately *not* filtered out — the open alert is the
 audit trail. Only fixable CRITICAL/HIGH block the pipeline, so the gate stays
-one people act on rather than one they switch off. `.trivyignore.yaml` exists
-with its rules written down and no entries.
+one people act on rather than one they switch off. `.trivyignore.yaml` holds
+the few exceptions, each with an expiry and a reachability argument.
 
 **Residual.** Unfixable today means blocking tomorrow: when Debian ships fixes,
 the gate starts failing until the image is rebuilt. That is intended, and it
 makes image currency an operational duty.
+
+One gap the gate cannot close by itself: Trivy calls a finding *fixed* as soon
+as Debian has the patched package, and distroless rebuilds later. In between the
+gate blocks on something no Dockerfile change can fix. Observed on 2026-10-30
+with a HIGH in libssl3: the newest distroless digest still carried the
+vulnerable version. The bridge is a `.trivyignore.yaml` entry with a short
+expiry and a measured reachability argument — not waiting, which blocks every
+PR, and not a long suppression, which outlives the reason for it.
 
 ## R6 — A backend outage that outlives the process loses buffered results
 
@@ -43,21 +53,35 @@ the shutdown drain gives the writer a bounded window to flush before exit.
 one with a volume, to cover a case where the orchestrator is already restarting
 things — [ADR-0004](adr/0004-bounded-retry-queue.md).
 
-## O1 — The release path has run, but not yet under one build
+## R7 — A connection flood denies the listener it floods
 
-**Open question, not a risk to a deployment**
+**Severity: low · Status: accepted by design**
 
-Three releases have been cut, so the path is no longer untested — but every one
-of them ran it in the shape that built the image twice, and the fix for that
-(`ci.yml` no longer triggering on tags, plus the digest recorded in the tag and
-re-checked before the Release is created) has not yet been exercised by a real
-release.
+The connection cap that closed [F-03](security-audit.md#f-03) bounds memory by
+making excess peers wait for a permit, and permits free only when the
+header-read deadline expires. So a peer that can reach an enabled listener can
+hold its 256 permits with slow request heads and make legitimate requests to
+*that listener* wait — measured on 2026-08-12 under a 4 000-connection
+half-open flood, three of five timed out.
 
-`release.yml`'s `workflow_dispatch` entry point exists so a partial release can
-be completed by hand rather than re-cut.
+**Mitigation.** The permits are per listener, which is what keeps this narrow:
+during the same flood the other two listeners answered in 0.3–4 ms throughout,
+the container stayed healthy and `huginn healthcheck` kept exiting 0 — so a
+flood of a published debug port cannot fail the container's HEALTHCHECK and make
+an orchestrator restart a working monitor. Probing, batching and the InfluxDB
+writer are untouched: measurement continues throughout. The deadline was cut
+from ten seconds to three, which shortens the denial in proportion.
 
-**Closes when** one release completes end to end with a single build, and the
-digest in the GitHub Release matches the one the tag records.
+**Residual.** An optional, off-by-default, loopback-by-default debug surface can
+be made unresponsive by whoever can already reach it. The debug UI is
+unauthenticated by decision anyway
+([ADR-0009](adr/0009-debug-ui-stays-unauthenticated.md)), so an attacker in that
+position can already read everything it serves.
+
+**Not planned to change.** The alternative to waiting is refusing, and refusing
+requires per-peer accounting on a socket that is meant to be small. Bounding
+memory at the cost of latency here is the right way round — the failure that
+matters is the monitor dying, and it no longer can. F-09 of the 2026-08-12 pass.
 
 ## Related
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use huginn_core::config::InfluxConfig;
 use huginn_core::error::{HuginError, Result};
 use huginn_core::event::ProbeEvent;
+use huginn_core::stats::WriteStats;
 use huginn_core::types::ProbeResult;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -239,6 +240,7 @@ pub async fn run_writer(
     queue: Arc<RetryQueue>,
     initial_backoff_ms: u64,
     max_backoff_ms: u64,
+    stats: Arc<WriteStats>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
     let initial = Duration::from_millis(initial_backoff_ms);
@@ -250,12 +252,14 @@ pub async fn run_writer(
         loop {
             match writer.write_lines(&batch).await {
                 Ok(()) => {
+                    stats.record_written(batch.len() as u64, now_unix());
                     queue.pop_if_front(&batch);
                     break;
                 }
                 Err(e) if !e.is_retryable() => {
                     // Permanent. Dropping it is what keeps the head moving.
                     error!(error = %e, "discarding InfluxDB batch — not retryable");
+                    stats.record_rejected();
                     queue.pop_if_front(&batch);
                     break;
                 }
@@ -297,6 +301,18 @@ pub async fn run_writer(
         );
     }
     debug!("InfluxDB writer exiting");
+}
+
+/// Wall-clock seconds since the epoch, for the "last successful write" gauge.
+///
+/// Saturates to 0 before 1970 rather than propagating an error: the only caller
+/// is a metric, and a clock that far wrong is not something a write path should
+/// refuse to work over.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// `initial * 2^attempt`, capped at `max`.
@@ -604,7 +620,10 @@ mod tests {
         use std::time::Duration;
 
         let hub = Arc::new(EventHub::new(16));
-        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let queue = Arc::new(RetryQueue::new(
+            1024 * 1024,
+            Arc::new(WriteStats::default()),
+        ));
 
         let handle = tokio::spawn(run_batcher(hub.subscribe(), Arc::clone(&queue), 10, 60_000));
 
@@ -630,7 +649,10 @@ mod tests {
 
         // capacity=1: any second publish before recv() is processed causes Lagged.
         let hub = Arc::new(EventHub::new(1));
-        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let queue = Arc::new(RetryQueue::new(
+            1024 * 1024,
+            Arc::new(WriteStats::default()),
+        ));
         let handle = tokio::spawn(run_batcher(hub.subscribe(), Arc::clone(&queue), 10, 60_000));
 
         // Let the task park in rx.recv().await.
@@ -658,7 +680,10 @@ mod tests {
         use std::time::Duration;
 
         let hub = Arc::new(EventHub::new(16));
-        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let queue = Arc::new(RetryQueue::new(
+            1024 * 1024,
+            Arc::new(WriteStats::default()),
+        ));
         // batch_size 10 and a long timeout: 3 results would otherwise sit in the
         // buffer forever.
         let handle = tokio::spawn(run_batcher(hub.subscribe(), Arc::clone(&queue), 10, 60_000));
@@ -693,7 +718,10 @@ mod tests {
     ) -> (Arc<RetryQueue>, broadcast::Sender<()>) {
         let cfg = influx_cfg(url, tf);
         let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-        let queue = Arc::new(RetryQueue::new(8 * 1024 * 1024));
+        let queue = Arc::new(RetryQueue::new(
+            8 * 1024 * 1024,
+            Arc::new(WriteStats::default()),
+        ));
         let (shutdown_tx, _) = broadcast::channel(1);
 
         tokio::spawn(run_batcher(
@@ -707,6 +735,7 @@ mod tests {
             Arc::clone(&queue),
             1,
             10,
+            Arc::new(WriteStats::default()),
             shutdown_tx.subscribe(),
         ));
         (queue, shutdown_tx)
@@ -829,7 +858,8 @@ mod tests {
         let tf = token_file("bad-token");
         let cfg = influx_cfg(&server.uri(), &tf);
         let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let stats = Arc::new(WriteStats::default());
+        let queue = Arc::new(RetryQueue::new(1024 * 1024, Arc::clone(&stats)));
         let (shutdown_tx, _) = broadcast::channel(1);
 
         queue.push(Arc::from("probe_result,probe_name=x up=1i 1"));
@@ -840,6 +870,7 @@ mod tests {
             Arc::clone(&queue),
             1,
             10,
+            Arc::clone(&stats),
             shutdown_tx.subscribe(),
         ));
 
@@ -849,6 +880,68 @@ mod tests {
             .unwrap();
 
         assert!(queue.is_empty(), "poisoned batch must be discarded");
+        server.verify().await;
+
+        // Discarding it is correct, and silently discarding it is the failure
+        // this counter exists to make visible.
+        assert_eq!(stats.rejected_batches(), 1);
+        assert_eq!(
+            stats.dropped_batches(),
+            0,
+            "a rejection is not a queue eviction — they have different causes and different fixes"
+        );
+        assert_eq!(stats.written_batches(), 0);
+        assert_eq!(
+            stats.last_write_success_unix(),
+            0,
+            "nothing was ever accepted, so the last-success gauge must stay at zero"
+        );
+    }
+
+    /// The counters the write path reports about itself, on the happy path.
+    #[tokio::test]
+    async fn a_successful_write_is_counted_and_timestamped() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let tf = token_file("tok");
+        let cfg = influx_cfg(&server.uri(), &tf);
+        let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
+        let stats = Arc::new(WriteStats::default());
+        let queue = Arc::new(RetryQueue::new(1024 * 1024, Arc::clone(&stats)));
+        let (shutdown_tx, _) = broadcast::channel(1);
+
+        let line = "probe_result,probe_name=x up=1i 1";
+        let before = now_unix();
+        queue.push(Arc::from(line));
+        queue.close();
+
+        let handle = tokio::spawn(run_writer(
+            writer,
+            Arc::clone(&queue),
+            1,
+            10,
+            Arc::clone(&stats),
+            shutdown_tx.subscribe(),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("writer did not exit")
+            .unwrap();
+
+        assert_eq!(stats.written_batches(), 1);
+        assert_eq!(stats.written_bytes(), line.len() as u64);
+        assert_eq!(stats.rejected_batches(), 0);
+        assert!(
+            stats.last_write_success_unix() >= before,
+            "the last-success gauge must move forward on an accepted write"
+        );
+        assert_eq!(stats.queue_batches(), 0, "the queue drained");
         server.verify().await;
     }
 
@@ -878,7 +971,10 @@ mod tests {
         let tf = token_file("mytoken");
         let cfg = influx_cfg(&server.uri(), &tf);
         let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let queue = Arc::new(RetryQueue::new(
+            1024 * 1024,
+            Arc::new(WriteStats::default()),
+        ));
         let (shutdown_tx, _) = broadcast::channel(1);
 
         queue.push(Arc::from("probe_result,probe_name=x up=1i 1"));
@@ -889,6 +985,7 @@ mod tests {
             Arc::clone(&queue),
             1,
             10,
+            Arc::new(WriteStats::default()),
             shutdown_tx.subscribe(),
         ));
 
@@ -918,7 +1015,10 @@ mod tests {
         let tf = token_file("mytoken");
         let cfg = influx_cfg(&server.uri(), &tf);
         let writer = Arc::new(InfluxWriter::new(&cfg).unwrap());
-        let queue = Arc::new(RetryQueue::new(1024 * 1024));
+        let queue = Arc::new(RetryQueue::new(
+            1024 * 1024,
+            Arc::new(WriteStats::default()),
+        ));
         let (shutdown_tx, _) = broadcast::channel(1);
 
         queue.push(Arc::from("probe_result,probe_name=x up=1i 1"));
@@ -929,6 +1029,7 @@ mod tests {
             Arc::clone(&queue),
             10_000,
             60_000,
+            Arc::new(WriteStats::default()),
             shutdown_tx.subscribe(),
         ));
 
