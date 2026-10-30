@@ -240,8 +240,14 @@ a `dev` that has moved on that can be a **downgrade** — #51 proposed
 against the new base fixes that, and if the advisory is already fixed on `dev`
 Dependabot closes the PR itself.
 
-A security update is recognised by `ghsa-id` being non-empty in the
-`fetch-metadata` output; version updates never set it.
+A security update is recognised by its **base branch alone**: every ecosystem
+sets `target-branch: dev`, so a Dependabot PR against `main` cannot be anything
+else. It used to be recognised by a non-empty `ghsa-id` from `fetch-metadata`,
+and that never worked — the action fills `ghsa-id` only with `alert-lookup: true`
+and a token that can read Dependabot alerts, which `GITHUB_TOKEN` cannot. The
+output was always empty, the step always skipped, and huginn.io#111 sat on
+`main` for weeks as a result. Do not go back to `ghsa-id` without also giving
+the step that token.
 
 ### 2. Auto-merge, once the PR is on the right branch
 
