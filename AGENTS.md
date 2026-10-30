@@ -291,6 +291,11 @@ workflow permissions must be reasoned about explicitly and flagged in the PR.
   Unicode `Cc` range.
 - **Least-privilege workflow `permissions:`** — grant the minimum a job needs,
   and scope `security-events: write` to the one job that uploads SARIF.
+- **Actions secrets live in environments scoped to the refs that use them**,
+  never at repository level: a repository secret is readable from any branch's
+  copy of a workflow, so a push credential would be enough to print it. A job
+  that needs a secret declares its `environment:`.
+  [`docs/ci-cd.md`](docs/ci-cd.md#where-the-secrets-live)
 - **Gates:** cargo-deny (advisories, licences, the rustls-only ban), Semgrep
   (`p/rust` + `p/secrets`, ERROR blocks), Trivy (fixable CRITICAL/HIGH block),
   shellcheck, actionlint. A Trivy suppression needs an expiry and a reachability
