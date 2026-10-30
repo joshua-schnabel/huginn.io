@@ -45,8 +45,6 @@ What remains are its hardening suggestions, none of them a known weakness:
 
 - **Validate secret files as legal HTTP header values at load**, so a token with
   a control byte is refused at startup rather than after the queue has filled.
-- **Turn off "Allow GitHub Actions to create and approve pull requests".** It
-  grants nothing while the rulesets require no approving review.
 - **Narrow `allowed_actions`** from `all`, now that `sha_pinning_required` holds
   the pinning.
 

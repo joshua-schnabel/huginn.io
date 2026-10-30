@@ -38,7 +38,7 @@ name: Lockfile maintenance
 #
 # The branch is `maintenance/lockfile`, outside auto-pr.yml's naming rule and
 # listed in its `branches-ignore` — otherwise that workflow would delete it on
-# sight, or race this one to open the PR under its own, approval-parked author.
+# sight.
 on:
   schedule:
     - cron: "41 4 * * 1"   # Mondays, before the week's work rather than during it

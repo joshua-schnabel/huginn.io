@@ -434,12 +434,17 @@ keeps a merge commit, and `release-dispatch.yml` asks for `--merge` explicitly.
 With merge commits disabled the release PR is opened but auto-merge warns and
 you merge it by hand.
 
-**Enable "Allow GitHub Actions to create and approve pull requests"** (Settings →
-Actions → General → Workflow permissions). Without it the API refuses with *"GitHub
-Actions is not permitted to create or approve pull requests"*, and `auto-pr.yml`
-cannot open its draft PR, nor can the post-release housekeeping PR be opened.
-Both warn instead of failing — the branch is pushed either way — but you then
-open the PR yourself. The setting is off by default on new repositories.
+**Leave "Allow GitHub Actions to create and approve pull requests" off**
+(Settings → Actions → General → Workflow permissions), which is the default on
+new repositories. It grants `GITHUB_TOKEN` the right to open *and approve* pull
+requests. Approval grants nothing while the rulesets require no review, which is
+exactly why switching it off costs nothing and closes the path for the day they
+do. Nothing here needs it: the release PR and the housekeeping PR are opened
+with `RELEASE_PAT`, which acts as the maintainer rather than as GitHub Actions,
+and the lockfile PR with the maintenance app's token. Only the fallback without
+`RELEASE_PAT` would hit *"GitHub Actions is not permitted to create or approve
+pull requests"* — and that fallback is already broken for a worse reason: see `RELEASE_PAT`
+in the secrets table below.
 
 **After the first publish**, set the `huginn` package in GitHub → Packages to
 **Public**; it defaults to private, and `docker pull ghcr.io/…` would need auth.
@@ -456,7 +461,7 @@ open the PR yourself. The setting is off by default on new repositories.
 | Name | Environment | Needed for | Consequence if absent |
 |---|---|---|---|
 | `DOCKERHUB_TOKEN` | `registry` **and** `release` | pushing the image | `push` fails with a message naming it; nothing is published |
-| `RELEASE_PAT` | `release` | the release tag push, the release-dispatch PR, the housekeeping PR | **`release.yml` never runs** — see above, and **silently**: every use falls back to `GITHUB_TOKEN`, so the tag is still pushed and nothing fails. The PRs are still opened, but CI does not trigger on them and auto-merge hangs |
+| `RELEASE_PAT` | `release` | the release tag push, the release-dispatch PR, the housekeeping PR | **`release.yml` never runs** — see above, and **silently**: every use falls back to `GITHUB_TOKEN`, so the tag is still pushed and nothing fails. The PRs are not opened at all, because GitHub Actions may not create pull requests here |
 | `GPG_PRIVATE_KEY` | `release` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
 | `GPG_PASSPHRASE` | `release` | only if the signing key has one | gpg cannot use the key |
 
