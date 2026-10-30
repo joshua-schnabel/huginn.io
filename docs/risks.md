@@ -6,9 +6,8 @@ reused, so a gap means something was fixed, not lost.
 
 Audit findings live in [`security-audit.md`](security-audit.md), closed and open
 alike; what is below is what remains open by decision, plus the operational risks
-no audit covered. The 2026-08-12 pass left F-07 … F-11 open — they are tracked
-there, as findings with reproductions, and move here only if a decision turns one
-into an accepted risk.
+no audit covered. A finding moves here only if a decision turns it into an
+accepted risk — as F-09 of the 2026-08-12 pass did, into R7.
 
 ## R4 — Unfixable base-image CVEs stay open in the Security tab
 
@@ -83,22 +82,6 @@ position can already read everything it serves.
 requires per-peer accounting on a socket that is meant to be small. Bounding
 memory at the cost of latency here is the right way round — the failure that
 matters is the monitor dying, and it no longer can. F-09 of the 2026-08-12 pass.
-
-## O1 — The release path has run, but not yet under one build
-
-**Open question, not a risk to a deployment**
-
-Three releases have been cut, so the path is no longer untested — but every one
-of them ran it in the shape that built the image twice, and the fix for that
-(`ci.yml` no longer triggering on tags, plus the digest recorded in the tag and
-re-checked before the Release is created) has not yet been exercised by a real
-release.
-
-`release.yml`'s `workflow_dispatch` entry point exists so a partial release can
-be completed by hand rather than re-cut.
-
-**Closes when** one release completes end to end with a single build, and the
-digest in the GitHub Release matches the one the tag records.
 
 ## Related
 

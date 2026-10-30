@@ -32,35 +32,23 @@ touches those surfaces.
 
 ## Next
 
-**Act on the second security audit.** The 2026-08-12 pass is done and found no
-CRITICAL or HIGH; what it did find is five Low findings, open and each with a
-reproduction, in [`security-audit.md`](security-audit.md#pass-2). In its own
-priority order:
-
-- **F-07** — control characters in a probe name reach the console, the Prometheus
-  label values and the InfluxDB tags raw. The remote path has been escaped since
-  F-01; the configuration path never was.
-- **F-08** — the integration suite runs the container without the hardening the
-  shipped compose file applies, so nothing keeps that hardening working. It does
-  work today; that was verified separately, which is the only reason this is a
-  missing gate rather than a broken setting.
-- **F-10** — SHA-pinning of actions is held by hand. `sha_pinning_required` is
-  the repository setting that would make it structural.
-- **F-11** — the `publish` job's comment claims no third-party code runs between
-  its credentialed checkout and the tag push. Four actions do.
-- **F-09** — needs a decision rather than a fix: the connection cap converts
-  memory exhaustion into denial of service on the flooded listener, which is
-  the right trade and is written down nowhere.
-
-The pass also carries three hardening suggestions that are not findings — see its
-recommendations.
-
 **Cut a release.** Everything above the topmost `## [x.y.z]` heading in
 [`CHANGELOG.md`](../CHANGELOG.md) is unreleased, and it is additive and
-corrective throughout. It is also the only way to close **O1** in
-[`risks.md`](risks.md): three releases have been cut, all of them under the shape
-that built the image twice, and the fix for that has never run under a real
-release.
+corrective throughout — and it carries the dependency updates that close the
+advisories still open against `main`. It is also the first release under the
+ref-scoped environments, so the first that proves `release` holds what the tag
+push and the signed housekeeping commit need.
+
+**What the second audit left that is not a finding.** Its five findings are all
+fixed — [`security-audit.md`](security-audit.md#pass-2) has the status of each.
+What remains are its hardening suggestions, none of them a known weakness:
+
+- **Validate secret files as legal HTTP header values at load**, so a token with
+  a control byte is refused at startup rather than after the queue has filled.
+- **Turn off "Allow GitHub Actions to create and approve pull requests".** It
+  grants nothing while the rulesets require no approving review.
+- **Narrow `allowed_actions`** from `all`, now that `sha_pinning_required` holds
+  the pinning.
 
 ## Not planned
 
