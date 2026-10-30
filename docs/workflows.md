@@ -373,7 +373,9 @@ via `workflow_dispatch` with an existing tag.
 ## `release-dispatch.yml` — one-click release, owner-only
 
 **Runs on** manual `workflow_dispatch` with a `bump` input
-(`patch`/`minor`/`major`).
+(`patch`/`minor`/`major`), **started on `main`**. It releases `dev` regardless —
+it checks `dev` out — but its job takes the `release` environment, which admits
+`main` and `v*.*.*` tags only, so a run started on `dev` gets no secrets.
 
 - The first step asserts `github.actor == github.repository_owner`; anyone else
   gets a hard error.

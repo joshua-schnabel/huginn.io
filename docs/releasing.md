@@ -16,7 +16,12 @@ the **manual PR flow**. Both end up in the same place.
 Run the **Release (dispatch)** workflow and pick the bump type — that's it.
 
 1. GitHub → **Actions** → **Release (dispatch)** → **Run workflow**.
-2. Choose **`bump`**: `patch`, `minor`, or `major`. Run it on `dev`.
+2. Choose **`bump`**: `patch`, `minor`, or `major`. Run it on **`main`** — the
+   default in the dialog. It releases `dev` either way, because it checks `dev`
+   out itself; the branch only decides which copy of the workflow runs, and the
+   `release` environment that holds `RELEASE_PAT` and the signing key admits
+   `main` and `v*.*.*` tags, not `dev`. Started on `dev`, it fails at the key
+   import with "GPG_PRIVATE_KEY is not set".
 
 The workflow (owner-only) then:
 - computes the next version from the last release (`patch` `0.1.0 → 0.1.1`,
