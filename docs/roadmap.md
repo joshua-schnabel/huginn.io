@@ -39,6 +39,30 @@ advisories still open against `main`. It is also the first release under the
 ref-scoped environments, so the first that proves `release` holds what the tag
 push and the signed housekeeping commit need.
 
+**Decide the libssl3 suppression before it lapses on 2026-11-30.**
+`.trivyignore.yaml` suppresses CVE-2026-84782 in the distroless base, with the
+reachability argument at the entry: huginn links neither libssl nor libcrypto
+and speaks no DTLS. On that date the suppression expires and Trivy blocks the
+pipeline. Either a rebuilt base image has landed by then — Dependabot's docker
+group proposes it, and the entry is deleted — or the runtime moves to a base
+without OpenSSL, which removes this whole class of alert rather than this one.
+
+**Close the tag gap in `release`.** A tag push runs `release.yml` from the
+tagged commit, so anyone able to push a `v*` tag reaches the `release`
+environment with a workflow of their own — the "tag must be on main" check lives
+in the file being replaced. Closing it needs a tag ruleset that lets only one
+identity create `v*` tags, and that identity cannot be `RELEASE_PAT`, which acts
+as the maintainer: the tag push has to move to an app first.
+[`ci-cd.md`](ci-cd.md#where-the-secrets-live) has the reasoning. Best done after
+a release has proved the environments as they are.
+
+**Bump the two scanner images by hand.** The actionlint and Semgrep images in
+`security.yml` are pinned by digest, and Dependabot does not update `container:`
+or `docker run` references (`dependabot.yml` says why), so nothing proposes a
+new version. Neither pin has moved since 2026-08-07. Semgrep's rules are fetched
+at scan time, so an old image still scans with current rules; actionlint's
+checks are in the image.
+
 **What the second audit left that is not a finding.** Its five findings are all
 fixed — [`security-audit.md`](security-audit.md#pass-2) has the status of each.
 What remains are its hardening suggestions, none of them a known weakness:
