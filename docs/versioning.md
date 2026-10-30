@@ -44,10 +44,11 @@ The minimum supported Rust version is `rust-version` in `Cargo.toml` — read it
 there rather than from a number repeated here, which is how the two drift. It
 may be raised in a **minor** release, never in a patch release.
 
-The Dockerfile's builder sits at or above that floor and is what actually
-enforces it, because CI runs floating stable. Dependabot moves the builder tag
-forward on its own; that is an update, not an MSRV change. Raising the floor is
-a deliberate act and gets a changelog entry.
+CI's `Source · MSRV` job checks the workspace on exactly that toolchain, and it
+is what enforces the floor: every other job runs floating stable, and the
+Dockerfile's builder sits at or above the floor by design. Dependabot moves the
+builder tag forward on its own; that is an update, not an MSRV change. Raising
+the floor is a deliberate act and gets a changelog entry.
 
 ## Supported versions
 

@@ -15,16 +15,17 @@ edition = "2021"
 # that tag forward on its own, so "at least" is the invariant that survives an
 # update; "equal to" would be false the morning after every bump.
 #
-# CI tests on floating stable, so a dependency raising the MSRV leaves CI green
-# while the Docker build — the actual artefact — fails. That is not
-# hypothetical: hickory-resolver 0.26, required for RUSTSEC-2026-0119, needs
+# The test jobs run floating stable, so a dependency raising the MSRV leaves
+# them green — and while the Docker builder still sat below it, the image build
+# was the first thing to fail. That is not hypothetical: hickory-resolver 0.26, required for RUSTSEC-2026-0119, needs
 # 1.88 and broke the image build against the then-current 1.85 builder while
 # every local check stayed green.
 #
 # Note this field documents our floor; with edition 2021 the resolver does not
 # refuse dependencies that exceed it (that needs
 # `resolver.incompatible-rust-versions = "fallback"`, which here would silently
-# pick a hickory without the CVE fix). The Docker build is the real gate.
+# pick a hickory without the CVE fix). The gate is `Source · MSRV` in
+# .github/workflows/ci.yml, which checks the workspace on exactly this toolchain.
 rust-version = "1.88"
 authors = ["huginn.io contributors"]
 license = "MIT"

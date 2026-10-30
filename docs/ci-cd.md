@@ -34,6 +34,7 @@ release PR would silently revert it.
 ── Source ────────────────────────────────────────────────────────────────
   check ─┬ test (stable + beta·canary) ─┐
          ├ supply-chain ────────────────┤
+         ├ msrv ────────────────────────┤
          ├ coverage ────────────────────┤
          └ version-gate ────────────────┤
                                         ▼
@@ -103,6 +104,7 @@ every `github.ref == 'refs/heads/dev'` check silently reads false. A job with
 | Source · Tests (stable) | yes 🚫 | yes | yes | — |
 | Source · Tests (beta, canary) | yes | yes | yes | — |
 | Source · Supply-chain (cargo-deny) | yes 🚫 | yes | yes | — |
+| Source · MSRV (`rust-version` toolchain) | yes 🚫 | yes | yes | — |
 | Source · Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
 | Source · Version gate | yes 🚫† | ➖ | yes 🚫 | — |
 | Security · Semgrep · ShellCheck · Actionlint | yes 🚫* | yes | yes | — |
@@ -199,9 +201,10 @@ carries 17 unfixable LOW/MEDIUM CVEs that stay visible as open alerts on purpose
 ([R4](risks.md)).
 
 `.trivyignore.yaml` is read by the blocking scan only, so a suppressed finding
-still reaches the Security tab. It is empty, and its rules are written down for
-when it is not: every entry carries `expired_at`, and every entry argues why the
-vulnerable code cannot be reached in huginn's deployment.
+still reaches the Security tab. It is meant to stay close to empty, and its
+rules say what an entry has to bring: an `expired_at`, and an argument why the
+vulnerable code cannot be reached in huginn's deployment. What it holds today is
+in the file, each entry with its reasoning.
 
 ## Architectures
 
@@ -262,7 +265,7 @@ Both rulesets:
   solo project, and a reviewer nobody can be would block every merge;
 - require exactly **three** status checks, each a fan-in job that runs no build
   and no test of its own:
-  - `Source gate` — covers `check`, `test`, `supply-chain`, `coverage`, `version-gate`
+  - `Source gate` — covers `check`, `test`, `supply-chain`, `msrv`, `coverage`, `version-gate`
   - `Image gate` — covers `build`, `scan`, `integration`
   - `Security gate` — covers `shellcheck`, `actionlint`, `semgrep`
 - require branches to be up to date before merging;
@@ -415,6 +418,33 @@ open the PR yourself. The setting is off by default on new repositories.
 | `GPG_PRIVATE_KEY` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
 | `GPG_PASSPHRASE` | only if the signing key has one | gpg cannot use the key |
 
+**The `maintenance` environment** (Settings → Environments), for
+`lockfile-maintenance.yml`. Its deployment-branch rule allows **`main` only** —
+a scheduled run always starts from the default branch, so nothing legitimate is
+turned away, and a workflow file edited on a feature branch cannot reach the
+key. No required reviewers: the job runs weekly, and the PR it opens is where
+the review happens.
+
+| Kind | Name | Value |
+|---|---|---|
+| variable | `MAINTENANCE_APP_CLIENT_ID` | the GitHub App's **Client ID** (not its numeric App ID — `actions/create-github-app-token` has deprecated that input) |
+| secret | `MAINTENANCE_APP_PRIVATE_KEY` | the whole `.pem`, `BEGIN` and `END` lines included |
+
+**The GitHub App** behind it (Settings → Developer settings → GitHub Apps), owned
+by your account and installed on **this repository only** — on *All
+repositories* the same key would reach every one of them. Repository
+permissions **Contents: write** and **Pull requests: write**, nothing else, and
+in particular not *Workflows*: a lockfile update never touches
+`.github/workflows/`, and without that permission a stolen key cannot either.
+Webhook **inactive** — the app reacts to nothing. The private key is the
+long-lived secret; rotate it by generating a new one on the app's page and
+deleting the old.
+
+Why an app and not `RELEASE_PAT`: the PR has to start the required checks,
+which a `GITHUB_TOKEN`-created PR does not, and both an app token and a PAT can.
+The app token is scoped to one repository and two permissions and expires in an
+hour; the PAT acts as you.
+
 **The signing key.** Generate one **for CI**, not a copy of a personal key: if it
 leaks, revoking a dedicated key costs nothing, and a personal one costs
 everything it ever signed. No passphrase is the normal choice — the private key
@@ -448,6 +478,12 @@ weekly, against `dev`, with a 3-day cooldown. `dependabot-auto-merge.yml`
 auto-merges patch and minor bumps; a group containing a major waits for review,
 so you review exactly when a breaking bump is present. Security updates are not
 grouped and not delayed by the cooldown.
+
+Dependabot's cargo updates reach **direct** dependencies only, and it learns of
+advisories from the GitHub Advisory Database, which does not carry every RustSec
+one. `lockfile-maintenance.yml` covers the rest: a weekly full `cargo update`,
+held to the MSRV floor, opened as one signed PR into `dev` and left for review
+rather than auto-merged — `cargo update` has no cooldown.
 
 Dependabot does **not** update `container:` or `docker run` references
 (dependabot-core#5819). The Semgrep and actionlint images in `security.yml` are

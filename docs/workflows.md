@@ -11,14 +11,17 @@ The pipeline's rationale is [`ci-cd.md`](ci-cd.md); cutting a release is
 |---|---|---|
 | `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
+| `advisories.yml` | daily · manual | `cargo deny check advisories` against `dev` and `main`, pushed to or not |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
+| `lockfile-maintenance.yml` | weekly · manual | Full `cargo update` against `dev`, held to the MSRV floor, as one signed PR |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
 | `release-dispatch.yml` | manual, owner-only | One-click release: pick patch/minor/major |
 
 Dependency updates are configured in `.github/dependabot.yml` — one grouped PR
 per ecosystem (cargo, github-actions, docker), all targeting `dev`. That is
-Dependabot config, not a workflow.
+Dependabot config, not a workflow. It covers direct crates only; the transitive
+ones are `lockfile-maintenance.yml`'s.
 
 ## `ci.yml` — quality gates and publish
 
@@ -40,8 +43,21 @@ must not (they are the required checks). `needs` orders everything.
    non-blocking canary (`continue-on-error`): it warns of an upcoming toolchain
    break without gating a merge.
 3. **`supply-chain`** — `cargo deny check`: advisories, licences, banned crates,
-   registry sources.
-4. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, **workspace-aggregate
+   registry sources. Before it, `Check suppression expiries` fails the job once
+   a `deny.toml` ignore entry's `expires <YYYY-MM-DD>` has passed: cargo-deny
+   accepts only `id` and `reason` on an entry, so the date lives in the reason
+   and is enforced here, or it would be decoration.
+4. **`msrv`** — `cargo check --workspace --all-targets --locked` on exactly the
+   toolchain `rust-version` in `Cargo.toml` names, read from the file rather than
+   repeated in the workflow. Nothing else builds on the floor: `test` runs
+   floating stable and beta, and the image's builder sits above it by design.
+   Under edition 2021 Cargo does not refuse a dependency that needs more, so
+   without this job the floor is an untested claim — a routine `cargo update` on
+   2026-10-29 would have pulled in a `uuid` one minor above it with every other
+   check green. Red is a decision, not a defect: pin the dependency back with
+   `cargo update -p <crate> --precise <version>`, or raise the floor, which
+   `versioning.md` allows in a minor release.
+5. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, **workspace-aggregate
    line** coverage, not per-file and not regions. Uploads `lcov.info` and writes
    the percentage into the job summary, computed from the file's `LF`/`LH`
    records. The `cargo-llvm-cov` binary is pinned and cached; `cargo-deny` is
@@ -50,7 +66,7 @@ must not (they are the required checks). `needs` orders everything.
    toolchain legs: it runs the whole suite itself under instrumentation, so
    waiting for `test` added no confidence — only a full suite's duration on the
    critical path, part of it spent on the beta leg, which cannot block anything.
-5. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer,
+6. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer,
    must match `[workspace.package].version` in `Cargo.toml`, and must be
    strictly greater than the last `v*` tag. Enforces **only** in a release
    context (a PR whose base is `main`, or a push to `main`) and is a no-op pass
@@ -61,16 +77,16 @@ must not (they are the required checks). `needs` orders everything.
    `Cargo.toml` check exists because the image is tagged from the changelog
    while the binary reports its manifest version — without it a half-stamped
    release branch ships `huginn:0.4.0` that says `0.3.0` when asked.
-6. **`build`** (matrix, per architecture, **native** runner) — builds the image
+7. **`build`** (matrix, per architecture, **native** runner) — builds the image
    exactly once into `image.tar` and uploads it as an artefact. Native runners
    replaced QEMU, which had made the arm64 build the pipeline's dominant cost.
-7. **`scan`** (matrix) — Trivy against that artefact: a full SARIF pass to the
+8. **`scan`** (matrix) — Trivy against that artefact: a full SARIF pass to the
    Security tab, a blocking pass on fixable CRITICAL/HIGH reading
    `.trivyignore.yaml`, and a CycloneDX SBOM kept for 90 days. Never rebuilds.
-8. **`integration`** (matrix, native runner) — `docker load` plus
+9. **`integration`** (matrix, native runner) — `docker load` plus
    `docker compose --no-build`, then `scripts/integration-test.sh` against the
    loaded image.
-9. **`source-gate`** and **`image-gate`** — the two jobs the branch ruleset
+10. **`source-gate`** and **`image-gate`** — the two jobs the branch ruleset
    actually names, and the boundaries between the stages. Each depends on a
    group of the jobs above and fails if any of them did not report `success`;
    neither runs a build or a test of its own. Each also writes its members and
@@ -89,13 +105,13 @@ must not (they are the required checks). `needs` orders everything.
    unreliable thing for `build` to depend on. `push` and `publish` are
    deliberately not in either gate, because a `push`-only job reports `skipped`
    on a pull request.
-10. **`push`** (matrix, `if: push`) — needs `image-gate`, so it sees the scanned
+11. **`push`** (matrix, `if: push`) — needs `image-gate`, so it sees the scanned
     *and* integration-tested bytes and nothing else; skopeo copies the tarball
     to a staging tag by digest and records the digest. Skipped on PRs, so
     registry credentials are never reachable there. Its `if:` narrows the job to
     push events without loosening the dependency — an `if:` carrying no status
     function leaves the implicit `success()` on `needs` in place.
-11. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
+12. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
     digests, mirrors it to ghcr with `skopeo copy --all`, deletes the staging
     tags, and creates the git tag `vX.Y.Z`, **annotated with the manifest
     digest**. It publishes **no new bytes**. The annotation is what lets
@@ -152,6 +168,39 @@ feature branches before a PR exists.
   image that ships; when it was here it built its own image, so the scanned image
   was never the published one.
 
+## `advisories.yml` — the daily advisory scan
+
+**Runs** daily on a schedule, and manually. Checks out `dev` and `main` in two
+independent jobs and runs `cargo deny check advisories` against each.
+
+It exists because an advisory is the one verdict that changes about a tree
+nobody touched. `ci.yml`'s supply-chain job runs only on a push or a PR, so a
+quiet branch is an unmeasured one: `dev` sat still from 2026-08-16, and by
+2026-10-25 nine RustSec advisories applied to it without anything having said
+so. The first run to notice was a Dependabot PR — which then failed, like every
+other PR, on a lockfile it had not caused.
+
+- **`main`** is what the published image was built from: a failure there alone
+  is a reason to release.
+- **`dev`** is what the next release ships: a failure there is a reason to fix
+  before releasing.
+
+Only advisories. Licences, bans and sources move only when the lockfile does,
+and `ci.yml` checks them at that moment.
+
+**Gotchas**
+
+- `schedule` always runs the workflow file from the **default branch**, `main`.
+  A change to this file takes effect once it has been released, and the job sees
+  `dev` only because it checks it out by name.
+- GitHub **disables scheduled workflows** in a public repository after 60 days
+  without repository activity — exactly the kind of quiet spell this is for. If
+  the runs stop, re-enable the workflow on the Actions tab.
+- A failed scheduled run notifies whoever last changed the `cron` line, not the
+  repository's watchers.
+- It reports; it does not block anything. The gate is still `ci.yml`, which will
+  fail on the next PR for the same reason — this makes sure you hear first.
+
 ## `auto-pr.yml` — draft PR opener and branch janitor
 
 **Runs on** a push to any branch except `main`, `dev`, `dependabot/**` and
@@ -191,8 +240,14 @@ a `dev` that has moved on that can be a **downgrade** — #51 proposed
 against the new base fixes that, and if the advisory is already fixed on `dev`
 Dependabot closes the PR itself.
 
-A security update is recognised by `ghsa-id` being non-empty in the
-`fetch-metadata` output; version updates never set it.
+A security update is recognised by its **base branch alone**: every ecosystem
+sets `target-branch: dev`, so a Dependabot PR against `main` cannot be anything
+else. It used to be recognised by a non-empty `ghsa-id` from `fetch-metadata`,
+and that never worked — the action fills `ghsa-id` only with `alert-lookup: true`
+and a token that can read Dependabot alerts, which `GITHUB_TOKEN` cannot. The
+output was always empty, the step always skipped, and huginn.io#111 sat on
+`main` for weeks as a result. Do not go back to `ghsa-id` without also giving
+the step that token.
 
 ### 2. Auto-merge, once the PR is on the right branch
 
@@ -215,6 +270,58 @@ A security update is recognised by `ghsa-id` being non-empty in the
 - This is a workaround for a platform behaviour, not a fix. Making the
   integration branch the default branch would remove the need for it entirely —
   that trade is in [`ci-cd.md`](ci-cd.md).
+
+## `lockfile-maintenance.yml` — the weekly `cargo update`
+
+**Runs** Mondays on a schedule, and manually — from `main` only, because its
+environment allows nothing else. Checks out `dev`, runs `cargo update`, and if
+`Cargo.lock` changed, opens one PR into `dev` from `maintenance/lockfile`, or
+refreshes the one already open.
+
+It exists for what Dependabot does not reach. Dependabot's cargo updates cover
+direct dependencies only, by decision (`dependabot.yml`, #33/#36), and its
+security updates come from the GitHub Advisory Database, which does not carry
+every RustSec advisory. On 2026-10-25 nine RustSec advisories applied to `dev`:
+four in crates Dependabot never proposes, five it could not see at all. A full
+`cargo update` reaches the whole graph, and Cargo resolves it as one — #33's
+inconsistent lockfile came from Dependabot's updater, not from Cargo.
+
+1. **Resolve, held to the floor.** `cargo update` with
+   `CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`: each crate goes to its
+   newest release that still builds on `rust-version`. Without it the job would
+   lift something above the floor every week and `Source · MSRV` would fail on
+   it every week. A crate held back appears in the list as
+   `(available: …, requires Rust …)` — that is the signal to consider raising
+   the floor.
+2. **Mint a token** from the GitHub App, after resolution, with `contents` and
+   `pull-requests` write on this repository and nothing else. It lives an hour.
+3. **Commit through the Git database API** — blob, tree, commit with `dev` as
+   parent, then the branch, in one ref update. Through the API because both
+   rulesets require signatures and GitHub signs a commit an app creates there;
+   a `git push` would be unsigned. The job reads `verification.verified` back
+   and **fails** if it is not `true`, because an unsigned commit opens a PR
+   whose checks all pass and whose merge stays blocked with nothing failing.
+4. **Open or refresh the PR**, with the update list as its body. Not draft and
+   **not auto-merged**.
+
+**Gotchas**
+
+- **Not auto-merged, on purpose.** Dependabot's `cooldown` holds a fresh release
+  back for days; `cargo update` has no such wait. Every gate runs, and none of
+  them recognises a malicious crate that compiles. Skim the list.
+- The token comes from the `maintenance` **environment**, which only `main` may
+  use. Scheduled runs always start from the default branch, so that costs
+  nothing — but it means the workflow does nothing until it has been released,
+  and a manual run must be started on `main`.
+- With `GITHUB_TOKEN` instead, the PR would run no checks at all: events it
+  creates start no workflow. That is the whole reason for the app.
+- `maintenance/lockfile` is in `auto-pr.yml`'s `branches-ignore`. Without that
+  entry auto-pr would delete it on sight (it matches no prefix) — and since an
+  app token *does* start workflows, it would actually run.
+- The branch is rebuilt from current `dev` each week and moved with a force
+  update. It is this job's alone; do not push to it by hand.
+- `cargo update` resolves and writes the lockfile; it compiles nothing and runs
+  no build script, so no crate's code runs in the job that holds the token.
 
 ## `release.yml` — Release, SBOM, and next-cycle prep
 
