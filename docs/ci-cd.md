@@ -34,6 +34,7 @@ release PR would silently revert it.
 ── Source ────────────────────────────────────────────────────────────────
   check ─┬ test (stable + beta·canary) ─┐
          ├ supply-chain ────────────────┤
+         ├ msrv ────────────────────────┤
          ├ coverage ────────────────────┤
          └ version-gate ────────────────┤
                                         ▼
@@ -103,6 +104,7 @@ every `github.ref == 'refs/heads/dev'` check silently reads false. A job with
 | Source · Tests (stable) | yes 🚫 | yes | yes | — |
 | Source · Tests (beta, canary) | yes | yes | yes | — |
 | Source · Supply-chain (cargo-deny) | yes 🚫 | yes | yes | — |
+| Source · MSRV (`rust-version` toolchain) | yes 🚫 | yes | yes | — |
 | Source · Coverage ≥ 80 % | yes 🚫 | yes | yes | — |
 | Source · Version gate | yes 🚫† | ➖ | yes 🚫 | — |
 | Security · Semgrep · ShellCheck · Actionlint | yes 🚫* | yes | yes | — |
@@ -263,7 +265,7 @@ Both rulesets:
   solo project, and a reviewer nobody can be would block every merge;
 - require exactly **three** status checks, each a fan-in job that runs no build
   and no test of its own:
-  - `Source gate` — covers `check`, `test`, `supply-chain`, `coverage`, `version-gate`
+  - `Source gate` — covers `check`, `test`, `supply-chain`, `msrv`, `coverage`, `version-gate`
   - `Image gate` — covers `build`, `scan`, `integration`
   - `Security gate` — covers `shellcheck`, `actionlint`, `semgrep`
 - require branches to be up to date before merging;
