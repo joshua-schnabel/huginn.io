@@ -106,9 +106,26 @@ jobs:
       # ── 2. Auto-merge, once the PR is on the right branch ─────────────────
       # `base.ref == 'dev'` is what keeps a just-retargeted PR out: at this
       # point the event payload still says `main`.
-      - name: Enable auto-merge (patch/minor only)
+      #
+      # GitHub Actions updates are never auto-merged. An action is code that
+      # runs inside the jobs that hold credentials — `push` and `publish` run
+      # six of them with DOCKERHUB_TOKEN, and with RELEASE_PAT on `main` — while
+      # a crate or a base image only ever runs in jobs that hold none. SHA
+      # pinning does not help against a malicious new release, because
+      # Dependabot proposes its SHA itself, and the cooldown only buys time.
+      # Auto-merged, such a release would reach `dev` with no human having read
+      # it and run with the registry token on the next push. What that code then
+      # does is not hypothetical: in March 2025 a compromised
+      # tj-actions/changed-files dumped the secrets of every job that ran it
+      # into the log. #46 and #48 were merged here by github-actions, unread.
+      #
+      # Recognised by the branch, `dependabot/github_actions/…`: that is the
+      # spelling Dependabot uses for it (see #113), and it does not depend on
+      # how fetch-metadata spells the ecosystem.
+      - name: Enable auto-merge (patch/minor, not GitHub Actions)
         if: >-
           github.event.pull_request.base.ref == 'dev' &&
+          !startsWith(github.event.pull_request.head.ref, 'dependabot/github_actions/') &&
           (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
            steps.meta.outputs.update-type == 'version-update:semver-minor')
         run: gh pr merge --auto --squash "$PR_URL"
