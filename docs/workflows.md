@@ -12,7 +12,7 @@ The pipeline's rationale is [`ci-cd.md`](ci-cd.md); cutting a release is
 | `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
 | `advisories.yml` | daily · manual | `cargo deny check advisories` against `dev` and `main`, pushed to or not |
-| `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
+| `auto-pr.yml` | push to any non-protected branch | Delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
 | `lockfile-maintenance.yml` | weekly · manual | Full `cargo update` against `dev`, held to the MSRV floor, as one signed PR |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
@@ -201,18 +201,20 @@ and `ci.yml` checks them at that moment.
 - It reports; it does not block anything. The gate is still `ci.yml`, which will
   fail on the next PR for the same reason — this makes sure you hear first.
 
-## `auto-pr.yml` — draft PR opener and branch janitor
+## `auto-pr.yml` — branch janitor
 
-**Runs on** a push to any branch except `main`, `dev`, `dependabot/**` and
-`release/**`.
+**Runs on** a push to any branch except `main`, `dev`, `dependabot/**`,
+`release/**` and `maintenance/**`.
 
-- A branch matching `feature|fix|chore|docs|test/…` gets a **draft PR into
-  `dev`**, if one does not already exist.
-- A branch that does not match is **deleted**. That is the naming enforcement.
+- A branch that does not match `feature|fix|chore|docs|test/…` is **deleted**.
+  That is the naming enforcement, and all the workflow does.
+- It holds `contents: write` and no checkout — the deletion is one `gh api`
+  call.
 
-**Gotcha:** it uses the built-in `GITHUB_TOKEN`, so the PRs it opens **do not
-trigger `ci.yml`**. When you need CI on one, close and reopen it as yourself, or
-push a further commit.
+**It no longer opens a draft PR.** That needed "Allow GitHub Actions to create
+and approve pull requests", which is off ([`ci-cd.md`](ci-cd.md)), and the PRs
+it did open were authored by `github-actions`, so their CI parked on approval
+rather than running. Open the PR yourself after the first push.
 
 ## `dependabot-auto-merge.yml` — Dependabot policy
 
