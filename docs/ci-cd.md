@@ -475,8 +475,11 @@ the two `staging-*` tags once the multi-arch manifest points at their digests.
 
 Dependabot opens one grouped PR per ecosystem — cargo, github-actions, docker —
 weekly, against `dev`, with a 3-day cooldown. `dependabot-auto-merge.yml`
-auto-merges patch and minor bumps; a group containing a major waits for review,
-so you review exactly when a breaking bump is present. Security updates are not
+auto-merges patch and minor bumps of crates and base images; a group containing
+a major waits for review, so you review exactly when a breaking bump is present.
+**GitHub Actions updates always wait for review**: an action runs inside the
+jobs that hold `DOCKERHUB_TOKEN` and `RELEASE_PAT`, and a compromised release
+would otherwise run there unread. Security updates are not
 grouped and not delayed by the cooldown.
 
 Dependabot's cargo updates reach **direct** dependencies only, and it learns of

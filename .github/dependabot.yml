@@ -8,7 +8,9 @@ version: 2
 # The group includes major bumps too, so the PR really is "everything in one".
 # Interaction with dependabot-auto-merge.yml: that workflow only auto-merges
 # patch/minor, so a group PR that happens to include a major waits for manual
-# review — you review exactly when a breaking bump is present.
+# review — you review exactly when a breaking bump is present. The
+# github-actions group is never auto-merged at all: actions run inside the jobs
+# that hold credentials, crates and base images do not.
 #
 # Security updates (advisory-driven) are intentionally NOT grouped — Dependabot
 # still opens those as their own PRs so an urgent CVE fix isn't held back.

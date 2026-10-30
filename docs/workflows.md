@@ -252,7 +252,15 @@ the step that token.
 ### 2. Auto-merge, once the PR is on the right branch
 
 - **Patch and minor** get `gh pr merge --auto --squash`; the merge completes once
-  the required checks are green.
+  the required checks are green — for **cargo and docker** only.
+- **GitHub Actions** updates are never auto-merged, whatever their size. An
+  action runs inside the jobs that hold credentials (`push` and `publish` run six
+  with `DOCKERHUB_TOKEN`, and with `RELEASE_PAT` on `main`); a crate or a base
+  image never does. SHA pinning is no defence against a malicious *new*
+  release, since Dependabot proposes its SHA, and the cooldown only delays it —
+  and what such code does in a job is on record: in March 2025 a compromised
+  tj-actions/changed-files dumped every secret of the jobs that ran it into the
+  log. Recognised by the branch prefix `dependabot/github_actions/`.
 - **Major** bumps are left for review. Because Dependabot groups per ecosystem, a
   group containing a major waits as a whole — you review exactly when a breaking
   bump is present.
