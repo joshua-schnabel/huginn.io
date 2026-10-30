@@ -14,8 +14,8 @@ document forever.
 
 | Pass | Date | Findings |
 |---|---|---|
-| [2](#pass-2) | 2026-08-12 | F-07 … F-11, all Low |
-| [1](#pass-1) | 2026-08-02 | F-01 … F-06, no CRITICAL or HIGH |
+| [2](#pass-2) | 2026-08-12 | F-07 … F-11, all Low, all fixed |
+| [1](#pass-1) | 2026-08-02 | F-01 … F-06, no CRITICAL or HIGH, all fixed |
 
 ---
 
@@ -71,20 +71,24 @@ listeners.
 
 | ID | Severity | Component | Finding | Status |
 |---|---|---|---|---|
-| [F-07](#f-07) | Low | `huginn-web`, `huginn-influx` | Control characters in operator-supplied probe names reach console, Prometheus labels and InfluxDB tags raw **[shipped]** | Open |
-| [F-08](#f-08) | Low | `docker-compose.integration.yml` | The integration suite exercises the container **unhardened**, so no gate protects the hardening that ships **[shipped]** | Open |
-| [F-09](#f-09) | Low | `huginn-web` | The connection cap trades memory exhaustion for denial of service on the flooded listener, and the residual is undocumented **[shipped]** | Open |
-| [F-10](#f-10) | Low | repository settings | Nothing enforces SHA-pinning of actions; it is held by hand | Open |
-| [F-11](#f-11) | Low | `ci.yml` | The `publish` job's security comment is false — third-party actions do run between the credentialed checkout and the tag push | Open |
+| [F-07](#f-07) | Low | `huginn-web`, `huginn-influx` | Control characters in operator-supplied probe names reach console, Prometheus labels and InfluxDB tags raw **[shipped]** | **Fixed** (#94) — escaped at config load; rejecting them waits for the next major |
+| [F-08](#f-08) | Low | `docker-compose.integration.yml` | The integration suite exercises the container **unhardened**, so no gate protects the hardening that ships **[shipped]** | **Fixed** (#97) — the integration stack carries the shipped hardening, and the suite asserts it from `docker inspect` |
+| [F-09](#f-09) | Low | `huginn-web` | The connection cap trades memory exhaustion for denial of service on the flooded listener, and the residual is undocumented **[shipped]** | **Fixed** (#99) — header deadline cut from 10 s to 3 s; the residual is R7 in [`risks.md`](risks.md) |
+| [F-10](#f-10) | Low | repository settings | Nothing enforces SHA-pinning of actions; it is held by hand | **Fixed** — `sha_pinning_required` is on; `allowed_actions` is still `all` |
+| [F-11](#f-11) | Low | `ci.yml` | The `publish` job's security comment is false — third-party actions do run between the credentialed checkout and the tag push | **Fixed** (#99) — `publish` checks out without credentials and takes the write token only for the tag push |
 
 **No CRITICAL or HIGH finding was identified.** Neither did pass 1; that is a
 statement about two passes, not a guarantee about a third.
+
+The report below the table is kept as written on 2026-08-12, so each finding's
+text describes the code it found. Only the **Status** lines record what happened
+since.
 
 ---
 
 ### F-07 — Control characters from configuration reach three sinks raw {#f-07}
 
-**Severity:** Low · **Status:** Open · **[shipped]**
+**Severity:** Low · **Status:** Fixed (#94) · **[shipped]**
 
 F-01's fix escapes the whole Unicode Cc range in `ProbeResult::failure`, which
 is where every probe builds a failure — so the string a *remote* host writes is
@@ -133,7 +137,7 @@ had a gap.
 
 ### F-08 — The shipped hardening is exercised by no gate {#f-08}
 
-**Severity:** Low · **Status:** Open · **[shipped]**
+**Severity:** Low · **Status:** Fixed (#97) · **[shipped]**
 
 `docker-compose.yml` carries the full F-04 hardening. `docker-compose.integration.yml`
 — the stack the system integration suite runs against, in CI and locally — carries
@@ -168,7 +172,7 @@ log.
 
 ### F-09 — The connection cap trades memory for availability {#f-09}
 
-**Severity:** Low · **Status:** Open · **[shipped]**
+**Severity:** Low · **Status:** Fixed (#99) · **[shipped]**
 
 F-03's fix works, and its measured effect is large. Repeating pass 1's flood —
 4 000 half-open connections, each sending a partial request head and then
@@ -209,7 +213,7 @@ memory growth.
 
 ### F-10 — SHA-pinning is practice, not policy {#f-10}
 
-**Severity:** Low · **Status:** Open
+**Severity:** Low · **Status:** Fixed (repository setting)
 
 `AGENTS.md` §9 and pass 1 both state that every action is pinned to a
 40-character commit SHA, because a tag is movable and a compromised upstream
@@ -235,7 +239,7 @@ would make it structural.
 
 ### F-11 — `publish`'s security comment is false {#f-11}
 
-**Severity:** Low · **Status:** Open
+**Severity:** Low · **Status:** Fixed (#99)
 
 `ci.yml`'s `publish` job is the one checkout in that file that keeps its git
 credentials, because its last step runs `git push origin "$TAG"` with
