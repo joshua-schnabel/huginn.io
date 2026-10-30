@@ -698,6 +698,13 @@ jobs:
     # still skips this job and, through it, `publish`.
     needs: [image-gate]
     if: github.event_name == 'push'
+    # DOCKERHUB_TOKEN lives in the `registry` environment, which only `dev` and
+    # `main` may use, not at repository level. A repository secret is readable
+    # by a run from ANY branch, with that branch's copy of this file — so
+    # whoever can push a branch could push one that prints it. Both allowed
+    # branches are ruleset-protected, so reaching the token now means getting a
+    # change merged. See docs/ci-cd.md, "Where the secrets live".
+    environment: registry
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -735,7 +742,7 @@ jobs:
           REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
           if [ -z "$DHUSER" ] || [ -z "$DHTOKEN" ]; then
-            echo "::error::DOCKERHUB_USERNAME (repository variable) and DOCKERHUB_TOKEN (repository secret) are not set — see docs/ci-cd.md"
+            echo "::error::DOCKERHUB_USERNAME (repository variable) and DOCKERHUB_TOKEN (secret in the registry and release environments) are not set — see docs/ci-cd.md"
             exit 1
           fi
           trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
@@ -767,6 +774,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [push]
     if: github.event_name == 'push'
+    # `release` on main, `registry` on dev. One job takes one environment, and
+    # this one needs DOCKERHUB_TOKEN on both branches but RELEASE_PAT only on
+    # main, where it pushes the tag. Choosing by ref keeps RELEASE_PAT out of
+    # every dev run; the price is DOCKERHUB_TOKEN stored in both environments,
+    # so a rotation is two updates. docs/ci-cd.md, "Where the secrets live".
+    environment: ${{ github.ref == 'refs/heads/main' && 'release' || 'registry' }}
     timeout-minutes: 15
     permissions:
       # contents: write — the "Create git tag" step. Inheriting `contents: read`

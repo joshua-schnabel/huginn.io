@@ -392,6 +392,12 @@ jobs:
     name: Prepare dev for next cycle
     runs-on: ubuntu-latest
     needs: [resolve, github-release]
+    # RELEASE_PAT and the GPG key come from the `release` environment (`main`
+    # and `v*.*.*` tags). The tag rule is the one gap it leaves: a tag push runs
+    # the workflow file from the tagged commit, and `github-release`'s "tag must
+    # be on main" check is in that same file. docs/ci-cd.md, "Where the secrets
+    # live", says what would close it.
+    environment: release
     timeout-minutes: 10
     permissions:
       contents: write
