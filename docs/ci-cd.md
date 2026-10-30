@@ -169,6 +169,48 @@ mirror; the Trivy and Semgrep jobs need `security-events: write` for the SARIF
 upload, and in `security.yml` that permission is scoped to the Semgrep job alone
 — ShellCheck and actionlint only read the tree.
 
+### Where the secrets live
+
+**In environments, never at repository level.** A repository secret is readable
+by a workflow run started from *any* branch of the repository, using *that
+branch's* copy of the workflow file. Whoever can push a branch can therefore push
+one whose workflow prints the secret — base64 defeats the log masking — with no
+pull request, no review and no ruleset in the way, because the rulesets protect
+`dev` and `main`, not the pushing of a feature branch. An environment hands its
+secrets only to a job running on a ref its deployment rule admits.
+
+| Environment | Secrets | Admits | Jobs |
+|---|---|---|---|
+| `registry` | `DOCKERHUB_TOKEN` | `dev`, `main` | `ci.yml` `push`; `publish` on `dev` |
+| `release` | `DOCKERHUB_TOKEN`, `RELEASE_PAT`, `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE` | `main`, tags `v*.*.*` | `ci.yml` `publish` on `main`; `release-dispatch.yml`; `release.yml` `prepare-dev` |
+| `maintenance` | `MAINTENANCE_APP_PRIVATE_KEY` | `main` | `lockfile-maintenance.yml` |
+
+`DOCKERHUB_TOKEN` is stored twice on purpose. `publish` needs it on both branches
+but `RELEASE_PAT` only on `main`, and a job takes one environment — so it picks
+`release` or `registry` by ref, which keeps `RELEASE_PAT` out of every `dev` run.
+Rotating the Docker Hub token is therefore **two updates**.
+
+What this does and does not protect against:
+
+- **Fork pull requests were never the risk.** A `pull_request` run from a fork
+  receives no secrets in a public repository and a read-only `GITHUB_TOKEN`, and
+  no workflow here uses `pull_request_target`, `workflow_run` or
+  `issue_comment`. That was true before environments, too.
+- **A push credential alone no longer reaches the registry token.** `dev` and
+  `main` are ruleset-protected, so getting code into a run that holds
+  `DOCKERHUB_TOKEN` means getting a change merged through the gates.
+- **The tag rule is the gap that remains for `release`.** A tag push runs
+  `release.yml` from the *tagged commit*, and `github-release`'s "the tag must be
+  on main" check lives in that same file. Anyone able to push a tag can push one
+  on a commit carrying an edited `release.yml`. Closing that needs a tag ruleset
+  that lets only a dedicated identity create `v*` tags — and since the tag is
+  pushed with `RELEASE_PAT`, which acts as the maintainer, that identity would
+  first have to become an app rather than the maintainer's own token. Not done.
+- **A merged pull request runs with what its branch is allowed.** Changes under
+  `.github/` are the ones that reach the jobs holding secrets; read them as such.
+- **Nothing in the repository defends against a stolen admin credential**, which
+  can change environments and rulesets themselves.
+
 ## Source scanning
 
 | Tool | Layer | Finds | Blocks |
@@ -408,15 +450,29 @@ open the PR yourself. The setting is off by default on new repositories.
 |---|---|---|
 | `DOCKERHUB_USERNAME` | the Docker Hub account owning `<user>/huginn` | `push`, `publish`, the ghcr mirror |
 
-**Secrets**
+**Secrets** — each in the environment named, never at repository level; see
+[Where the secrets live](#where-the-secrets-live) for why.
 
-| Name | Needed for | Consequence if absent |
-|---|---|---|
-| `DOCKERHUB_TOKEN` | pushing the image | `push` fails with a message naming it; nothing is published |
-| `RELEASE_PAT` | the release tag push, the release-dispatch PR, the housekeeping PR | **`release.yml` never runs** — see above. The PRs are still opened, but CI does not trigger on them and auto-merge hangs |
+| Name | Environment | Needed for | Consequence if absent |
+|---|---|---|---|
+| `DOCKERHUB_TOKEN` | `registry` **and** `release` | pushing the image | `push` fails with a message naming it; nothing is published |
+| `RELEASE_PAT` | `release` | the release tag push, the release-dispatch PR, the housekeeping PR | **`release.yml` never runs** — see above, and **silently**: every use falls back to `GITHUB_TOKEN`, so the tag is still pushed and nothing fails. The PRs are still opened, but CI does not trigger on them and auto-merge hangs |
+| `GPG_PRIVATE_KEY` | `release` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
+| `GPG_PASSPHRASE` | `release` | only if the signing key has one | gpg cannot use the key |
 
-| `GPG_PRIVATE_KEY` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
-| `GPG_PASSPHRASE` | only if the signing key has one | gpg cannot use the key |
+**The `registry` and `release` environments** (Settings → Environments). No
+required reviewers on either — each release is already a deliberate act, and a
+review click on every `dev` push would be switched off within a week.
+
+- `registry`: deployment branches **`dev`** and **`main`**.
+- `release`: deployment branch **`main`**, plus a **tag** rule `v*.*.*` —
+  `release.yml` runs on the tag push, whose ref is the tag, not a branch.
+
+Moving a secret from repository level into an environment, without a gap:
+create the environment and set the secret there first, check it arrived —
+`gh secret list --env release` lists the names — and only then delete the
+repository secret. In the other order, `RELEASE_PAT` fails silently, as the
+table says.
 
 **The `maintenance` environment** (Settings → Environments), for
 `lockfile-maintenance.yml`. Its deployment-branch rule allows **`main` only** —
